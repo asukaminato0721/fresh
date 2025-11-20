@@ -2898,10 +2898,6 @@ impl Editor {
         let mut processed_any_commands = false;
         if let Some(ref mut manager) = self.ts_plugin_manager {
             let commands = manager.process_commands();
-            tracing::trace!(
-                "process_async_messages: got {} commands from plugin manager",
-                commands.len()
-            );
             if !commands.is_empty() {
                 tracing::trace!(
                     "process_plugin_commands: processing {} commands",

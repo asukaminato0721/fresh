@@ -745,6 +745,7 @@ impl SplitRenderer {
         let mut cursor_screen_x = 0u16;
         let mut cursor_screen_y = 0u16;
         let mut view_to_screen: HashMap<usize, (u16, u16)> = HashMap::new();
+        let mut source_to_screen: HashMap<usize, (u16, u16)> = HashMap::new();
 
         loop {
             let (line_view_offset, line_content, line_has_newline) =
@@ -1345,6 +1346,10 @@ impl SplitRenderer {
                                     );
                                     (screen_x, current_y)
                                 });
+                            if let Some(Some(src)) = view_mapping.get(*view_idx) {
+                                source_to_screen
+                                    .insert(*src, (screen_x, current_y));
+                            }
                         }
                     }
 
@@ -1444,7 +1449,10 @@ impl SplitRenderer {
             };
         }
 
-        if let Some(pos) = view_to_screen.get(&primary_cursor_position) {
+        if let Some(pos) = source_to_screen.get(&state.cursors.primary().position) {
+            cursor_screen_x = pos.0;
+            cursor_screen_y = pos.1;
+        } else if let Some(pos) = view_to_screen.get(&primary_cursor_position) {
             cursor_screen_x = pos.0;
             cursor_screen_y = pos.1;
         }
