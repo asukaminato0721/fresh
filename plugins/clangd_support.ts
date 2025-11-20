@@ -249,7 +249,7 @@ editor.registerCommand(
   "Clangd: Project Setup",
   "Analyze C/C++ clangd readiness (compile_commands.json, .clangd)",
   "clangdProjectSetup",
-  "global"
+  ""
 );
 
 globalThis.clangdOpenProjectConfig = function(): void {
