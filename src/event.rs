@@ -223,6 +223,13 @@ pub enum OverlayFace {
     Foreground {
         color: (u8, u8, u8),
     },
+    /// Full style with multiple attributes
+    Style {
+        color: (u8, u8, u8),
+        bold: bool,
+        italic: bool,
+        underline: bool,
+    },
 }
 
 /// Underline style for overlays
