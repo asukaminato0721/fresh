@@ -4,7 +4,7 @@ mod common;
 
 use fresh::{
     event::{CursorId, Event, EventLog},
-    overlay::{OverlayHandle, OverlayNamespace},
+    overlay::OverlayNamespace,
     state::EditorState,
 };
 
