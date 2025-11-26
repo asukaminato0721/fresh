@@ -63,11 +63,13 @@ def calculate_new_version(current_version: str, bump_type: BumpType) -> str:
 def update_cargo_toml(cargo_toml_path: Path, current_version: str, new_version: str) -> None:
     """Updates the version in Cargo.toml."""
     content = cargo_toml_path.read_text()
+    pattern = rf'^version = "{re.escape(current_version)}"'
     new_content = re.sub(
-        f'^version = "{re.escape(current_version)}"',
+        pattern,
         f'version = "{new_version}"',
         content,
         count=1,
+        flags=re.MULTILINE,
     )
     cargo_toml_path.write_text(new_content)
 
