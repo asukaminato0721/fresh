@@ -3,7 +3,8 @@
 use crate::input::keybindings::Action;
 use crate::model::buffer::Buffer;
 use crate::model::cursor::{Position2D, SelectionMode};
-use crate::model::event::Event;
+use crate::model::event::{CursorId, Event};
+use std::ops::Range;
 use crate::primitives::word_navigation::{
     find_word_end, find_word_start, find_word_start_left, find_word_start_right,
 };
@@ -39,6 +40,25 @@ fn pos_2d_to_byte(buffer: &Buffer, pos: Position2D) -> usize {
     };
     let clamped_col = pos.column.min(line_len);
     line_start + clamped_col
+}
+
+/// Convert deletion ranges to Delete events
+///
+/// This is a common pattern used across many deletion actions.
+/// It reads the text from each range and creates Delete events.
+fn apply_deletions(
+    state: &mut EditorState,
+    deletions: Vec<(CursorId, Range<usize>)>,
+    events: &mut Vec<Event>,
+) {
+    for (cursor_id, range) in deletions {
+        let deleted_text = state.get_text_range(range.start, range.end);
+        events.push(Event::Delete {
+            range,
+            deleted_text,
+            cursor_id,
+        });
+    }
 }
 
 /// Handle block selection movement
@@ -260,14 +280,7 @@ pub fn action_to_events(
                 .collect();
 
             // Get text for deletions
-            for (cursor_id, range) in deletions {
-                let deleted_text = state.get_text_range(range.start, range.end);
-                events.push(Event::Delete {
-                    range,
-                    deleted_text,
-                    cursor_id,
-                });
-            }
+            apply_deletions(state, deletions, &mut events);
 
             // Now process insertions
             for (cursor_id, insert_position, line_start, only_spaces, char_after) in insertion_data
@@ -545,14 +558,7 @@ pub fn action_to_events(
                 .collect();
 
             // Get text for deletions
-            for (cursor_id, range) in deletions {
-                let deleted_text = state.get_text_range(range.start, range.end);
-                events.push(Event::Delete {
-                    range,
-                    deleted_text,
-                    cursor_id,
-                });
-            }
+            apply_deletions(state, deletions, &mut events);
 
             // Insert tabs
             for (cursor_id, position) in insert_positions {
@@ -1323,14 +1329,7 @@ pub fn action_to_events(
                 .collect();
 
             // Get text and create delete events
-            for (cursor_id, range) in deletions {
-                let deleted_text = state.get_text_range(range.start, range.end);
-                events.push(Event::Delete {
-                    range,
-                    deleted_text,
-                    cursor_id,
-                });
-            }
+            apply_deletions(state, deletions, &mut events);
         }
 
         Action::DeleteForward => {
@@ -1355,14 +1354,7 @@ pub fn action_to_events(
                 .collect();
 
             // Get text and create delete events
-            for (cursor_id, range) in deletions {
-                let deleted_text = state.get_text_range(range.start, range.end);
-                events.push(Event::Delete {
-                    range,
-                    deleted_text,
-                    cursor_id,
-                });
-            }
+            apply_deletions(state, deletions, &mut events);
         }
 
         Action::DeleteWordBackward => {
@@ -1385,14 +1377,7 @@ pub fn action_to_events(
                 .collect();
 
             // Now get text and create events
-            for (cursor_id, range) in deletions {
-                let deleted_text = state.get_text_range(range.start, range.end);
-                events.push(Event::Delete {
-                    range,
-                    deleted_text,
-                    cursor_id,
-                });
-            }
+            apply_deletions(state, deletions, &mut events);
         }
 
         Action::DeleteWordForward => {
@@ -1415,14 +1400,7 @@ pub fn action_to_events(
                 .collect();
 
             // Now get text and create events
-            for (cursor_id, range) in deletions {
-                let deleted_text = state.get_text_range(range.start, range.end);
-                events.push(Event::Delete {
-                    range,
-                    deleted_text,
-                    cursor_id,
-                });
-            }
+            apply_deletions(state, deletions, &mut events);
         }
 
         Action::DeleteLine => {
@@ -1443,14 +1421,7 @@ pub fn action_to_events(
                 .collect();
 
             // Now get text and create events
-            for (cursor_id, range) in deletions {
-                let deleted_text = state.get_text_range(range.start, range.end);
-                events.push(Event::Delete {
-                    range,
-                    deleted_text,
-                    cursor_id,
-                });
-            }
+            apply_deletions(state, deletions, &mut events);
         }
 
         Action::DeleteToLineEnd => {
@@ -1481,14 +1452,7 @@ pub fn action_to_events(
                 })
                 .collect();
 
-            for (cursor_id, range) in deletions {
-                let deleted_text = state.get_text_range(range.start, range.end);
-                events.push(Event::Delete {
-                    range,
-                    deleted_text,
-                    cursor_id,
-                });
-            }
+            apply_deletions(state, deletions, &mut events);
         }
 
         Action::TransposeChars => {
