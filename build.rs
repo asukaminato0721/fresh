@@ -8,7 +8,7 @@ use std::path::Path;
 
 fn main() {
     // Rerun if source or template changes
-    println!("cargo::rerun-if-changed=src/ts_runtime.rs");
+    println!("cargo::rerun-if-changed=src/services/plugins/runtime.rs");
     println!("cargo::rerun-if-changed=types/fresh.d.ts.template");
 
     // Skip type generation during cargo publish (files should be pre-committed)
@@ -587,7 +587,7 @@ fn format_jsdoc(doc: &str, indent: &str) -> String {
 
 /// Generate the TypeScript definition file
 fn generate_typescript_types() -> Result<(), Box<dyn std::error::Error>> {
-    let rust_source = fs::read_to_string("src/ts_runtime.rs")?;
+    let rust_source = fs::read_to_string("src/services/plugins/runtime.rs")?;
     let ops = extract_ops(&rust_source);
     let structs = extract_structs(&rust_source);
 

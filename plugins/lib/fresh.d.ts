@@ -91,6 +91,12 @@ interface SpawnResult {
   exit_code: number;
 }
 
+/** Result from spawnBackgroundProcess - just the process ID */
+interface BackgroundProcessResult {
+  /** Unique process ID for later reference (kill, status check) */
+  process_id: number;
+}
+
 /** File stat information */
 interface FileStat {
   /** Whether the path exists */
@@ -322,6 +328,13 @@ interface EditorAPI {
    * is typically first. For selection info use getAllCursors instead.
    */
   getAllCursorPositions(): number[];
+  /**
+   * Check if a background process is still running
+   *
+   * @param process_id - ID returned from spawnBackgroundProcess
+   * @returns true if process is running, false if not found or exited
+   */
+  isProcessRunning(#[bigint] process_id: number): boolean;
 
   // === Buffer Info Queries ===
   /**
@@ -419,7 +432,7 @@ interface EditorAPI {
    * @param priority - Priority for ordering multiple lines at same position
    * @returns true if virtual line was added
    */
-  addVirtualLine(buffer_id: number, position: number, text: string, fg_r: number, fg_g: number, fg_b: number, bg_r: number, bg_g: number, bg_b: number, above: boolean, namespace: string, priority: number): boolean;
+  addVirtualLine(buffer_id: number, position: number, text: string, fg_r: number, fg_g: number, fg_b: number, bg_r: i16, bg_g: i16, bg_b: i16, above: boolean, namespace: string, priority: number): boolean;
   /**
    * Submit a transformed view stream for a viewport
    * @param buffer_id - Buffer to apply the transform to
@@ -475,6 +488,34 @@ interface EditorAPI {
    * @returns true if file was opened
    */
   openFileInSplit(split_id: number, path: string, line: number, column: number): boolean;
+  /**
+   * Spawn a long-running background process
+   *
+   * Unlike spawnProcess which waits for completion, this starts a process
+   * in the background and returns immediately with a process ID.
+   * Use killProcess(id) to terminate the process later.
+   * Use isProcessRunning(id) to check if it's still running.
+   *
+   * @param command - Program name (searched in PATH) or absolute path
+   * @param args - Command arguments (each array element is one argument)
+   * @param cwd - Working directory; null uses editor's cwd
+   * @returns Object with process_id for later reference
+   * @example
+   * const proc = await editor.spawnBackgroundProcess("asciinema", ["rec", "output.cast"]);
+   * // Later...
+   * await editor.killProcess(proc.process_id);
+   */
+  spawnBackgroundProcess(command: string, args: string[], cwd?: string | null): Promise<BackgroundProcessResult>;
+  /**
+   * Kill a background process by ID
+   *
+   * Sends SIGTERM to gracefully terminate the process.
+   * Returns true if the process was found and killed, false if not found.
+   *
+   * @param process_id - ID returned from spawnBackgroundProcess
+   * @returns true if process was killed, false if not found
+   */
+  killProcess(#[bigint] process_id: number): Promise<boolean>;
   /**
    * Send an arbitrary LSP request and receive the raw JSON response
    * @param language - Language ID (e.g., "cpp")

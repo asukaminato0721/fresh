@@ -48,6 +48,20 @@ interface SpawnResult {
 | `stderr` | Complete stderr as string. Contains error messages and warnings. |
 | `exit_code` | Process exit code. 0 usually means success; -1 if process was killed. |
 
+### BackgroundProcessResult
+
+Result from spawnBackgroundProcess - just the process ID
+
+```typescript
+interface BackgroundProcessResult {
+  process_id: number;
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `process_id` | Unique process ID for later reference (kill, status check) |
+
 ### FileStat
 
 File stat information
@@ -421,6 +435,20 @@ is typically first. For selection info use getAllCursors instead.
 getAllCursorPositions(): number[]
 ```
 
+#### `isProcessRunning`
+
+Check if a background process is still running
+
+```typescript
+isProcessRunning(#[bigint] process_id: number): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `#[bigint] process_id` | `number` | - |
+
 ### Buffer Info Queries
 
 #### `getBufferInfo`
@@ -575,7 +603,7 @@ setLineNumbers(buffer_id: number, enabled: boolean): boolean
 Add a virtual line above or below a source line
 
 ```typescript
-addVirtualLine(buffer_id: number, position: number, text: string, r: number, g: number, b: number, above: boolean, namespace: string, priority: number): boolean
+addVirtualLine(buffer_id: number, position: number, text: string, fg_r: number, fg_g: number, fg_b: number, bg_r: i16, bg_g: i16, bg_b: i16, above: boolean, namespace: string, priority: number): boolean
 ```
 
 **Parameters:**
@@ -585,9 +613,12 @@ addVirtualLine(buffer_id: number, position: number, text: string, r: number, g: 
 | `buffer_id` | `number` | The buffer ID |
 | `position` | `number` | Byte position to anchor the virtual line to |
 | `text` | `string` | The text content of the virtual line |
-| `r` | `number` | Red color component (0-255) |
-| `g` | `number` | Green color component (0-255) |
-| `b` | `number` | uffer_id - The buffer ID |
+| `fg_r` | `number` | Foreground red color component (0-255) |
+| `fg_g` | `number` | Foreground green color component (0-255) |
+| `fg_b` | `number` | Foreground blue color component (0-255) |
+| `bg_r` | `i16` | Background red color component (0-255), -1 for transparent |
+| `bg_g` | `i16` | Background green color component (0-255), -1 for transparent |
+| `bg_b` | `i16` | Background blue color component (0-255), -1 for transparent |
 | `above` | `boolean` | Whether to insert above (true) or below (false) the line |
 | `namespace` | `string` | Namespace for bulk removal (e.g., "git-blame") |
 | `priority` | `number` | Priority for ordering multiple lines at same position |
@@ -703,6 +734,53 @@ openFileInSplit(split_id: number, path: string, line: number, column: number): b
 | `path` | `string` | File path to open |
 | `line` | `number` | Line number to jump to (0 for no jump) |
 | `column` | `number` | Column number to jump to (0 for no jump) |
+
+#### `spawnBackgroundProcess`
+
+Spawn a long-running background process
+Unlike spawnProcess which waits for completion, this starts a process
+in the background and returns immediately with a process ID.
+Use killProcess(id) to terminate the process later.
+Use isProcessRunning(id) to check if it's still running.
+const proc = await editor.spawnBackgroundProcess("asciinema", ["rec", "output.cast"]);
+// Later...
+await editor.killProcess(proc.process_id);
+
+```typescript
+spawnBackgroundProcess(command: string, args: string[], cwd?: string | null): Promise<BackgroundProcessResult>
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `command` | `string` | Program name (searched in PATH) or absolute path |
+| `args` | `string[]` | Command arguments (each array element is one argument) |
+| `cwd` | `string | null` (optional) | Working directory; null uses editor's cwd |
+
+**Example:**
+
+```typescript
+const proc = await editor.spawnBackgroundProcess("asciinema", ["rec", "output.cast"]);
+// Later...
+await editor.killProcess(proc.process_id);
+```
+
+#### `killProcess`
+
+Kill a background process by ID
+Sends SIGTERM to gracefully terminate the process.
+Returns true if the process was found and killed, false if not found.
+
+```typescript
+killProcess(#[bigint] process_id: number): Promise<boolean>
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `#[bigint] process_id` | `number` | - |
 
 #### `sendLspRequest`
 
