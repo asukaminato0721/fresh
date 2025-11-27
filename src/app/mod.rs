@@ -1,5 +1,6 @@
 mod async_messages;
 mod file_explorer;
+mod help;
 mod input;
 mod plugin_commands;
 mod render;
@@ -1100,6 +1101,40 @@ impl Editor {
         state.cursors.primary_mut().anchor = None;
 
         Ok(())
+    }
+
+    /// Open the built-in help manual in a read-only buffer
+    ///
+    /// If a help manual buffer already exists, switch to it instead of creating a new one.
+    pub fn open_help_manual(&mut self) {
+        // Check if help buffer already exists
+        let existing_buffer = self
+            .buffer_metadata
+            .iter()
+            .find(|(_, m)| m.display_name == help::HELP_MANUAL_BUFFER_NAME)
+            .map(|(id, _)| *id);
+
+        if let Some(buffer_id) = existing_buffer {
+            // Switch to existing help buffer
+            self.set_active_buffer(buffer_id);
+            return;
+        }
+
+        // Create new help buffer with "special" mode (has 'q' to close)
+        let buffer_id =
+            self.create_virtual_buffer(help::HELP_MANUAL_BUFFER_NAME.to_string(), "special".to_string(), true);
+
+        // Set the content
+        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            state.buffer.insert(0, help::HELP_MANUAL_CONTENT);
+            state.buffer.clear_modified();
+            state.editing_disabled = true;
+
+            // Disable line numbers for cleaner display
+            state.margins.set_line_numbers(false);
+        }
+
+        self.set_active_buffer(buffer_id);
     }
 
     /// Get text properties at the cursor position in the active buffer

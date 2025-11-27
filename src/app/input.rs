@@ -634,11 +634,7 @@ impl Editor {
                 self.update_modified_from_event_log();
             }
             Action::ShowHelp => {
-                self.dispatch_plugin_hook(
-                    "manual_page",
-                    HookArgs::ManualPage,
-                    "Manual not available (plugins not loaded)",
-                );
+                self.open_help_manual();
             }
             Action::ShowKeyboardShortcuts => {
                 let bindings = self.keybindings.get_all_bindings();

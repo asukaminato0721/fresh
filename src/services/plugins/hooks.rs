@@ -132,9 +132,6 @@ pub enum HookArgs {
     /// Request keyboard shortcuts data (key, action) for the help buffer
     KeyboardShortcuts { bindings: Vec<(String, String)> },
 
-    /// Request the manual/help page buffer
-    ManualPage,
-
     /// LSP find references response received
     LspReferences {
         /// The symbol name being queried
@@ -453,9 +450,6 @@ pub fn hook_args_to_json(args: &HookArgs) -> Result<String> {
                 .map(|(key, action)| serde_json::json!({ "key": key, "action": action }))
                 .collect();
             serde_json::json!({ "bindings": entries })
-        }
-        HookArgs::ManualPage => {
-            serde_json::json!({})
         }
         HookArgs::LspReferences { symbol, locations } => {
             let locs: Vec<serde_json::Value> = locations
