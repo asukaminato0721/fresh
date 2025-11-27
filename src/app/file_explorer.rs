@@ -24,6 +24,22 @@ fn timestamp_suffix() -> u64 {
         .as_secs()
 }
 
+/// Get the parent node ID for refreshing after file operations.
+/// If the node is a directory, the node itself is the parent. Otherwise, look up the actual parent.
+fn get_parent_node_id(
+    tree: &crate::view::file_tree::FileTree,
+    selected_id: crate::view::file_tree::NodeId,
+    node_is_dir: bool,
+) -> crate::view::file_tree::NodeId {
+    if node_is_dir {
+        selected_id
+    } else {
+        tree.get_node(selected_id)
+            .and_then(|n| n.parent)
+            .unwrap_or(selected_id)
+    }
+}
+
 impl Editor {
     pub fn file_explorer_visible(&self) -> bool {
         self.file_explorer_visible
@@ -315,15 +331,8 @@ impl Editor {
 
                         match result {
                             Ok(_) => {
-                                let parent_id = if node.is_dir() {
-                                    selected_id
-                                } else {
-                                    explorer
-                                        .tree()
-                                        .get_node(selected_id)
-                                        .and_then(|n| n.parent)
-                                        .unwrap_or(selected_id)
-                                };
+                                let parent_id =
+                                    get_parent_node_id(explorer.tree(), selected_id, node.is_dir());
                                 let tree = explorer.tree_mut();
                                 let _ = runtime.block_on(tree.refresh_node(parent_id));
                                 self.set_status_message(format!("Created {}", filename));
@@ -355,15 +364,8 @@ impl Editor {
 
                         match result {
                             Ok(_) => {
-                                let parent_id = if node.is_dir() {
-                                    selected_id
-                                } else {
-                                    explorer
-                                        .tree()
-                                        .get_node(selected_id)
-                                        .and_then(|n| n.parent)
-                                        .unwrap_or(selected_id)
-                                };
+                                let parent_id =
+                                    get_parent_node_id(explorer.tree(), selected_id, node.is_dir());
                                 let tree = explorer.tree_mut();
                                 let _ = runtime.block_on(tree.refresh_node(parent_id));
                                 self.set_status_message(format!("Created {}", dirname));
@@ -395,12 +397,9 @@ impl Editor {
 
                         match result {
                             Ok(_) => {
-                                let parent_id = explorer
-                                    .tree()
-                                    .get_node(selected_id)
-                                    .and_then(|n| n.parent)
-                                    .unwrap_or(selected_id);
-
+                                // For delete, always get the parent (the deleted item can't be refreshed)
+                                let parent_id =
+                                    get_parent_node_id(explorer.tree(), selected_id, false);
                                 let tree = explorer.tree_mut();
                                 let _ = runtime.block_on(tree.refresh_node(parent_id));
                                 self.set_status_message(format!("Deleted {}", name));
@@ -435,12 +434,9 @@ impl Editor {
 
                         match result {
                             Ok(_) => {
-                                let parent_id = explorer
-                                    .tree()
-                                    .get_node(selected_id)
-                                    .and_then(|n| n.parent)
-                                    .unwrap_or(selected_id);
-
+                                // For rename, always get the parent to refresh the directory listing
+                                let parent_id =
+                                    get_parent_node_id(explorer.tree(), selected_id, false);
                                 let tree = explorer.tree_mut();
                                 let _ = runtime.block_on(tree.refresh_node(parent_id));
                                 self.set_status_message(format!(

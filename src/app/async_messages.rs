@@ -33,6 +33,23 @@ impl Editor {
             .find(|(_, m)| m.file_uri() == Some(&parsed_uri))
             .map(|(buffer_id, _)| *buffer_id)
     }
+
+    /// Apply diagnostics to a buffer identified by URI.
+    /// Returns the buffer_id if diagnostics were applied, None if buffer not found.
+    fn apply_diagnostics_to_buffer(
+        &mut self,
+        uri: &str,
+        diagnostics: &[Diagnostic],
+    ) -> Option<BufferId> {
+        let buffer_id = self.find_buffer_by_uri(uri)?;
+        let state = self.buffers.get_mut(&buffer_id)?;
+        crate::services::lsp::diagnostics::apply_diagnostics_to_state_cached(
+            state,
+            diagnostics,
+            &self.theme,
+        );
+        Some(buffer_id)
+    }
 }
 
 // =============================================================================
@@ -42,25 +59,10 @@ impl Editor {
 impl Editor {
     /// Handle LSP diagnostics (push model)
     pub(super) fn handle_lsp_diagnostics(&mut self, uri: String, diagnostics: Vec<Diagnostic>) {
-        tracing::debug!(
-            "Processing {} LSP diagnostics for {}",
-            diagnostics.len(),
-            uri
-        );
+        tracing::debug!("Processing {} LSP diagnostics for {}", diagnostics.len(), uri);
 
-        if let Some(buffer_id) = self.find_buffer_by_uri(&uri) {
-            if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                crate::services::lsp::diagnostics::apply_diagnostics_to_state_cached(
-                    state,
-                    &diagnostics,
-                    &self.theme,
-                );
-                tracing::info!(
-                    "Applied {} diagnostics to buffer {:?}",
-                    diagnostics.len(),
-                    buffer_id
-                );
-            }
+        if let Some(buffer_id) = self.apply_diagnostics_to_buffer(&uri, &diagnostics) {
+            tracing::info!("Applied {} diagnostics to buffer {:?}", diagnostics.len(), buffer_id);
         } else {
             tracing::debug!("No buffer found for diagnostic URI: {}", uri);
         }
@@ -75,35 +77,21 @@ impl Editor {
         unchanged: bool,
     ) {
         if unchanged {
-            tracing::debug!(
-                "Diagnostics unchanged for {} (result_id: {:?})",
-                uri,
-                result_id
-            );
-        } else {
-            tracing::debug!(
-                "Processing {} pulled diagnostics for {} (result_id: {:?})",
-                diagnostics.len(),
-                uri,
-                result_id
-            );
+            tracing::debug!("Diagnostics unchanged for {} (result_id: {:?})", uri, result_id);
+            return;
+        }
 
-            if let Some(buffer_id) = self.find_buffer_by_uri(&uri) {
-                if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                    crate::services::lsp::diagnostics::apply_diagnostics_to_state_cached(
-                        state,
-                        &diagnostics,
-                        &self.theme,
-                    );
-                    tracing::info!(
-                        "Applied {} pulled diagnostics to buffer {:?}",
-                        diagnostics.len(),
-                        buffer_id
-                    );
-                }
-            } else {
-                tracing::debug!("No buffer found for pulled diagnostic URI: {}", uri);
-            }
+        tracing::debug!(
+            "Processing {} pulled diagnostics for {} (result_id: {:?})",
+            diagnostics.len(),
+            uri,
+            result_id
+        );
+
+        if let Some(buffer_id) = self.apply_diagnostics_to_buffer(&uri, &diagnostics) {
+            tracing::info!("Applied {} pulled diagnostics to buffer {:?}", diagnostics.len(), buffer_id);
+        } else {
+            tracing::debug!("No buffer found for pulled diagnostic URI: {}", uri);
         }
 
         // Store result_id for incremental updates
