@@ -1,6 +1,46 @@
 ## Release Notes
 
-### v0.1.10 (Unreleased)
+### v0.1.12 (Unreleased)
+
+#### Features
+
+* **Live Grep Plugin**: Project-wide search with ripgrep integration and live preview. Search results update as you type (minimum 2 characters), with a split pane showing file context and syntax highlighting. Press Enter to open file at location, ESC to close preview.
+
+* **Calculator Plugin**: Scientific calculator with clickable buttons and keyboard input. Supports parentheses, exponents (^), sqrt, ln, log, trig functions, pi, and e. Mouse click/hover support, copy button for results, and ANSI-colored UI with Unicode box drawing. ESC to close, DEL to clear.
+
+* **File Explorer Improvements**:
+  - Shows file sizes (KB/MB/GB) and directory entry counts
+  - Close button (×) in title bar to hide explorer
+  - Left arrow on file/collapsed directory selects parent
+  - Keybinding changed from Ctrl+B to Ctrl+E (avoids tmux conflict)
+
+* **Split View Close Buttons**: Split views now show a × button on the right side of the tab row (only when multiple splits exist) for easy closing.
+
+* **Close Last Buffer**: Closing the last buffer now creates a fresh anonymous buffer instead of blocking with "Cannot close last buffer".
+
+* **Alt+W Keybinding**: New shortcut to close the current tab.
+
+* **Command Palette Source Column**: Shows where each command comes from - "builtin" or the plugin filename - in a right-aligned column.
+
+* **Relative Buffer Names**: Buffer display names are now shown relative to the working directory.
+
+#### Bug Fixes
+
+* **File Explorer Toggle**: Fixed Ctrl+B/Ctrl+E toggle not working correctly - now properly opens/closes instead of just focusing.
+
+* **Session Restore**: Fixed file explorer not initializing when restoring a session with explorer visible.
+
+* **Open File Popup**: Hide status bar when file browser popup is shown; improved high-contrast theme colors (cyan instead of yellow).
+
+---
+
+### v0.1.11
+
+See git history for changes.
+
+---
+
+### v0.1.10
 
 #### Features
 
