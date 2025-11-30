@@ -36,11 +36,16 @@ impl Editor {
             )
         });
 
-        // Hide status bar when suggestions popup is shown
+        // Hide status bar when suggestions popup or file browser popup is shown
         let has_suggestions = self
             .prompt
             .as_ref()
             .map_or(false, |p| !p.suggestions.is_empty());
+        let has_file_browser = self
+            .prompt
+            .as_ref()
+            .map_or(false, |p| p.prompt_type == PromptType::OpenFile)
+            && self.file_open_state.is_some();
 
         // Build main vertical layout: [menu_bar, main_content, status_bar, search_options, prompt_line]
         // Status bar is hidden when suggestions popup is shown
@@ -48,7 +53,7 @@ impl Editor {
         let constraints = vec![
             Constraint::Length(1),                                       // Menu bar
             Constraint::Min(0),                                          // Main content area
-            Constraint::Length(if has_suggestions { 0 } else { 1 }), // Status bar (hidden with suggestions)
+            Constraint::Length(if has_suggestions || has_file_browser { 0 } else { 1 }), // Status bar (hidden with popups)
             Constraint::Length(if show_search_options { 1 } else { 0 }), // Search options bar
             Constraint::Length(1), // Prompt line (always reserved)
         ];
@@ -282,13 +287,11 @@ impl Editor {
             // For OpenFile prompt, render the file browser popup
             if prompt.prompt_type == PromptType::OpenFile {
                 if let Some(file_open_state) = &self.file_open_state {
-                    // Calculate popup area: position above prompt line
-                    let max_height = main_chunks[prompt_line_idx].y.saturating_sub(2).min(20);
+                    // Calculate popup area: position above prompt line, covering status bar
+                    let max_height = main_chunks[prompt_line_idx].y.saturating_sub(1).min(20);
                     let popup_area = ratatui::layout::Rect {
                         x: 0,
-                        y: main_chunks[prompt_line_idx]
-                            .y
-                            .saturating_sub(max_height + 1),
+                        y: main_chunks[prompt_line_idx].y.saturating_sub(max_height),
                         width: size.width,
                         height: max_height,
                     };
@@ -343,8 +346,8 @@ impl Editor {
         let keybindings_cloned = self.keybindings.clone(); // Clone the keybindings
         let chord_state_cloned = self.chord_state.clone(); // Clone the chord state
 
-        // Render status bar (hidden when suggestions popup is shown)
-        if !has_suggestions {
+        // Render status bar (hidden when suggestions or file browser popup is shown)
+        if !has_suggestions && !has_file_browser {
             StatusBarRenderer::render_status_bar(
                 frame,
                 main_chunks[status_bar_idx],

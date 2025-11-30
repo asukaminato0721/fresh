@@ -707,7 +707,7 @@ impl Theme {
             prompt_selection_fg: Color::White,
             prompt_selection_bg: Color::Rgb(0, 100, 200), // Blue selection
 
-            popup_border_fg: Color::Yellow,
+            popup_border_fg: Color::LightCyan,
             popup_bg: Color::Black,
             popup_selection_bg: Color::Rgb(0, 100, 200),
             popup_text_fg: Color::White,
@@ -717,7 +717,7 @@ impl Theme {
 
             help_bg: Color::Black,
             help_fg: Color::White,
-            help_key_fg: Color::Yellow,
+            help_key_fg: Color::LightCyan,
             help_separator_fg: Color::White,
 
             help_indicator_fg: Color::Red,
