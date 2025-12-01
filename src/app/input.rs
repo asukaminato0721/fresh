@@ -653,7 +653,10 @@ impl Editor {
                 let after_idx = self.active_event_log().current_index();
                 tracing::debug!(
                     "Undo: before_idx={}, after_idx={}, can_undo={}, events_count={}",
-                    before_idx, after_idx, can_undo, events.len()
+                    before_idx,
+                    after_idx,
+                    can_undo,
+                    events.len()
                 );
                 // Apply all inverse events collected during undo
                 for event in &events {
@@ -1454,7 +1457,8 @@ impl Editor {
                             let before_len = self.active_event_log().len();
                             tracing::debug!(
                                 "SaveFileAs BEFORE: event_log index={}, len={}",
-                                before_idx, before_len
+                                before_idx,
+                                before_len
                             );
 
                             // Save the buffer to the new file

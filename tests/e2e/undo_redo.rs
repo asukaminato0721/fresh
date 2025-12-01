@@ -327,7 +327,7 @@ fn test_undo_after_save_as_marks_buffer_unmodified() {
 }
 
 /// Test that undo can go past the save point
-/// 
+///
 /// Scenario:
 /// 1. Open file with "initial"
 /// 2. Edit to "initialX"
@@ -354,12 +354,16 @@ fn test_undo_past_save_point() {
     assert!(harness.editor().active_state().buffer.is_modified());
 
     // Step 3: Save
-    harness.send_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
     harness.render().unwrap();
-    
+
     // Verify saved
-    assert!(!harness.editor().active_state().buffer.is_modified(), 
-            "Should not be modified after save");
+    assert!(
+        !harness.editor().active_state().buffer.is_modified(),
+        "Should not be modified after save"
+    );
 
     // Step 4: Edit to "initialXY"
     harness.type_text("Y").unwrap();
@@ -367,24 +371,32 @@ fn test_undo_past_save_point() {
     assert!(harness.editor().active_state().buffer.is_modified());
 
     // Step 5: Undo to "initialX" (at save point)
-    harness.send_key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+    harness
+        .send_key(KeyCode::Char('z'), KeyModifiers::CONTROL)
+        .unwrap();
     harness.assert_buffer_content("initialX");
-    assert!(!harness.editor().active_state().buffer.is_modified(),
-            "Should not be modified at save point");
+    assert!(
+        !harness.editor().active_state().buffer.is_modified(),
+        "Should not be modified at save point"
+    );
 
     // Step 6: Undo past save point - THIS IS THE KEY TEST
-    harness.send_key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
-    
+    harness
+        .send_key(KeyCode::Char('z'), KeyModifiers::CONTROL)
+        .unwrap();
+
     // Should be back to "initial"
     harness.assert_buffer_content("initial");
-    
+
     // Buffer should now be modified (we're before the save point)
-    assert!(harness.editor().active_state().buffer.is_modified(),
-            "Should be modified after undoing past save point");
+    assert!(
+        harness.editor().active_state().buffer.is_modified(),
+        "Should be modified after undoing past save point"
+    );
 }
 
 /// Test undoing all the way back to empty buffer after Save As
-/// 
+///
 /// Scenario:
 /// 1. Create new buffer (empty)
 /// 2. Type "hello"
@@ -407,15 +419,21 @@ fn test_undo_to_empty_after_save_as() {
     harness.assert_buffer_content("hello");
 
     // Step 3: Save As...
-    harness.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
     harness.render().unwrap();
     harness.type_text("Save File As").unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.render().unwrap();
 
     let save_path = temp_dir.path().join("test_undo_empty.txt");
     harness.type_text(save_path.to_str().unwrap()).unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.render().unwrap();
 
     // Verify saved
@@ -424,19 +442,30 @@ fn test_undo_to_empty_after_save_as() {
 
     // Record event log state immediately after Save As
     let event_log_len_after_save = harness.editor().active_event_log().len();
-    println!("Immediately after Save As: event_log len={}", event_log_len_after_save);
+    println!(
+        "Immediately after Save As: event_log len={}",
+        event_log_len_after_save
+    );
 
     // The event log should have all 5 events from typing "hello"
-    assert_eq!(event_log_len_after_save, 5, "Event log should have 5 events immediately after Save As");
+    assert_eq!(
+        event_log_len_after_save, 5,
+        "Event log should have 5 events immediately after Save As"
+    );
 
     // Simulate what happens when the file watcher detects the file change.
     // This is the scenario that was causing the bug: auto-revert would clear
     // the event log even when the file content hadn't actually changed.
-    harness.editor_mut().handle_file_changed(save_path.to_str().unwrap());
+    harness
+        .editor_mut()
+        .handle_file_changed(save_path.to_str().unwrap());
 
     // Check event log state after file change notification
     let event_log_len = harness.editor().active_event_log().len();
-    println!("After file change notification: event_log len={}", event_log_len);
+    println!(
+        "After file change notification: event_log len={}",
+        event_log_len
+    );
 
     // The event log should STILL have all 5 events - revert should be skipped
     // when the file content matches what's already in the buffer
@@ -451,14 +480,20 @@ fn test_undo_to_empty_after_save_as() {
     // First undo back to save point
     for i in 0..20 {
         let content = harness.get_buffer_content();
-        println!("Undo iteration {}: content='{}', modified={}", 
-                 i, content, harness.editor().active_state().buffer.is_modified());
-        
+        println!(
+            "Undo iteration {}: content='{}', modified={}",
+            i,
+            content,
+            harness.editor().active_state().buffer.is_modified()
+        );
+
         if content.is_empty() {
             break;
         }
-        
-        harness.send_key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+
+        harness
+            .send_key(KeyCode::Char('z'), KeyModifiers::CONTROL)
+            .unwrap();
     }
 
     // Should be back to empty
