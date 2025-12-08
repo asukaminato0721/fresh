@@ -652,8 +652,36 @@
     },
     {
       "key": "F12",
+      "modifiers": [],
+      "action": "lsp_goto_definition",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "key": "F12",
       "modifiers": ["shift"],
       "action": "lsp_references",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "key": ".",
+      "modifiers": ["ctrl"],
+      "action": "lsp_code_actions",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "key": " ",
+      "modifiers": ["ctrl", "shift"],
+      "action": "lsp_signature_help",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "key": "k",
+      "modifiers": ["alt"],
+      "action": "lsp_hover",
       "args": {},
       "when": "normal"
     },
@@ -796,13 +824,6 @@
       "key": "F5",
       "modifiers": [],
       "action": "stop_macro_recording",
-      "args": {},
-      "when": "normal"
-    },
-    {
-      "key": "F12",
-      "modifiers": [],
-      "action": "play_last_macro",
       "args": {},
       "when": "normal"
     },
