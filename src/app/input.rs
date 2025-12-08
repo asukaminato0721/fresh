@@ -2361,7 +2361,9 @@ impl Editor {
                     && row >= content_rect.y
                     && row < content_rect.y + content_rect.height
             })
-            .map(|(split_id, buffer_id, content_rect, _, _, _)| (*split_id, *buffer_id, *content_rect));
+            .map(|(split_id, buffer_id, content_rect, _, _, _)| {
+                (*split_id, *buffer_id, *content_rect)
+            });
 
         let Some((split_id, buffer_id, content_rect)) = split_info else {
             // Mouse is not over editor content - clear hover state and dismiss popup
@@ -2374,7 +2376,11 @@ impl Editor {
         };
 
         // Get cached mappings and gutter width for this split
-        let cached_mappings = self.cached_layout.view_line_mappings.get(&split_id).cloned();
+        let cached_mappings = self
+            .cached_layout
+            .view_line_mappings
+            .get(&split_id)
+            .cloned();
         let gutter_width = self
             .buffers
             .get(&buffer_id)

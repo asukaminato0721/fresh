@@ -1016,8 +1016,7 @@ impl Editor {
             return false;
         }
 
-        let hover_delay =
-            std::time::Duration::from_millis(self.config.editor.mouse_hover_delay_ms);
+        let hover_delay = std::time::Duration::from_millis(self.config.editor.mouse_hover_delay_ms);
 
         // Get hover state without borrowing self
         let hover_info = match self.mouse_state.lsp_hover_state {

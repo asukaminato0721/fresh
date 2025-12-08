@@ -1410,9 +1410,7 @@ fn test_mouse_hover_clears_when_leaving_editor() {
     let (content_first_row, _) = harness.content_area_rows();
 
     // Move mouse over text
-    harness
-        .mouse_move(12, content_first_row as u16)
-        .unwrap();
+    harness.mouse_move(12, content_first_row as u16).unwrap();
 
     assert!(
         harness.editor().get_mouse_hover_state().is_some(),
@@ -1440,9 +1438,7 @@ fn test_mouse_hover_updates_on_position_change() {
     let (content_first_row, _) = harness.content_area_rows();
 
     // Move to first position
-    harness
-        .mouse_move(12, content_first_row as u16)
-        .unwrap();
+    harness.mouse_move(12, content_first_row as u16).unwrap();
 
     let state1 = harness.editor().get_mouse_hover_state();
     assert!(state1.is_some(), "Should have hover state");
@@ -1476,9 +1472,7 @@ fn test_mouse_hover_clears_in_gutter() {
     let (content_first_row, _) = harness.content_area_rows();
 
     // Move to text area first
-    harness
-        .mouse_move(15, content_first_row as u16)
-        .unwrap();
+    harness.mouse_move(15, content_first_row as u16).unwrap();
 
     assert!(
         harness.editor().get_mouse_hover_state().is_some(),
@@ -1506,9 +1500,7 @@ fn test_force_check_mouse_hover() {
     let (content_first_row, _) = harness.content_area_rows();
 
     // Move to text area
-    harness
-        .mouse_move(12, content_first_row as u16)
-        .unwrap();
+    harness.mouse_move(12, content_first_row as u16).unwrap();
 
     assert!(
         harness.editor().get_mouse_hover_state().is_some(),

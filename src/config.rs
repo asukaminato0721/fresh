@@ -1151,36 +1151,28 @@ impl Config {
                         label: "Show Hover Info".to_string(),
                         action: "lsp_hover".to_string(),
                         args: HashMap::new(),
-                        when: Some(
-                            crate::view::ui::context_keys::LSP_AVAILABLE.to_string(),
-                        ),
+                        when: Some(crate::view::ui::context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
                     },
                     MenuItem::Action {
                         label: "Go to Definition".to_string(),
                         action: "lsp_goto_definition".to_string(),
                         args: HashMap::new(),
-                        when: Some(
-                            crate::view::ui::context_keys::LSP_AVAILABLE.to_string(),
-                        ),
+                        when: Some(crate::view::ui::context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
                     },
                     MenuItem::Action {
                         label: "Find References".to_string(),
                         action: "lsp_references".to_string(),
                         args: HashMap::new(),
-                        when: Some(
-                            crate::view::ui::context_keys::LSP_AVAILABLE.to_string(),
-                        ),
+                        when: Some(crate::view::ui::context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
                     },
                     MenuItem::Action {
                         label: "Rename Symbol".to_string(),
                         action: "lsp_rename".to_string(),
                         args: HashMap::new(),
-                        when: Some(
-                            crate::view::ui::context_keys::LSP_AVAILABLE.to_string(),
-                        ),
+                        when: Some(crate::view::ui::context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
                     },
                     MenuItem::Separator { separator: true },
@@ -1188,27 +1180,21 @@ impl Config {
                         label: "Show Completions".to_string(),
                         action: "lsp_completion".to_string(),
                         args: HashMap::new(),
-                        when: Some(
-                            crate::view::ui::context_keys::LSP_AVAILABLE.to_string(),
-                        ),
+                        when: Some(crate::view::ui::context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
                     },
                     MenuItem::Action {
                         label: "Show Signature Help".to_string(),
                         action: "lsp_signature_help".to_string(),
                         args: HashMap::new(),
-                        when: Some(
-                            crate::view::ui::context_keys::LSP_AVAILABLE.to_string(),
-                        ),
+                        when: Some(crate::view::ui::context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
                     },
                     MenuItem::Action {
                         label: "Code Actions".to_string(),
                         action: "lsp_code_actions".to_string(),
                         args: HashMap::new(),
-                        when: Some(
-                            crate::view::ui::context_keys::LSP_AVAILABLE.to_string(),
-                        ),
+                        when: Some(crate::view::ui::context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
                     },
                     MenuItem::Separator { separator: true },
@@ -1216,9 +1202,7 @@ impl Config {
                         label: "Toggle Inlay Hints".to_string(),
                         action: "toggle_inlay_hints".to_string(),
                         args: HashMap::new(),
-                        when: Some(
-                            crate::view::ui::context_keys::LSP_AVAILABLE.to_string(),
-                        ),
+                        when: Some(crate::view::ui::context_keys::LSP_AVAILABLE.to_string()),
                         checkbox: None,
                     },
                     MenuItem::Action {
@@ -1226,9 +1210,7 @@ impl Config {
                         action: "toggle_mouse_hover".to_string(),
                         args: HashMap::new(),
                         when: None,
-                        checkbox: Some(
-                            crate::view::ui::context_keys::MOUSE_HOVER.to_string(),
-                        ),
+                        checkbox: Some(crate::view::ui::context_keys::MOUSE_HOVER.to_string()),
                     },
                     MenuItem::Separator { separator: true },
                     MenuItem::Action {
