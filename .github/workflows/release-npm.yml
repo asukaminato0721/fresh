@@ -5,6 +5,11 @@ name: Release npm
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -16,10 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Extract version from Cargo.toml
+      - name: Determine version
         id: version
         run: |
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Publishing npm package for version: $VERSION"
 

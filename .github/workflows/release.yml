@@ -537,7 +537,7 @@ jobs:
   publish-npm:
     needs: [plan, release]
     if: ${{ needs.plan.outputs.publishing == 'true' && needs.plan.outputs.is_prerelease != 'true' }}
-    uses: ./.github/workflows/npm-publish.yml
+    uses: ./.github/workflows/release-npm.yml
     with:
       version: ${{ needs.plan.outputs.version }}
     secrets: inherit
