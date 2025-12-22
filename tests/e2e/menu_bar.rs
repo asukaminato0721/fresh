@@ -447,15 +447,11 @@ fn test_copy_with_formatting_submenu_shows_themes() {
 
     // Navigate down to "Copy with Formatting" submenu
     // Edit menu items: Undo(0), Redo(1), [separator], Cut, Copy, Copy with Formatting, ...
-    // Separators are skipped during navigation
-    // We need to find the submenu - let's navigate and check each step
+    // Separators AND disabled items are skipped during navigation
+    // Without a selection, Cut and Copy are disabled, so:
     // Down 1: Undo -> Redo
     harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-    // Down 2: Redo -> Cut (skips separator)
-    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-    // Down 3: Cut -> Copy
-    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-    // Down 4: Copy -> Copy with Formatting
+    // Down 2: Redo -> Copy with Formatting (skips separator, Cut, Copy - all disabled)
     harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
     harness.render().unwrap();
 
