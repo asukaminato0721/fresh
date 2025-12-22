@@ -618,4 +618,3 @@ fn test_cut_copy_disabled_without_selection() {
         screen_after
     );
 }
-
