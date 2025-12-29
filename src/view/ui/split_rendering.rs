@@ -4361,4 +4361,93 @@ mod tests {
         assert_eq!(text_tokens.len(), 1, "Should have exactly one Text token");
         assert_eq!(text_tokens[0], short_text, "Text content should be unchanged");
     }
+
+    /// End-to-end test: verify large single-line content with sequential markers
+    /// is correctly chunked, wrapped, and all data is preserved through the pipeline.
+    #[test]
+    fn test_large_single_line_sequential_data_preserved() {
+        use crate::services::plugins::api::{ViewTokenWire, ViewTokenWireKind};
+        use crate::view::ui::view_pipeline::ViewLineIterator;
+
+        // Create content with sequential markers that span multiple chunks
+        // Format: "[00001][00002]..." - each marker is 7 chars
+        let num_markers = 5_000; // ~35KB, enough to test chunking at 10K char intervals
+        let content: String = (1..=num_markers)
+            .map(|i| format!("[{:05}]", i))
+            .collect();
+
+        // Create tokens simulating what build_base_tokens would produce
+        let tokens = vec![
+            ViewTokenWire {
+                kind: ViewTokenWireKind::Text(content.clone()),
+                source_offset: Some(0),
+                style: None,
+            },
+            ViewTokenWire {
+                kind: ViewTokenWireKind::Newline,
+                source_offset: Some(content.len()),
+                style: None,
+            },
+        ];
+
+        // Apply safety wrapping (simulating line_wrap=false with MAX_SAFE_LINE_WIDTH)
+        let wrapped = SplitRenderer::apply_wrapping_transform(tokens, MAX_SAFE_LINE_WIDTH, 0);
+
+        // Convert to ViewLines
+        let view_lines: Vec<_> = ViewLineIterator::new(&wrapped, false, false, 4).collect();
+
+        // Reconstruct content from ViewLines
+        let mut reconstructed = String::new();
+        for line in &view_lines {
+            // Skip the trailing newline character in each line's text
+            let text = line.text.trim_end_matches('\n');
+            reconstructed.push_str(text);
+        }
+
+        // Verify all content is preserved
+        assert_eq!(
+            reconstructed.len(),
+            content.len(),
+            "Reconstructed content length should match original"
+        );
+
+        // Verify sequential markers are all present
+        for i in 1..=num_markers {
+            let marker = format!("[{:05}]", i);
+            assert!(
+                reconstructed.contains(&marker),
+                "Missing marker {} after pipeline",
+                marker
+            );
+        }
+
+        // Verify order is preserved by checking sample positions
+        let pos_100 = reconstructed.find("[00100]").expect("Should find [00100]");
+        let pos_1000 = reconstructed.find("[01000]").expect("Should find [01000]");
+        let pos_3000 = reconstructed.find("[03000]").expect("Should find [03000]");
+        assert!(
+            pos_100 < pos_1000 && pos_1000 < pos_3000,
+            "Markers should be in sequential order: {} < {} < {}",
+            pos_100,
+            pos_1000,
+            pos_3000
+        );
+
+        // Verify we got multiple visual lines (content was wrapped)
+        assert!(
+            view_lines.len() >= 3,
+            "35KB content should produce multiple visual lines at 10K width, got {}",
+            view_lines.len()
+        );
+
+        // Verify each ViewLine is bounded in size (memory safety check)
+        for (i, line) in view_lines.iter().enumerate() {
+            assert!(
+                line.text.len() <= MAX_SAFE_LINE_WIDTH + 10, // +10 for newline and rounding
+                "ViewLine {} exceeds safe width: {} chars",
+                i,
+                line.text.len()
+            );
+        }
+    }
 }

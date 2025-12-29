@@ -610,4 +610,88 @@ mod tests {
             "Iterator at byte 10 should be at line start already"
         );
     }
+
+    /// Test that large single-line files are chunked correctly and all data is preserved.
+    /// This verifies the MAX_LINE_BYTES limit works correctly with sequential data.
+    #[test]
+    fn test_line_iterator_large_single_line_chunked_correctly() {
+        // Create content with sequential markers: "[00001][00002][00003]..."
+        // Each marker is 7 bytes, so we can verify order and completeness
+        let num_markers = 20_000; // ~140KB of data, spans multiple chunks
+        let content: String = (1..=num_markers)
+            .map(|i| format!("[{:05}]", i))
+            .collect();
+
+        let content_bytes = content.as_bytes().to_vec();
+        let content_len = content_bytes.len();
+        let mut buffer = TextBuffer::from_bytes(content_bytes);
+
+        // Iterate and collect all chunks
+        let mut iter = buffer.line_iterator(0, 200);
+        let mut all_content = String::new();
+        let mut chunk_count = 0;
+        let mut chunk_sizes = Vec::new();
+
+        while let Some((pos, chunk)) = iter.next() {
+            // Verify chunk starts at expected position
+            assert_eq!(
+                pos,
+                all_content.len(),
+                "Chunk {} should start at byte {}",
+                chunk_count,
+                all_content.len()
+            );
+
+            // Verify chunk is within MAX_LINE_BYTES limit
+            assert!(
+                chunk.len() <= super::MAX_LINE_BYTES,
+                "Chunk {} exceeds MAX_LINE_BYTES: {} > {}",
+                chunk_count,
+                chunk.len(),
+                super::MAX_LINE_BYTES
+            );
+
+            chunk_sizes.push(chunk.len());
+            all_content.push_str(&chunk);
+            chunk_count += 1;
+        }
+
+        // Verify all content was retrieved
+        assert_eq!(
+            all_content.len(),
+            content_len,
+            "Total content length should match original"
+        );
+        assert_eq!(
+            all_content, content,
+            "Reconstructed content should match original"
+        );
+
+        // With 140KB of data and 100KB limit, should have 2 chunks
+        assert!(
+            chunk_count >= 2,
+            "Should have multiple chunks for {}KB content (got {})",
+            content_len / 1024,
+            chunk_count
+        );
+
+        // Verify sequential markers are all present and in order
+        for i in 1..=num_markers {
+            let marker = format!("[{:05}]", i);
+            assert!(
+                all_content.contains(&marker),
+                "Missing marker {} in reconstructed content",
+                marker
+            );
+        }
+
+        // Verify markers are in correct order by checking a sample
+        let pos_1000 = all_content.find("[01000]").unwrap();
+        let pos_2000 = all_content.find("[02000]").unwrap();
+        let pos_10000 = all_content.find("[10000]").unwrap();
+        assert!(
+            pos_1000 < pos_2000 && pos_2000 < pos_10000,
+            "Markers should be in sequential order"
+        );
+    }
 }
