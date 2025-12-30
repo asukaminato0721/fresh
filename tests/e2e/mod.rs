@@ -7,6 +7,7 @@ pub mod buffer_lifecycle;
 pub mod buffer_settings_commands;
 pub mod case_conversion;
 pub mod command_palette;
+pub mod crash_repro;
 pub mod crlf_rendering;
 pub mod document_model;
 pub mod emacs_actions;
