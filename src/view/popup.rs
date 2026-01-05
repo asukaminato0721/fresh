@@ -383,6 +383,37 @@ impl Popup {
         (total, visible, self.scroll_offset)
     }
 
+    /// Find the link URL at a given relative position within the popup content area.
+    /// `relative_col` and `relative_row` are relative to the inner content area (after borders).
+    /// Returns None if:
+    /// - The popup doesn't contain markdown content
+    /// - The position doesn't have a link
+    pub fn link_at_position(&self, relative_col: usize, relative_row: usize) -> Option<String> {
+        let PopupContent::Markdown(styled_lines) = &self.content else {
+            return None;
+        };
+
+        // Calculate the content width for wrapping
+        let border_width = if self.bordered { 2 } else { 0 };
+        let scrollbar_reserved = 2;
+        let content_width = self
+            .width
+            .saturating_sub(border_width)
+            .saturating_sub(scrollbar_reserved) as usize;
+
+        // Wrap the styled lines
+        let wrapped_lines = wrap_styled_lines(styled_lines, content_width);
+
+        // Account for scroll offset
+        let line_index = self.scroll_offset + relative_row;
+
+        // Get the line at this position
+        let line = wrapped_lines.get(line_index)?;
+
+        // Find the link at the column position
+        line.link_at_column(relative_col).map(|s| s.to_string())
+    }
+
     /// Get the height of the description area (including blank line separator)
     /// Returns 0 if there is no description.
     pub fn description_height(&self) -> u16 {

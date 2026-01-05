@@ -1014,24 +1014,48 @@ impl Editor {
                 && col < inner_rect.x + inner_rect.width
                 && row >= inner_rect.y
                 && row < inner_rect.y + inner_rect.height
-                && *num_items > 0
             {
-                // Calculate which item was clicked
+                // Calculate relative position within the popup content area
+                let relative_col = (col - inner_rect.x) as usize;
                 let relative_row = (row - inner_rect.y) as usize;
-                let item_idx = scroll_offset + relative_row;
 
-                if item_idx < *num_items {
-                    // Select and execute the clicked item
-                    let state = self.active_state_mut();
-                    if let Some(popup) = state.popups.top_mut() {
-                        if let crate::view::popup::PopupContent::List { items: _, selected } =
-                            &mut popup.content
-                        {
-                            *selected = item_idx;
-                        }
+                // First, check if this is a markdown popup with a link
+                let link_url = {
+                    let state = self.active_state();
+                    state
+                        .popups
+                        .top()
+                        .and_then(|popup| popup.link_at_position(relative_col, relative_row))
+                };
+
+                if let Some(url) = link_url {
+                    // Open the URL in the default browser
+                    #[cfg(feature = "runtime")]
+                    if let Err(e) = open::that(&url) {
+                        self.set_status_message(format!("Failed to open URL: {}", e));
+                    } else {
+                        self.set_status_message(format!("Opening: {}", url));
                     }
-                    // Execute the popup selection (same as pressing Enter)
-                    return self.handle_action(Action::PopupConfirm);
+                    return Ok(());
+                }
+
+                // For list popups, handle item selection
+                if *num_items > 0 {
+                    let item_idx = scroll_offset + relative_row;
+
+                    if item_idx < *num_items {
+                        // Select and execute the clicked item
+                        let state = self.active_state_mut();
+                        if let Some(popup) = state.popups.top_mut() {
+                            if let crate::view::popup::PopupContent::List { items: _, selected } =
+                                &mut popup.content
+                            {
+                                *selected = item_idx;
+                            }
+                        }
+                        // Execute the popup selection (same as pressing Enter)
+                        return self.handle_action(Action::PopupConfirm);
+                    }
                 }
             }
         }

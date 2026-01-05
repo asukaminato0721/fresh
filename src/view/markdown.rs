@@ -123,11 +123,11 @@ pub fn wrap_styled_lines(lines: &[StyledLine], max_width: usize) -> Vec<StyledLi
             // Line fits, no wrapping needed
             result.push(line.clone());
         } else {
-            // Flatten spans into styled segments (word + spaces)
-            let mut segments: Vec<(String, Style)> = Vec::new();
+            // Flatten spans into styled segments (word + spaces), preserving link URLs
+            let mut segments: Vec<(String, Style, Option<String>)> = Vec::new();
 
             for span in &line.spans {
-                // Split span text into words and spaces while preserving style
+                // Split span text into words and spaces while preserving style and link
                 let mut chars = span.text.chars().peekable();
                 while chars.peek().is_some() {
                     let mut segment = String::new();
@@ -151,7 +151,7 @@ pub fn wrap_styled_lines(lines: &[StyledLine], max_width: usize) -> Vec<StyledLi
                     }
 
                     if !segment.is_empty() {
-                        segments.push((segment, span.style));
+                        segments.push((segment, span.style, span.link_url.clone()));
                     }
                 }
             }
@@ -160,12 +160,12 @@ pub fn wrap_styled_lines(lines: &[StyledLine], max_width: usize) -> Vec<StyledLi
             let mut current_line = StyledLine::new();
             let mut current_width = 0;
 
-            for (segment, style) in segments {
+            for (segment, style, link_url) in segments {
                 let seg_width = unicode_width::UnicodeWidthStr::width(segment.as_str());
 
                 if current_width + seg_width <= max_width {
                     // Segment fits
-                    current_line.push(segment, style);
+                    current_line.push_with_link(segment, style, link_url);
                     current_width += seg_width;
                 } else if current_width == 0 {
                     // Segment too long for a line, must break mid-word
@@ -197,7 +197,7 @@ pub fn wrap_styled_lines(lines: &[StyledLine], max_width: usize) -> Vec<StyledLi
                             .map(|(i, _)| i)
                             .unwrap_or(remaining.len());
                         let (take, rest) = remaining.split_at(byte_idx);
-                        current_line.push(take.to_string(), style);
+                        current_line.push_with_link(take.to_string(), style, link_url.clone());
                         current_width += take_width;
                         remaining = rest;
                     }
@@ -206,7 +206,7 @@ pub fn wrap_styled_lines(lines: &[StyledLine], max_width: usize) -> Vec<StyledLi
                     result.push(current_line);
                     current_line = StyledLine::new();
                     // For styled content (code, etc.), preserve spacing
-                    current_line.push(segment, style);
+                    current_line.push_with_link(segment, style, link_url);
                     current_width = seg_width;
                 }
             }
@@ -225,6 +225,8 @@ pub fn wrap_styled_lines(lines: &[StyledLine], max_width: usize) -> Vec<StyledLi
 pub struct StyledSpan {
     pub text: String,
     pub style: Style,
+    /// Optional URL if this span is part of a link
+    pub link_url: Option<String>,
 }
 
 /// A line of styled spans for markdown rendering
@@ -239,7 +241,35 @@ impl StyledLine {
     }
 
     pub fn push(&mut self, text: String, style: Style) {
-        self.spans.push(StyledSpan { text, style });
+        self.spans.push(StyledSpan {
+            text,
+            style,
+            link_url: None,
+        });
+    }
+
+    /// Push a span with an optional link URL
+    pub fn push_with_link(&mut self, text: String, style: Style, link_url: Option<String>) {
+        self.spans.push(StyledSpan {
+            text,
+            style,
+            link_url,
+        });
+    }
+
+    /// Find the link URL at the given column position (0-indexed)
+    /// Returns None if there's no link at that position
+    pub fn link_at_column(&self, column: usize) -> Option<&str> {
+        let mut current_col = 0;
+        for span in &self.spans {
+            let span_width = unicode_width::UnicodeWidthStr::width(span.text.as_str());
+            if column >= current_col && column < current_col + span_width {
+                // Found the span at this column
+                return span.link_url.as_deref();
+            }
+            current_col += span_width;
+        }
+        None
     }
 }
 
@@ -330,6 +360,8 @@ pub fn parse_markdown(
     let mut style_stack: Vec<Style> = vec![Style::default()];
     let mut in_code_block = false;
     let mut code_block_lang = String::new();
+    // Track current link URL (if inside a link)
+    let mut current_link_url: Option<String> = None;
 
     for event in parser {
         match event {
@@ -363,7 +395,14 @@ pub fn parse_markdown(
                         style_stack
                             .push(current.add_modifier(Modifier::BOLD).fg(theme.help_key_fg));
                     }
-                    Tag::Link { .. } | Tag::Image { .. } => {
+                    Tag::Link { dest_url, .. } => {
+                        let current = *style_stack.last().unwrap_or(&Style::default());
+                        style_stack
+                            .push(current.add_modifier(Modifier::UNDERLINED).fg(Color::Cyan));
+                        // Store the link URL for text spans inside this link
+                        current_link_url = Some(dest_url.to_string());
+                    }
+                    Tag::Image { .. } => {
                         let current = *style_stack.last().unwrap_or(&Style::default());
                         style_stack
                             .push(current.add_modifier(Modifier::UNDERLINED).fg(Color::Cyan));
@@ -391,9 +430,13 @@ pub fn parse_markdown(
                     | TagEnd::Emphasis
                     | TagEnd::Strikethrough
                     | TagEnd::Heading(_)
-                    | TagEnd::Link
                     | TagEnd::Image => {
                         style_stack.pop();
+                    }
+                    TagEnd::Link => {
+                        style_stack.pop();
+                        // Clear link URL when exiting the link
+                        current_link_url = None;
                     }
                     TagEnd::CodeBlock => {
                         in_code_block = false;
@@ -475,7 +518,12 @@ pub fn parse_markdown(
                         }
                         if !part.is_empty() {
                             if let Some(line) = lines.last_mut() {
-                                line.push(part.to_string(), current_style);
+                                // Include link URL if we're inside a link
+                                line.push_with_link(
+                                    part.to_string(),
+                                    current_style,
+                                    current_link_url.clone(),
+                                );
                             }
                         }
                     }
@@ -744,6 +792,73 @@ mod tests {
             "Link should be underlined"
         );
         assert_eq!(style.fg, Some(Color::Cyan), "Link should be cyan");
+    }
+
+    #[test]
+    fn test_link_url_stored() {
+        let theme = Theme::dark();
+        let lines = parse_markdown("Click [here](https://example.com) for more", &theme, None);
+
+        assert_eq!(lines.len(), 1);
+
+        // The "here" span should have the link URL stored
+        let link_span = lines[0].spans.iter().find(|s| s.text == "here");
+        assert!(link_span.is_some(), "Should have 'here' span");
+        assert_eq!(
+            link_span.unwrap().link_url,
+            Some("https://example.com".to_string()),
+            "Link span should store the URL"
+        );
+
+        // Non-link spans should not have a URL
+        let click_span = lines[0].spans.iter().find(|s| s.text == "Click ");
+        assert!(click_span.is_some(), "Should have 'Click ' span");
+        assert_eq!(
+            click_span.unwrap().link_url,
+            None,
+            "Non-link span should not have URL"
+        );
+    }
+
+    #[test]
+    fn test_link_at_column() {
+        let theme = Theme::dark();
+        let lines = parse_markdown("Click [here](https://example.com) for more", &theme, None);
+
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+
+        // "Click " is 6 chars (0-5), "here" is 4 chars (6-9), " for more" is after
+        // Column 0-5: "Click " - no link
+        assert_eq!(
+            line.link_at_column(0),
+            None,
+            "Column 0 should not be a link"
+        );
+        assert_eq!(
+            line.link_at_column(5),
+            None,
+            "Column 5 should not be a link"
+        );
+
+        // Column 6-9: "here" - link
+        assert_eq!(
+            line.link_at_column(6),
+            Some("https://example.com"),
+            "Column 6 should be the link"
+        );
+        assert_eq!(
+            line.link_at_column(9),
+            Some("https://example.com"),
+            "Column 9 should be the link"
+        );
+
+        // Column 10+: " for more" - no link
+        assert_eq!(
+            line.link_at_column(10),
+            None,
+            "Column 10 should not be a link"
+        );
     }
 
     #[test]
