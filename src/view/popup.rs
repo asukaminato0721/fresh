@@ -734,15 +734,36 @@ impl Popup {
             PopupContent::Markdown(styled_lines) => {
                 // Word-wrap styled lines to fit content area width
                 let wrapped_lines = wrap_styled_lines(styled_lines, content_area.width as usize);
+
+                // Collect link positions for OSC 8 hyperlink rendering
+                // Each entry: (line_index, col_start, col_end, url)
+                let mut link_positions: Vec<(usize, usize, usize, String)> = Vec::new();
+
                 let visible_lines: Vec<Line> = wrapped_lines
                     .iter()
                     .skip(self.scroll_offset)
                     .take(content_area.height as usize)
-                    .map(|styled_line| {
+                    .enumerate()
+                    .map(|(line_idx, styled_line)| {
+                        let mut col = 0usize;
                         let spans: Vec<Span> = styled_line
                             .spans
                             .iter()
-                            .map(|s| Span::styled(s.text.clone(), s.style))
+                            .map(|s| {
+                                let span_width =
+                                    unicode_width::UnicodeWidthStr::width(s.text.as_str());
+                                // Track link positions for OSC 8 rendering
+                                if let Some(url) = &s.link_url {
+                                    link_positions.push((
+                                        line_idx,
+                                        col,
+                                        col + span_width,
+                                        url.clone(),
+                                    ));
+                                }
+                                col += span_width;
+                                Span::styled(s.text.clone(), s.style)
+                            })
                             .collect();
                         Line::from(spans)
                     })
@@ -750,6 +771,27 @@ impl Popup {
 
                 let paragraph = Paragraph::new(visible_lines);
                 frame.render_widget(paragraph, content_area);
+
+                // Apply OSC 8 hyperlinks to the buffer cells
+                // This follows the approach from ratatui's hyperlink example
+                let buffer = frame.buffer_mut();
+                for (line_idx, col_start, col_end, url) in link_positions {
+                    let y = content_area.y + line_idx as u16;
+                    if y >= content_area.y + content_area.height {
+                        continue;
+                    }
+                    for col in col_start..col_end {
+                        let x = content_area.x + col as u16;
+                        if x >= content_area.x + content_area.width {
+                            break;
+                        }
+                        let cell = &mut buffer[(x, y)];
+                        let symbol = cell.symbol().to_string();
+                        // Wrap each character with OSC 8 escape sequence
+                        let hyperlink = format!("\x1B]8;;{}\x07{}\x1B]8;;\x07", url, symbol);
+                        cell.set_symbol(hyperlink.as_str());
+                    }
+                }
             }
             PopupContent::List { items, selected } => {
                 let list_items: Vec<ListItem> = items
