@@ -1164,7 +1164,7 @@ pub fn get_all_commands() -> Vec<Command> {
             name: t!("cmd.open_terminal").to_string(),
             description: t!("cmd.open_terminal_desc").to_string(),
             action: Action::OpenTerminal,
-            contexts: vec![KeyContext::Normal, KeyContext::Terminal],
+            contexts: vec![], // Available in all contexts (file explorer, normal, terminal, etc.)
             custom_contexts: vec![],
             source: CommandSource::Builtin,
         },
