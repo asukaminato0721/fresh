@@ -1,6 +1,8 @@
+use crate::common::git_test_helper::GitTestRepo;
 use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::fs;
+use std::time::Duration;
 
 /// Test file explorer toggle
 #[test]
@@ -524,6 +526,40 @@ fn test_file_explorer_toggle_gitignored_smoke() {
     harness.render().unwrap();
 
     // Test passes if no panic occurs
+}
+
+/// Test that git-changed files show an indicator in the file explorer
+#[test]
+fn test_file_explorer_git_change_indicator() {
+    let repo = GitTestRepo::new();
+    repo.create_file("changed.txt", "one");
+    repo.git_add_all();
+    repo.git_commit("Initial commit");
+
+    fs::write(repo.path.join("changed.txt"), "two").unwrap();
+
+    let mut harness = EditorTestHarness::with_working_dir(120, 40, repo.path.clone()).unwrap();
+
+    harness
+        .send_key(KeyCode::Char('e'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("File Explorer"))
+        .unwrap();
+    harness.wait_for_file_explorer_item("changed.txt").unwrap();
+
+    // Advance logical time so git polling runs.
+    harness.advance_time(Duration::from_millis(3100));
+
+    let found = harness
+        .wait_for_async(|h| h.screen_to_string().contains("● changed.txt"), 2000)
+        .unwrap();
+
+    assert!(
+        found,
+        "Expected git change indicator for changed.txt.\nScreen:\n{}",
+        harness.screen_to_string()
+    );
 }
 
 /// Test that file_explorer_new_file can be called (smoke test)
