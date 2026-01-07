@@ -17,6 +17,7 @@ use lsp_types::{
     SemanticTokensResult, SignatureHelp,
 };
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 /// Messages sent from async tasks to the synchronous main loop
@@ -129,8 +130,8 @@ pub enum AsyncMessage {
     /// File changed externally (future: file watching)
     FileChanged { path: String },
 
-    /// Git status updated (future: git integration)
-    GitStatusChanged { status: String },
+    /// Git status updated (git diff-based paths)
+    GitStatusChanged { paths: Vec<PathBuf> },
 
     /// File explorer initialized with tree view
     FileExplorerInitialized(FileTreeView),

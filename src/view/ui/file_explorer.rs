@@ -28,6 +28,16 @@ impl FileExplorerRenderer {
         false
     }
 
+    /// Check if a directory contains any unsaved or git-changed files
+    fn folder_has_any_changes(
+        folder_path: &PathBuf,
+        files_with_unsaved_changes: &HashSet<PathBuf>,
+        files_with_git_changes: &HashSet<PathBuf>,
+    ) -> bool {
+        Self::folder_has_modified_files(folder_path, files_with_unsaved_changes)
+            || Self::folder_has_modified_files(folder_path, files_with_git_changes)
+    }
+
     /// Render the file explorer in the given frame area
     pub fn render(
         view: &mut FileTreeView,
@@ -35,6 +45,7 @@ impl FileExplorerRenderer {
         area: Rect,
         is_focused: bool,
         files_with_unsaved_changes: &HashSet<PathBuf>,
+        files_with_git_changes: &HashSet<PathBuf>,
         keybinding_resolver: &crate::input::keybindings::KeybindingResolver,
         current_context: crate::input::keybindings::KeyContext,
         theme: &Theme,
@@ -77,6 +88,7 @@ impl FileExplorerRenderer {
                     is_selected,
                     is_focused,
                     files_with_unsaved_changes,
+                    files_with_git_changes,
                     theme,
                     content_width,
                 )
@@ -180,6 +192,7 @@ impl FileExplorerRenderer {
         is_selected: bool,
         is_focused: bool,
         files_with_unsaved_changes: &HashSet<PathBuf>,
+        files_with_git_changes: &HashSet<PathBuf>,
         theme: &Theme,
         content_width: usize,
     ) -> ListItem<'static> {
@@ -202,8 +215,11 @@ impl FileExplorerRenderer {
         // Tree expansion indicator (only for directories)
         if node.is_dir() {
             // Check if this directory contains any modified files
-            let has_modified =
-                Self::folder_has_modified_files(&node.entry.path, files_with_unsaved_changes);
+            let has_modified = Self::folder_has_any_changes(
+                &node.entry.path,
+                files_with_unsaved_changes,
+                files_with_git_changes,
+            );
 
             let indicator = if node.is_expanded() {
                 "▼"
@@ -229,8 +245,10 @@ impl FileExplorerRenderer {
                 spans.push(Span::raw(" "));
             }
         } else {
-            // For files, show unsaved change indicator if applicable
-            if files_with_unsaved_changes.contains(&node.entry.path) {
+            // For files, show change indicator if applicable
+            if files_with_unsaved_changes.contains(&node.entry.path)
+                || files_with_git_changes.contains(&node.entry.path)
+            {
                 spans.push(Span::styled(
                     "● ",
                     Style::default().fg(theme.diagnostic_warning_fg),

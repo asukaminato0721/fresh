@@ -10,6 +10,7 @@
 
 use crate::model::buffer::SudoSaveRequired;
 use crate::view::prompt::PromptType;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use lsp_types::TextDocumentContentChangeEvent;
@@ -339,6 +340,99 @@ impl Editor {
         }
 
         true
+    }
+
+    /// Poll git status changes for file explorer decorations.
+    ///
+    /// Uses git diff-related commands to detect changed files and keeps the
+    /// main loop responsive by running in the async runtime.
+    pub fn poll_git_status_changes(&mut self) -> bool {
+        if !self.file_explorer_visible {
+            return false;
+        }
+
+        // Use the same poll interval as the file tree to avoid excessive git calls.
+        let poll_interval =
+            std::time::Duration::from_millis(self.config.editor.file_tree_poll_interval_ms);
+        if self.time_source.elapsed_since(self.last_git_status_poll) < poll_interval {
+            return false;
+        }
+        self.last_git_status_poll = self.time_source.now();
+
+        if self.git_status_refresh_in_progress {
+            return false;
+        }
+
+        let (Some(runtime), Some(bridge)) = (&self.tokio_runtime, &self.async_bridge) else {
+            return false;
+        };
+
+        let sender = bridge.sender();
+        let working_dir = self.working_dir.clone();
+        self.git_status_refresh_in_progress = true;
+
+        runtime.spawn(async move {
+            use crate::services::async_bridge::AsyncMessage;
+            use tokio::process::Command;
+
+            let repo_root = Command::new("git")
+                .args(["rev-parse", "--show-toplevel"])
+                .current_dir(&working_dir)
+                .output()
+                .await
+                .ok()
+                .and_then(|output| {
+                    if output.status.success() {
+                        let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if root.is_empty() {
+                            None
+                        } else {
+                            Some(PathBuf::from(root))
+                        }
+                    } else {
+                        None
+                    }
+                });
+
+            let mut paths = HashSet::new();
+
+            if let Some(root) = &repo_root {
+                let commands: [&[&str]; 3] = [
+                    &["diff", "--name-only", "-z"],
+                    &["diff", "--name-only", "--cached", "-z"],
+                    &["ls-files", "--others", "--exclude-standard", "-z"],
+                ];
+
+                for args in commands {
+                    if let Ok(output) = Command::new("git")
+                        .args(args)
+                        .current_dir(&working_dir)
+                        .output()
+                        .await
+                    {
+                        if !output.status.success() {
+                            continue;
+                        }
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        for entry in stdout.split('\0') {
+                            if entry.is_empty() {
+                                continue;
+                            }
+                            let full_path = root.join(entry);
+                            if full_path.starts_with(&working_dir) {
+                                paths.insert(full_path);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let _ = sender.send(AsyncMessage::GitStatusChanged {
+                paths: paths.into_iter().collect(),
+            });
+        });
+
+        false
     }
 
     /// Notify LSP server about a newly opened file
