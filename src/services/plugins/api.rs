@@ -500,6 +500,20 @@ pub enum PluginCommand {
         namespace: String,
     },
 
+    /// Set file explorer decorations for a namespace
+    SetFileExplorerDecorations {
+        /// Namespace for grouping (e.g., "git-status")
+        namespace: String,
+        /// Decorations to apply
+        decorations: Vec<crate::view::file_tree::FileExplorerDecoration>,
+    },
+
+    /// Clear file explorer decorations for a namespace
+    ClearFileExplorerDecorations {
+        /// Namespace to clear (e.g., "git-status")
+        namespace: String,
+    },
+
     /// Open a file at a specific line and column
     /// Line and column are 1-indexed to match git grep output
     OpenFileAtLocation {

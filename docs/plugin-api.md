@@ -30,6 +30,26 @@ Keybinding contexts that determine how keypresses are interpreted. Each buffer h
 
 ## Types
 
+### FileExplorerDecoration
+
+File explorer decoration entry provided by plugins
+
+```typescript
+interface FileExplorerDecoration {
+  path: string;
+  symbol?: string | null;
+  color?: [u8; 3] | null;
+  priority?: number | null;
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `path` | Absolute or workspace-relative path to decorate |
+| `symbol` | Symbol to display (single character recommended) |
+| `color` | RGB color for the symbol |
+| `priority` | Priority for resolving conflicts (higher wins) |
+
 ### SpawnResult
 
 Result from spawnProcess
@@ -1063,6 +1083,35 @@ clearLineIndicators(buffer_id: number, namespace: string): boolean
 |------|------|-------------|
 | `buffer_id` | `number` | The buffer ID |
 | `namespace` | `string` | Namespace to clear (e.g., "git-gutter") |
+
+#### `setFileExplorerDecorations`
+
+Set file explorer decorations for a namespace
+
+```typescript
+setFileExplorerDecorations(namespace: string, decorations: FileExplorerDecoration[]): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `namespace` | `string` | Namespace for grouping (e.g., "git-status") |
+| `decorations` | `FileExplorerDecoration[]` | Decoration entries |
+
+#### `clearFileExplorerDecorations`
+
+Clear file explorer decorations for a namespace
+
+```typescript
+clearFileExplorerDecorations(namespace: string): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `namespace` | `string` | Namespace to clear (e.g., "git-status") |
 
 #### `submitViewTransform`
 

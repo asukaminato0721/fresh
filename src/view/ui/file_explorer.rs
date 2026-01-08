@@ -1,9 +1,9 @@
 use crate::primitives::display_width::str_width;
-use crate::view::file_tree::{FileTreeView, NodeId};
+use crate::view::file_tree::{FileExplorerDecorationCache, FileTreeView, NodeId};
 use crate::view::theme::Theme;
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
@@ -28,16 +28,6 @@ impl FileExplorerRenderer {
         false
     }
 
-    /// Check if a directory contains any unsaved or git-changed files
-    fn folder_has_any_changes(
-        folder_path: &PathBuf,
-        files_with_unsaved_changes: &HashSet<PathBuf>,
-        files_with_git_changes: &HashSet<PathBuf>,
-    ) -> bool {
-        Self::folder_has_modified_files(folder_path, files_with_unsaved_changes)
-            || Self::folder_has_modified_files(folder_path, files_with_git_changes)
-    }
-
     /// Render the file explorer in the given frame area
     pub fn render(
         view: &mut FileTreeView,
@@ -45,7 +35,7 @@ impl FileExplorerRenderer {
         area: Rect,
         is_focused: bool,
         files_with_unsaved_changes: &HashSet<PathBuf>,
-        files_with_git_changes: &HashSet<PathBuf>,
+        decorations: &FileExplorerDecorationCache,
         keybinding_resolver: &crate::input::keybindings::KeybindingResolver,
         current_context: crate::input::keybindings::KeyContext,
         theme: &Theme,
@@ -88,7 +78,7 @@ impl FileExplorerRenderer {
                     is_selected,
                     is_focused,
                     files_with_unsaved_changes,
-                    files_with_git_changes,
+                    decorations,
                     theme,
                     content_width,
                 )
@@ -192,7 +182,7 @@ impl FileExplorerRenderer {
         is_selected: bool,
         is_focused: bool,
         files_with_unsaved_changes: &HashSet<PathBuf>,
-        files_with_git_changes: &HashSet<PathBuf>,
+        decorations: &FileExplorerDecorationCache,
         theme: &Theme,
         content_width: usize,
     ) -> ListItem<'static> {
@@ -214,12 +204,12 @@ impl FileExplorerRenderer {
 
         // Tree expansion indicator (only for directories)
         if node.is_dir() {
-            // Check if this directory contains any modified files
-            let has_modified = Self::folder_has_any_changes(
-                &node.entry.path,
-                files_with_unsaved_changes,
-                files_with_git_changes,
-            );
+            let has_unsaved =
+                Self::folder_has_modified_files(&node.entry.path, files_with_unsaved_changes);
+            let direct_decoration = decorations.direct_for_path(&node.entry.path);
+            let bubbled_decoration = decorations
+                .bubbled_for_path(&node.entry.path)
+                .filter(|_| direct_decoration.is_none());
 
             let indicator = if node.is_expanded() {
                 "▼"
@@ -235,23 +225,38 @@ impl FileExplorerRenderer {
                 Style::default().fg(theme.diagnostic_warning_fg),
             ));
 
-            // Show modified indicator (small dot) if folder contains modified files
-            if has_modified {
+            // Show a change indicator if folder contains unsaved or decorated children
+            if has_unsaved {
                 spans.push(Span::styled(
                     "●",
                     Style::default().fg(theme.diagnostic_warning_fg),
+                ));
+            } else if let Some(decoration) = direct_decoration {
+                let symbol = Self::decoration_symbol(&decoration.symbol);
+                spans.push(Span::styled(
+                    symbol,
+                    Style::default().fg(Self::decoration_color(decoration)),
+                ));
+            } else if let Some(decoration) = bubbled_decoration {
+                spans.push(Span::styled(
+                    "●",
+                    Style::default().fg(Self::decoration_color(decoration)),
                 ));
             } else {
                 spans.push(Span::raw(" "));
             }
         } else {
-            // For files, show change indicator if applicable
-            if files_with_unsaved_changes.contains(&node.entry.path)
-                || files_with_git_changes.contains(&node.entry.path)
-            {
+            // For files, show unsaved indicator first, then plugin decoration
+            if files_with_unsaved_changes.contains(&node.entry.path) {
                 spans.push(Span::styled(
                     "● ",
                     Style::default().fg(theme.diagnostic_warning_fg),
+                ));
+            } else if let Some(decoration) = decorations.direct_for_path(&node.entry.path) {
+                let symbol = Self::decoration_symbol(&decoration.symbol);
+                spans.push(Span::styled(
+                    format!("{symbol} "),
+                    Style::default().fg(Self::decoration_color(decoration)),
                 ));
             } else {
                 spans.push(Span::raw("  "));
@@ -322,6 +327,19 @@ impl FileExplorerRenderer {
         }
 
         ListItem::new(Line::from(spans)).style(Style::default().bg(theme.editor_bg))
+    }
+
+    fn decoration_symbol(symbol: &str) -> String {
+        symbol
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| " ".to_string())
+    }
+
+    fn decoration_color(decoration: &crate::view::file_tree::FileExplorerDecoration) -> Color {
+        let (r, g, b) = decoration.color;
+        Color::Rgb(r, g, b)
     }
 
     /// Format file size for display

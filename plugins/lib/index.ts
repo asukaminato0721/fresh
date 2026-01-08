@@ -11,7 +11,15 @@
  */
 
 // Types
-export type { RGB, Location, PanelOptions, PanelState, NavigationOptions, HighlightPattern } from "./types.ts";
+export type {
+  RGB,
+  Location,
+  PanelOptions,
+  PanelState,
+  NavigationOptions,
+  HighlightPattern,
+  FileExplorerDecoration,
+} from "./types.ts";
 
 // Panel Management
 export { PanelManager } from "./panel-manager.ts";

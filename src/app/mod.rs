@@ -241,14 +241,11 @@ pub struct Editor {
     /// This is the runtime value that can be modified by dragging the border
     file_explorer_width_percent: f32,
 
-    /// Git-changed paths for file explorer decorations (absolute paths)
-    git_changed_paths: HashSet<PathBuf>,
+    /// File explorer decorations by namespace
+    file_explorer_decorations: HashMap<String, Vec<crate::view::file_tree::FileExplorerDecoration>>,
 
-    /// Last time git status was polled
-    last_git_status_poll: std::time::Instant,
-
-    /// Whether a git status refresh is in flight
-    git_status_refresh_in_progress: bool,
+    /// Cached file explorer decorations (resolved + bubbled)
+    file_explorer_decoration_cache: crate::view::file_tree::FileExplorerDecorationCache,
 
     /// Whether menu bar is visible
     menu_bar_visible: bool,
@@ -881,9 +878,9 @@ impl Editor {
             file_explorer_visible: false,
             file_explorer_sync_in_progress: false,
             file_explorer_width_percent: file_explorer_width,
-            git_changed_paths: HashSet::new(),
-            last_git_status_poll: time_source.now(),
-            git_status_refresh_in_progress: false,
+            file_explorer_decorations: HashMap::new(),
+            file_explorer_decoration_cache:
+                crate::view::file_tree::FileExplorerDecorationCache::default(),
             menu_bar_visible: true,
             menu_bar_auto_shown: false,
             mouse_enabled: true,
@@ -3148,9 +3145,9 @@ impl Editor {
                 AsyncMessage::FileChanged { path } => {
                     self.handle_async_file_changed(path);
                 }
-                AsyncMessage::GitStatusChanged { paths } => {
-                    self.git_status_refresh_in_progress = false;
-                    self.git_changed_paths = paths.into_iter().collect();
+                AsyncMessage::GitStatusChanged { status } => {
+                    tracing::info!("Git status changed: {}", status);
+                    // TODO: Handle git status changes
                 }
                 AsyncMessage::FileExplorerInitialized(view) => {
                     self.handle_file_explorer_initialized(view);
@@ -3302,15 +3299,9 @@ impl Editor {
         // Poll for file changes (auto-revert) and file tree changes
         let file_changes = self.poll_file_changes();
         let tree_changes = self.poll_file_tree_changes();
-        let git_changes = self.poll_git_status_changes();
 
         // Trigger render if any async messages, plugin commands were processed, or plugin requested render
-        needs_render
-            || processed_any_commands
-            || plugin_render
-            || file_changes
-            || tree_changes
-            || git_changes
+        needs_render || processed_any_commands || plugin_render || file_changes || tree_changes
     }
 
     /// Update LSP status bar string from active progress operations
@@ -3720,6 +3711,15 @@ impl Editor {
                 namespace,
             } => {
                 self.handle_clear_line_indicators(buffer_id, namespace);
+            }
+            PluginCommand::SetFileExplorerDecorations {
+                namespace,
+                decorations,
+            } => {
+                self.handle_set_file_explorer_decorations(namespace, decorations);
+            }
+            PluginCommand::ClearFileExplorerDecorations { namespace } => {
+                self.handle_clear_file_explorer_decorations(&namespace);
             }
 
             // ==================== Status/Prompt Commands ====================

@@ -160,7 +160,7 @@ impl Editor {
                     horizontal_chunks[0],
                     is_focused,
                     &files_with_unsaved_changes,
-                    &self.git_changed_paths,
+                    &self.file_explorer_decoration_cache,
                     &self.keybindings,
                     self.key_context,
                     &self.theme,

@@ -915,6 +915,81 @@ fn op_fresh_clear_line_indicators(
     false
 }
 
+/// File explorer decoration entry provided by plugins
+#[derive(serde::Deserialize)]
+struct FileExplorerDecoration {
+    /// Absolute or workspace-relative path to decorate
+    path: String,
+    /// Symbol to display (single character recommended)
+    symbol: Option<String>,
+    /// RGB color for the symbol
+    color: Option<[u8; 3]>,
+    /// Priority for resolving conflicts (higher wins)
+    priority: Option<i32>,
+}
+
+/// Set file explorer decorations for a namespace
+/// @param namespace - Namespace for grouping (e.g., "git-status")
+/// @param decorations - Decoration entries
+/// @returns true if decorations were accepted
+#[op2]
+fn op_fresh_set_file_explorer_decorations(
+    state: &mut OpState,
+    #[string] namespace: String,
+    #[serde] decorations: Vec<FileExplorerDecoration>,
+) -> bool {
+    use crate::view::file_tree::FileExplorerDecoration as ExplorerDecoration;
+    use std::path::PathBuf;
+
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        let decorations: Vec<ExplorerDecoration> = decorations
+            .into_iter()
+            .filter_map(|entry| {
+                if entry.path.is_empty() {
+                    return None;
+                }
+                let symbol = entry.symbol.unwrap_or_else(|| "●".to_string());
+                let color = entry.color.unwrap_or([255, 184, 108]);
+                let priority = entry.priority.unwrap_or(0);
+                Some(ExplorerDecoration {
+                    path: PathBuf::from(entry.path),
+                    symbol,
+                    color: (color[0], color[1], color[2]),
+                    priority,
+                })
+            })
+            .collect();
+
+        let result = runtime_state
+            .command_sender
+            .send(PluginCommand::SetFileExplorerDecorations {
+                namespace,
+                decorations,
+            });
+        return result.is_ok();
+    }
+    false
+}
+
+/// Clear file explorer decorations for a namespace
+/// @param namespace - Namespace to clear (e.g., "git-status")
+/// @returns true if decorations were cleared
+#[op2(fast)]
+fn op_fresh_clear_file_explorer_decorations(
+    state: &mut OpState,
+    #[string] namespace: String,
+) -> bool {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        let result = runtime_state
+            .command_sender
+            .send(PluginCommand::ClearFileExplorerDecorations { namespace });
+        return result.is_ok();
+    }
+    false
+}
+
 /// Submit a transformed view stream for a viewport
 /// @param buffer_id - Buffer to apply the transform to
 /// @param start - Viewport start byte
@@ -3680,6 +3755,8 @@ extension!(
         op_fresh_refresh_lines,
         op_fresh_set_line_indicator,
         op_fresh_clear_line_indicators,
+        op_fresh_set_file_explorer_decorations,
+        op_fresh_clear_file_explorer_decorations,
         op_fresh_insert_at_cursor,
         op_fresh_register_command,
         op_fresh_unregister_command,
@@ -3964,6 +4041,12 @@ impl TypeScriptRuntime {
                     },
                     clearLineIndicators(bufferId, namespace) {
                         return core.ops.op_fresh_clear_line_indicators(bufferId, namespace);
+                    },
+                    setFileExplorerDecorations(namespace, decorations) {
+                        return core.ops.op_fresh_set_file_explorer_decorations(namespace, decorations);
+                    },
+                    clearFileExplorerDecorations(namespace) {
+                        return core.ops.op_fresh_clear_file_explorer_decorations(namespace);
                     },
 
                     insertAtCursor(text) {

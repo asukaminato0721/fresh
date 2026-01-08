@@ -300,6 +300,13 @@ A sample project for testing.
         copy_plugin(&plugins_dir, "git_gutter");
     }
 
+    /// Set up git explorer plugin for file explorer decorations
+    pub fn setup_git_explorer_plugin(&self) {
+        let plugins_dir = self.path.join("plugins");
+        fs::create_dir_all(&plugins_dir).expect("Failed to create plugins directory");
+        copy_plugin(&plugins_dir, "git_explorer");
+    }
+
     /// Set up buffer modified plugin for unsaved changes indicator tests
     pub fn setup_buffer_modified_plugin(&self) {
         let plugins_dir = self.path.join("plugins");

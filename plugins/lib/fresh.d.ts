@@ -91,6 +91,18 @@ interface ProcessHandle extends PromiseLike<SpawnResult> {
   kill(): Promise<boolean>;
 }
 
+/** File explorer decoration entry provided by plugins */
+interface FileExplorerDecoration {
+  /** Absolute or workspace-relative path to decorate */
+  path: string;
+  /** Symbol to display (single character recommended) */
+  symbol?: string | null;
+  /** RGB color for the symbol */
+  color?: [u8; 3] | null;
+  /** Priority for resolving conflicts (higher wins) */
+  priority?: number | null;
+}
+
 /** Result from spawnProcess */
 interface SpawnResult {
   /** Complete stdout as string. Newlines preserved; trailing newline included. */
@@ -692,6 +704,19 @@ interface EditorAPI {
    * @returns true if indicators were cleared
    */
   clearLineIndicators(buffer_id: number, namespace: string): boolean;
+  /**
+   * Set file explorer decorations for a namespace
+   * @param namespace - Namespace for grouping (e.g., "git-status")
+   * @param decorations - Decoration entries
+   * @returns true if decorations were accepted
+   */
+  setFileExplorerDecorations(namespace: string, decorations: FileExplorerDecoration[]): boolean;
+  /**
+   * Clear file explorer decorations for a namespace
+   * @param namespace - Namespace to clear (e.g., "git-status")
+   * @returns true if decorations were cleared
+   */
+  clearFileExplorerDecorations(namespace: string): boolean;
   /**
    * Submit a transformed view stream for a viewport
    * @param buffer_id - Buffer to apply the transform to
