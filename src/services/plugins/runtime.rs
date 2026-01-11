@@ -172,6 +172,8 @@ struct TsRuntimeState {
     process_pids: Rc<RefCell<HashMap<u64, u32>>>,
     /// Next process ID for background processes
     next_process_id: Rc<RefCell<u64>>,
+    /// Directory context for system paths
+    dir_context: crate::config_io::DirectoryContext,
 }
 
 /// Display a transient message in the editor's status bar
@@ -219,6 +221,13 @@ fn op_fresh_apply_theme(state: &mut OpState, #[string] theme_name: String) {
 fn op_fresh_get_theme_schema() -> serde_json::Value {
     use crate::view::theme::get_theme_schema;
     get_theme_schema()
+}
+
+#[op2]
+#[serde]
+fn op_fresh_get_builtin_themes() -> serde_json::Value {
+    use crate::view::theme::get_builtin_themes;
+    get_builtin_themes()
 }
 
 /// Reload configuration from file
@@ -329,6 +338,42 @@ fn op_fresh_set_clipboard(state: &mut OpState, #[string] text: String) {
             .send(PluginCommand::SetClipboard { text: text.clone() });
     }
     tracing::debug!("TypeScript plugin set_clipboard: {} chars", text.len());
+}
+
+/// Get the user configuration directory path
+///
+/// Returns the absolute path to the directory where user config and themes are stored.
+/// e.g. ~/.config/fresh/ on Linux or ~/Library/Application Support/fresh/ on macOS.
+#[op2]
+#[string]
+fn op_fresh_get_config_dir(state: &mut OpState) -> String {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        return runtime_state
+            .dir_context
+            .config_dir
+            .to_string_lossy()
+            .to_string();
+    }
+    String::new()
+}
+
+/// Get the user themes directory path
+///
+/// Returns the absolute path to the directory where user themes are stored.
+/// e.g. ~/.config/fresh/themes/
+#[op2]
+#[string]
+fn op_fresh_get_themes_dir(state: &mut OpState) -> String {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        return runtime_state
+            .dir_context
+            .themes_dir()
+            .to_string_lossy()
+            .to_string();
+    }
+    String::new()
 }
 
 /// Get the buffer ID of the focused editor pane
@@ -2258,10 +2303,10 @@ async fn op_fresh_read_file(#[string] path: String) -> Result<String, JsErrorBox
         .map_err(|e| JsErrorBox::generic(format!("Failed to read file {}: {}", path, e)))
 }
 
-/// Write string content to a file, creating or overwriting
+/// Write string content to a NEW file (fails if file exists)
 ///
-/// Creates parent directories if they don't exist (behavior may vary).
-/// Replaces file contents entirely; use readFile + modify + writeFile for edits.
+/// Creates a new file with the given content. Fails if the file already exists
+/// to prevent plugins from accidentally overwriting user data.
 /// @param path - Destination path (absolute or relative to cwd)
 /// @param content - UTF-8 string to write
 #[op2(async)]
@@ -2269,9 +2314,95 @@ async fn op_fresh_write_file(
     #[string] path: String,
     #[string] content: String,
 ) -> Result<(), JsErrorBox> {
-    tokio::fs::write(&path, content)
+    use tokio::fs::OpenOptions;
+    use tokio::io::AsyncWriteExt;
+
+    // Check if file already exists
+    if std::path::Path::new(&path).exists() {
+        return Err(JsErrorBox::generic(format!(
+            "File already exists: {}. Use a different path or delete the file first.",
+            path
+        )));
+    }
+
+    // Create parent directories if needed
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.exists() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                JsErrorBox::generic(format!("Failed to create parent directories: {}", e))
+            })?;
+        }
+    }
+
+    // Create and write the file (create_new ensures atomic check)
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .await
+        .map_err(|e| JsErrorBox::generic(format!("Failed to create file {}: {}", path, e)))?;
+
+    file.write_all(content.as_bytes())
         .await
         .map_err(|e| JsErrorBox::generic(format!("Failed to write file {}: {}", path, e)))
+}
+
+/// Delete a theme file by name
+///
+/// Only deletes files from the user's themes directory.
+/// This is a safe operation that prevents plugins from deleting arbitrary files.
+/// @param name - Theme name (without .json extension)
+#[op2(async)]
+async fn op_fresh_delete_theme(
+    state: Rc<RefCell<OpState>>,
+    #[string] name: String,
+) -> Result<(), JsErrorBox> {
+    // Get the themes directory from runtime state
+    let themes_dir = {
+        let state = state.borrow();
+        if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+            let runtime_state = runtime_state.borrow();
+            runtime_state.dir_context.themes_dir()
+        } else {
+            return Err(JsErrorBox::generic("Failed to get themes directory"));
+        }
+    };
+
+    // Construct the theme file path
+    let theme_path = themes_dir.join(format!("{}.json", name));
+
+    // Check if theme file exists first
+    if !theme_path.exists() {
+        return Err(JsErrorBox::generic(format!(
+            "Theme '{}' does not exist",
+            name
+        )));
+    }
+
+    // Security check: ensure the resolved path is actually inside the themes directory
+    let canonical_themes_dir = themes_dir
+        .canonicalize()
+        .map_err(|e| JsErrorBox::generic(format!("Failed to resolve themes directory: {}", e)))?;
+
+    let canonical_theme_path = theme_path
+        .canonicalize()
+        .map_err(|e| JsErrorBox::generic(format!("Failed to resolve theme path: {}", e)))?;
+
+    if !canonical_theme_path.starts_with(&canonical_themes_dir) {
+        return Err(JsErrorBox::generic(
+            "Security error: theme path is outside themes directory".to_string(),
+        ));
+    }
+
+    // Move the theme file to trash (safer than permanent deletion)
+    let theme_name = name.clone();
+    tokio::task::spawn_blocking(move || {
+        trash::delete(&canonical_theme_path).map_err(|e| {
+            JsErrorBox::generic(format!("Failed to delete theme '{}': {}", theme_name, e))
+        })
+    })
+    .await
+    .map_err(|e| JsErrorBox::generic(format!("Failed to delete theme '{}': {}", name, e)))?
 }
 
 /// Check if a path exists (file, directory, or symlink)
@@ -3718,6 +3849,7 @@ extension!(
         op_fresh_set_status,
         op_fresh_apply_theme,
         op_fresh_get_theme_schema,
+        op_fresh_get_builtin_themes,
         op_fresh_reload_config,
         op_fresh_get_config,
         op_fresh_get_user_config,
@@ -3728,6 +3860,8 @@ extension!(
         op_fresh_info,
         op_fresh_debug,
         op_fresh_set_clipboard,
+        op_fresh_get_config_dir,
+        op_fresh_get_themes_dir,
         op_fresh_get_active_buffer_id,
         op_fresh_get_cursor_position,
         op_fresh_get_buffer_path,
@@ -3783,6 +3917,7 @@ extension!(
         op_fresh_set_prompt_suggestions,
         op_fresh_read_file,
         op_fresh_write_file,
+        op_fresh_delete_theme,
         op_fresh_file_exists,
         op_fresh_file_stat,
         op_fresh_get_env,
@@ -3855,16 +3990,24 @@ impl TypeScriptRuntime {
         // Create dummy state for standalone testing
         let (tx, _rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        Self::with_state(state_snapshot, tx)
+        let dir_context =
+            crate::config_io::DirectoryContext::for_testing(std::path::Path::new("/tmp"));
+        Self::with_state(state_snapshot, tx, dir_context)
     }
 
     /// Create a new TypeScript runtime with editor state
     pub fn with_state(
         state_snapshot: Arc<RwLock<EditorStateSnapshot>>,
         command_sender: std::sync::mpsc::Sender<PluginCommand>,
+        dir_context: crate::config_io::DirectoryContext,
     ) -> Result<Self> {
         let pending_responses: PendingResponses = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        Self::with_state_and_responses(state_snapshot, command_sender, pending_responses)
+        Self::with_state_and_responses(
+            state_snapshot,
+            command_sender,
+            pending_responses,
+            dir_context,
+        )
     }
 
     /// Create a new TypeScript runtime with editor state and shared pending responses
@@ -3872,6 +4015,7 @@ impl TypeScriptRuntime {
         state_snapshot: Arc<RwLock<EditorStateSnapshot>>,
         command_sender: std::sync::mpsc::Sender<PluginCommand>,
         pending_responses: PendingResponses,
+        dir_context: crate::config_io::DirectoryContext,
     ) -> Result<Self> {
         tracing::debug!("TypeScriptRuntime::with_state_and_responses: initializing V8 platform");
         // Initialize V8 platform before creating JsRuntime
@@ -3890,6 +4034,7 @@ impl TypeScriptRuntime {
             cancellable_processes: Rc::new(RefCell::new(HashMap::new())),
             process_pids: Rc::new(RefCell::new(HashMap::new())),
             next_process_id: Rc::new(RefCell::new(1)),
+            dir_context,
         }));
 
         tracing::debug!(
@@ -3931,6 +4076,9 @@ impl TypeScriptRuntime {
                     getThemeSchema() {
                         return core.ops.op_fresh_get_theme_schema();
                     },
+                    getBuiltinThemes() {
+                        return core.ops.op_fresh_get_builtin_themes();
+                    },
 
                     // Config operations
                     reloadConfig() {
@@ -3941,6 +4089,12 @@ impl TypeScriptRuntime {
                     },
                     getUserConfig() {
                         return core.ops.op_fresh_get_user_config();
+                    },
+                    getConfigDir() {
+                        return core.ops.op_fresh_get_config_dir();
+                    },
+                    getThemesDir() {
+                        return core.ops.op_fresh_get_themes_dir();
                     },
 
                     // Clipboard
@@ -4149,6 +4303,9 @@ impl TypeScriptRuntime {
                     },
                     writeFile(path, content) {
                         return core.ops.op_fresh_write_file(path, content);
+                    },
+                    deleteTheme(name) {
+                        return core.ops.op_fresh_delete_theme(name);
                     },
                     fileExists(path) {
                         return core.ops.op_fresh_file_exists(path);
@@ -4686,8 +4843,17 @@ impl TypeScriptPluginManager {
         // Create editor state snapshot for query API
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
 
+        // Create directory context (use system defaults or temp for testing)
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap_or_else(|_| {
+            crate::config_io::DirectoryContext::for_testing(std::path::Path::new("/tmp"))
+        });
+
         // Create TypeScript runtime with state
-        let runtime = TypeScriptRuntime::with_state(Arc::clone(&state_snapshot), command_sender)?;
+        let runtime = TypeScriptRuntime::with_state(
+            Arc::clone(&state_snapshot),
+            command_sender,
+            dir_context,
+        )?;
 
         tracing::info!("TypeScript plugin manager initialized");
 
@@ -5053,7 +5219,9 @@ mod tests {
         }
 
         // Create runtime with state
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot.clone(), tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime =
+            TypeScriptRuntime::with_state(state_snapshot.clone(), tx, dir_context).unwrap();
 
         // Test querying state from TypeScript
         let result = runtime
@@ -5250,7 +5418,9 @@ mod tests {
         }
 
         // Create runtime with state
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot.clone(), tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime =
+            TypeScriptRuntime::with_state(state_snapshot.clone(), tx, dir_context).unwrap();
 
         // Test new ops from TypeScript
         let result = runtime
@@ -5344,7 +5514,8 @@ mod tests {
     async fn test_register_command_empty_contexts() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Register command with empty contexts (available everywhere)
         let result = runtime
@@ -5377,7 +5548,8 @@ mod tests {
     async fn test_register_command_all_contexts() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Test all valid context types
         let result = runtime
@@ -5427,7 +5599,8 @@ mod tests {
     async fn test_register_command_invalid_contexts_ignored() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Invalid contexts should be silently ignored
         let result = runtime
@@ -5466,7 +5639,8 @@ mod tests {
     async fn test_open_file_with_zero_values() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Zero values should translate to None (file opening without positioning)
         let result = runtime
@@ -5495,7 +5669,8 @@ mod tests {
     async fn test_open_file_with_default_params() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Test that JavaScript default parameters work
         let result = runtime
@@ -5525,7 +5700,8 @@ mod tests {
     async fn test_open_file_with_line_only() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Open file at specific line but no column
         let result = runtime
@@ -5553,7 +5729,8 @@ mod tests {
     async fn test_register_command_case_insensitive_contexts() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Context names should be case-insensitive
         let result = runtime
@@ -6712,8 +6889,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Use the actual plugins directory which has the lib folder
         let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
@@ -6772,8 +6951,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Load the actual git_log.ts plugin
         let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
@@ -6811,8 +6992,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Load the vi_mode.ts plugin
         let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
@@ -6855,8 +7038,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Load the actual git_log.ts plugin
         let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
@@ -6876,11 +7061,10 @@ mod tests {
         let receiver = handle.execute_action_async("show_git_log").unwrap();
 
         // Simulate editor event loop: process commands while action runs
+        // Note: No internal timeout - cargo nextest handles external timeout per README guidelines
         let mut completed = false;
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(10);
 
-        while !completed && start.elapsed() < timeout {
+        while !completed {
             // Process any commands from the plugin
             let cmds = handle.process_commands();
             for cmd in cmds {
@@ -6927,10 +7111,6 @@ mod tests {
             }
         }
 
-        if !completed {
-            panic!("Test timed out waiting for show_git_log to complete");
-        }
-
         // Shutdown
         handle.shutdown();
     }
@@ -6948,8 +7128,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Create a simple plugin that spawns a process
         let temp_dir = TempDir::new().unwrap();
@@ -6987,11 +7169,10 @@ mod tests {
         let receiver = handle.execute_action_async("test_spawn").unwrap();
 
         // Wait for completion while processing commands
+        // Note: No internal timeout - cargo nextest handles external timeout per README guidelines
         let mut completed = false;
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(5);
 
-        while !completed && start.elapsed() < timeout {
+        while !completed {
             let _cmds = handle.process_commands();
             match receiver.try_recv() {
                 Ok(result) => {
@@ -7008,10 +7189,6 @@ mod tests {
                     panic!("Action receiver disconnected");
                 }
             }
-        }
-
-        if !completed {
-            panic!("Test timed out");
         }
 
         // Shutdown
@@ -7031,8 +7208,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Create a plugin that runs git log like the git_log plugin does
         let temp_dir = TempDir::new().unwrap();
@@ -7072,11 +7251,10 @@ mod tests {
         let receiver = handle.execute_action_async("test_git").unwrap();
 
         // Wait for completion while processing commands
+        // Note: No internal timeout - cargo nextest handles external timeout per README guidelines
         let mut completed = false;
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(5);
 
-        while !completed && start.elapsed() < timeout {
+        while !completed {
             let _cmds = handle.process_commands();
             match receiver.try_recv() {
                 Ok(result) => {
@@ -7093,10 +7271,6 @@ mod tests {
                     panic!("Action receiver disconnected");
                 }
             }
-        }
-
-        if !completed {
-            panic!("Test timed out");
         }
 
         // Shutdown
@@ -7118,8 +7292,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Create a plugin that mimics git_log with debug logs
         let temp_dir = TempDir::new().unwrap();
@@ -7169,11 +7345,10 @@ mod tests {
         let receiver = handle.execute_action_async("test_vbuf").unwrap();
 
         // Simulate editor event loop: process commands while action runs
+        // Note: No internal timeout - cargo nextest handles external timeout per README guidelines
         let mut completed = false;
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(5);
 
-        while !completed && start.elapsed() < timeout {
+        while !completed {
             // Process any commands from the plugin
             let cmds = handle.process_commands();
             for cmd in cmds {
@@ -7222,10 +7397,6 @@ mod tests {
                     panic!("Action receiver disconnected");
                 }
             }
-        }
-
-        if !completed {
-            panic!("Test timed out waiting for action to complete");
         }
 
         // Shutdown

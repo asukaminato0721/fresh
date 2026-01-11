@@ -601,6 +601,7 @@ impl Editor {
             Action::ToggleMaximizeSplit => self.toggle_maximize_split(),
             Action::ToggleFileExplorer => self.toggle_file_explorer(),
             Action::ToggleMenuBar => self.toggle_menu_bar(),
+            Action::ToggleTabBar => self.toggle_tab_bar(),
             Action::ToggleLineNumbers => self.toggle_line_numbers(),
             Action::ToggleMouseCapture => self.toggle_mouse_capture(),
             Action::ToggleMouseHover => self.toggle_mouse_hover(),
@@ -1964,20 +1965,24 @@ impl Editor {
     /// Apply a theme by name and persist it to config
     pub(super) fn apply_theme(&mut self, theme_name: &str) {
         if !theme_name.is_empty() {
-            self.theme = crate::view::theme::Theme::from_name(theme_name);
+            if let Some(theme) = crate::view::theme::Theme::from_name(theme_name) {
+                self.theme = theme;
 
-            // Set terminal cursor color to match theme
-            self.theme.set_terminal_cursor_color();
+                // Set terminal cursor color to match theme
+                self.theme.set_terminal_cursor_color();
 
-            // Update the config in memory
-            self.config.theme = self.theme.name.clone().into();
+                // Update the config in memory
+                self.config.theme = self.theme.name.clone().into();
 
-            // Persist to config file
-            self.save_theme_to_config();
+                // Persist to config file
+                self.save_theme_to_config();
 
-            self.set_status_message(
-                t!("view.theme_changed", theme = self.theme.name.clone()).to_string(),
-            );
+                self.set_status_message(
+                    t!("view.theme_changed", theme = self.theme.name.clone()).to_string(),
+                );
+            } else {
+                self.set_status_message(format!("Theme '{}' not found", theme_name));
+            }
         }
     }
 
@@ -1985,8 +1990,10 @@ impl Editor {
     /// Used for live preview when navigating theme selection
     pub(super) fn preview_theme(&mut self, theme_name: &str) {
         if !theme_name.is_empty() && theme_name != self.theme.name {
-            self.theme = crate::view::theme::Theme::from_name(theme_name);
-            self.theme.set_terminal_cursor_color();
+            if let Some(theme) = crate::view::theme::Theme::from_name(theme_name) {
+                self.theme = theme;
+                self.theme.set_terminal_cursor_color();
+            }
         }
     }
 
@@ -2454,15 +2461,12 @@ impl Editor {
 
         // Reset history navigation when user starts typing
         // This allows them to press Up to get back to history items
+        // Reset history navigation when typing in a prompt
         if let Some(ref prompt) = self.prompt {
-            match &prompt.prompt_type {
-                PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch => {
-                    self.search_history.reset_navigation();
+            if let Some(key) = Self::prompt_type_to_history_key(&prompt.prompt_type) {
+                if let Some(history) = self.prompt_histories.get_mut(&key) {
+                    history.reset_navigation();
                 }
-                PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
-                    self.replace_history.reset_navigation();
-                }
-                _ => {}
             }
         }
 

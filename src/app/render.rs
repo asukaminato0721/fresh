@@ -24,17 +24,27 @@ impl Editor {
 
         // Prepare all buffers for rendering (pre-load viewport data for lazy loading)
         // Each split may have a different viewport position on the same buffer
-        let mut semantic_targets = std::collections::HashSet::new();
-        let mut buffers_to_request = Vec::new();
-        for split_id in self.split_view_states.keys() {
+        let mut semantic_ranges: std::collections::HashMap<BufferId, (usize, usize)> =
+            std::collections::HashMap::new();
+        for (split_id, view_state) in &self.split_view_states {
             if let Some(buffer_id) = self.split_manager.get_buffer_id(*split_id) {
-                if semantic_targets.insert(buffer_id) {
-                    buffers_to_request.push(buffer_id);
+                if let Some(state) = self.buffers.get(&buffer_id) {
+                    let start_line = state.buffer.get_line_number(view_state.viewport.top_byte);
+                    let visible_lines = view_state.viewport.visible_line_count().saturating_sub(1);
+                    let end_line = start_line.saturating_add(visible_lines);
+                    semantic_ranges
+                        .entry(buffer_id)
+                        .and_modify(|(min_start, max_end)| {
+                            *min_start = (*min_start).min(start_line);
+                            *max_end = (*max_end).max(end_line);
+                        })
+                        .or_insert((start_line, end_line));
                 }
             }
         }
-        for buffer_id in buffers_to_request {
-            self.maybe_request_semantic_tokens(buffer_id);
+        for (buffer_id, (start_line, end_line)) in semantic_ranges {
+            self.maybe_request_semantic_tokens_range(buffer_id, start_line, end_line);
+            self.maybe_request_semantic_tokens_full_debounced(buffer_id);
         }
 
         for (split_id, view_state) in &self.split_view_states {
@@ -50,11 +60,19 @@ impl Editor {
             }
         }
 
-        // Refresh search highlights for the current viewport if we have an active search
-        // This ensures highlights update when scrolling to show matches in the new viewport
-        if let Some(ref search_state) = self.search_state {
-            let query = search_state.query.clone();
-            self.update_search_highlights(&query);
+        // Refresh search highlights only during incremental search (when prompt is active)
+        // After search is confirmed, overlays exist for ALL matches and shouldn't be overwritten
+        let is_search_prompt_active = self.prompt.as_ref().map_or(false, |p| {
+            matches!(
+                p.prompt_type,
+                PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch
+            )
+        });
+        if is_search_prompt_active {
+            if let Some(ref search_state) = self.search_state {
+                let query = search_state.query.clone();
+                self.update_search_highlights(&query);
+            }
         }
 
         // Determine if we need to show search options bar
@@ -364,6 +382,7 @@ impl Editor {
                 hovered_maximize_split,
                 is_maximized,
                 self.config.editor.relative_line_numbers,
+                self.tab_bar_visible,
             );
 
         // Detect viewport changes and fire hooks
@@ -1890,14 +1909,19 @@ impl Editor {
 
     // === Search and Replace Methods ===
 
-    /// Clear all search highlights from the active buffer
+    /// Clear all search highlights from the active buffer and reset search state
     pub(super) fn clear_search_highlights(&mut self) {
+        self.clear_search_overlays();
+        // Also clear search state
+        self.search_state = None;
+    }
+
+    /// Clear only the visual search overlays, preserving search state for F3/Shift+F3
+    /// This is used when the buffer is modified - highlights become stale but F3 should still work
+    pub(super) fn clear_search_overlays(&mut self) {
         let ns = self.search_namespace.clone();
         let state = self.active_state_mut();
         state.overlays.clear_namespace(&ns, &mut state.marker_list);
-
-        // Also clear search state
-        self.search_state = None;
     }
 
     /// Update search highlights in visible viewport only (for incremental search)
@@ -2080,14 +2104,14 @@ impl Editor {
             }
         };
 
-        // Find all matches within the search range
+        // Find all matches within the search range (store position and length for overlays)
         let search_slice = &buffer_content[search_start..search_end];
-        let matches: Vec<usize> = regex
+        let match_ranges: Vec<(usize, usize)> = regex
             .find_iter(search_slice)
-            .map(|m| search_start + m.start())
+            .map(|m| (search_start + m.start(), m.end() - m.start()))
             .collect();
 
-        if matches.is_empty() {
+        if match_ranges.is_empty() {
             self.search_state = None;
             let msg = if search_range.is_some() {
                 format!("No matches found for '{}' in selection", query)
@@ -2096,6 +2120,36 @@ impl Editor {
             };
             self.set_status_message(msg);
             return;
+        }
+
+        // Extract just positions for search_state.matches
+        let matches: Vec<usize> = match_ranges.iter().map(|(pos, _)| *pos).collect();
+
+        // Create overlays for ALL matches (not just visible ones)
+        // This ensures F3 can find matches outside viewport and markers track through edits
+        {
+            let search_bg = self.theme.search_match_bg;
+            let search_fg = self.theme.search_match_fg;
+            let ns = self.search_namespace.clone();
+            let state = self.active_state_mut();
+
+            // Clear existing (visible-only) overlays from incremental search
+            state.overlays.clear_namespace(&ns, &mut state.marker_list);
+
+            // Create overlays for all matches
+            for &(match_pos, match_len) in &match_ranges {
+                let search_style = ratatui::style::Style::default().fg(search_fg).bg(search_bg);
+                let overlay = crate::view::overlay::Overlay::with_namespace(
+                    &mut state.marker_list,
+                    match_pos..(match_pos + match_len),
+                    crate::view::overlay::OverlayFace::Style {
+                        style: search_style,
+                    },
+                    ns.clone(),
+                )
+                .with_priority_value(10);
+                state.overlays.add(overlay);
+            }
         }
 
         // Find the first match at or after the current cursor position
@@ -2154,15 +2208,50 @@ impl Editor {
         self.set_status_message(msg);
     }
 
+    /// Get current match positions from search overlays (which use markers that track edits)
+    /// This ensures positions are always up-to-date even after buffer modifications
+    fn get_search_match_positions(&self) -> Vec<usize> {
+        let ns = &self.search_namespace;
+        let state = self.active_state();
+
+        // Get positions from search overlay markers
+        let mut positions: Vec<usize> = state
+            .overlays
+            .all()
+            .iter()
+            .filter(|o| o.namespace.as_ref() == Some(ns))
+            .filter_map(|o| state.marker_list.get_position(o.start_marker))
+            .collect();
+
+        // Sort positions for consistent ordering
+        positions.sort_unstable();
+        positions.dedup(); // Remove any duplicates
+
+        positions
+    }
+
     /// Find the next match
     pub(super) fn find_next(&mut self) {
+        // Get current positions from overlay markers (auto-updated with buffer edits)
+        // Fall back to search_state.matches if no overlays exist (e.g., find_selection_next)
+        let overlay_positions = self.get_search_match_positions();
+
         if let Some(ref mut search_state) = self.search_state {
-            if search_state.matches.is_empty() {
+            // Use overlay positions if they exist and there's no search_range
+            // (selection-based search uses cached matches to respect range)
+            let match_positions =
+                if !overlay_positions.is_empty() && search_state.search_range.is_none() {
+                    overlay_positions
+                } else {
+                    search_state.matches.clone()
+                };
+
+            if match_positions.is_empty() {
                 return;
             }
 
             let current_index = search_state.current_match_index.unwrap_or(0);
-            let next_index = if current_index + 1 < search_state.matches.len() {
+            let next_index = if current_index + 1 < match_positions.len() {
                 current_index + 1
             } else if search_state.wrap_search {
                 0 // Wrap to beginning
@@ -2172,8 +2261,8 @@ impl Editor {
             };
 
             search_state.current_match_index = Some(next_index);
-            let match_pos = search_state.matches[next_index];
-            let matches_len = search_state.matches.len();
+            let match_pos = match_positions[next_index];
+            let matches_len = match_positions.len();
 
             {
                 let active_split = self.split_manager.active_split();
@@ -2208,8 +2297,22 @@ impl Editor {
 
     /// Find the previous match
     pub(super) fn find_previous(&mut self) {
+        // Get current positions from overlay markers first (auto-updated with buffer edits)
+        // Fall back to search_state.matches if no overlays exist (e.g., find_selection_previous)
+        let overlay_positions = self.get_search_match_positions();
+
         if let Some(ref mut search_state) = self.search_state {
-            if search_state.matches.is_empty() {
+            // Use overlay positions if:
+            // 1. They exist (overlays were created)
+            // 2. There's no search_range (selection-based search uses cached matches to respect range)
+            let match_positions =
+                if !overlay_positions.is_empty() && search_state.search_range.is_none() {
+                    overlay_positions
+                } else {
+                    search_state.matches.clone()
+                };
+
+            if match_positions.is_empty() {
                 return;
             }
 
@@ -2217,15 +2320,15 @@ impl Editor {
             let prev_index = if current_index > 0 {
                 current_index - 1
             } else if search_state.wrap_search {
-                search_state.matches.len() - 1 // Wrap to end
+                match_positions.len() - 1 // Wrap to end
             } else {
                 self.set_status_message(t!("search.no_matches").to_string());
                 return;
             };
 
             search_state.current_match_index = Some(prev_index);
-            let match_pos = search_state.matches[prev_index];
-            let matches_len = search_state.matches.len();
+            let match_pos = match_positions[prev_index];
+            let matches_len = match_positions.len();
 
             {
                 let active_split = self.split_manager.active_split();
@@ -2876,18 +2979,15 @@ impl Editor {
     pub(super) fn toggle_comment(&mut self) {
         // Determine comment prefix from language config
         // If no language detected or no comment prefix configured, do nothing
-        let comment_prefix: String = match self
-            .buffer_metadata
-            .get(&self.active_buffer())
-            .and_then(|metadata| metadata.file_path())
-            .and_then(|path| {
-                detect_language(path, &self.config.languages).and_then(|lang_name| {
-                    self.config
-                        .languages
-                        .get(&lang_name)
-                        .and_then(|lang_config| lang_config.comment_prefix.clone())
-                })
-            }) {
+        // Determine comment prefix from language config
+        let language = &self.active_state().language;
+        let comment_prefix = self
+            .config
+            .languages
+            .get(language)
+            .and_then(|lang_config| lang_config.comment_prefix.clone());
+
+        let comment_prefix: String = match comment_prefix {
             Some(prefix) => {
                 // Ensure there's a trailing space for consistent formatting
                 if prefix.ends_with(' ') {
@@ -3683,10 +3783,12 @@ impl Editor {
     /// Clear the search history
     /// Used primarily for testing to ensure test isolation
     pub fn clear_search_history(&mut self) {
-        self.search_history.clear();
+        if let Some(history) = self.prompt_histories.get_mut("search") {
+            history.clear();
+        }
     }
 
-    /// Save search and replace histories to disk
+    /// Save all prompt histories to disk
     /// Called on shutdown to persist history across sessions
     pub fn save_histories(&self) {
         // Ensure data directory exists
@@ -3695,20 +3797,14 @@ impl Editor {
             return;
         }
 
-        // Save search history
-        let search_path = self.dir_context.search_history_path();
-        if let Err(e) = self.search_history.save_to_file(&search_path) {
-            tracing::warn!("Failed to save search history: {}", e);
-        } else {
-            tracing::debug!("Saved search history to {:?}", search_path);
-        }
-
-        // Save replace history
-        let replace_path = self.dir_context.replace_history_path();
-        if let Err(e) = self.replace_history.save_to_file(&replace_path) {
-            tracing::warn!("Failed to save replace history: {}", e);
-        } else {
-            tracing::debug!("Saved replace history to {:?}", replace_path);
+        // Save all prompt histories
+        for (key, history) in &self.prompt_histories {
+            let path = self.dir_context.prompt_history_path(key);
+            if let Err(e) = history.save_to_file(&path) {
+                tracing::warn!("Failed to save {} history: {}", key, e);
+            } else {
+                tracing::debug!("Saved {} history to {:?}", key, path);
+            }
         }
     }
 

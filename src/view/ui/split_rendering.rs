@@ -320,7 +320,6 @@ struct SelectionContext {
 
 struct DecorationContext {
     highlight_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
-    reference_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
     semantic_token_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
     viewport_overlays: Vec<(crate::view::overlay::Overlay, Range<usize>)>,
     virtual_text_lookup: HashMap<usize, Vec<crate::view::virtual_text::VirtualText>>,
@@ -334,6 +333,7 @@ struct LineRenderOutput {
     cursor: Option<(u16, u16)>,
     last_line_end: Option<LastLineEnd>,
     content_lines_rendered: usize,
+    view_line_mappings: Vec<ViewLineMapping>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -386,7 +386,6 @@ struct CharStyleContext<'a> {
     is_selected: bool,
     theme: &'a crate::view::theme::Theme,
     highlight_spans: &'a [crate::primitives::highlighter::HighlightSpan],
-    reference_spans: &'a [crate::primitives::highlighter::HighlightSpan],
     semantic_token_spans: &'a [crate::primitives::highlighter::HighlightSpan],
     viewport_overlays: &'a [(crate::view::overlay::Overlay, Range<usize>)],
     primary_cursor_position: usize,
@@ -598,16 +597,8 @@ fn compute_char_style(ctx: &CharStyleContext) -> CharStyleOutput {
         style = style.fg(highlight_color.unwrap());
     }
 
-    // Apply reference highlighting (word under cursor)
-    if let Some(bp) = ctx.byte_pos {
-        if let Some(reference_span) = ctx
-            .reference_spans
-            .iter()
-            .find(|span| span.range.contains(&bp))
-        {
-            style = style.bg(reference_span.color);
-        }
-    }
+    // Note: Reference highlighting (word under cursor) is now handled via overlays
+    // in the "Apply overlay styles" section below
 
     // Apply LSP semantic token foreground color when no custom token style is set.
     if ctx.token_style.is_none() {
@@ -652,12 +643,15 @@ fn compute_char_style(ctx: &CharStyleContext) -> CharStyleOutput {
             .bg(ctx.theme.selection_bg);
     }
 
-    // Apply cursor styling - make secondary cursors visible with reversed colors
-    // Don't apply REVERSED to primary cursor to preserve terminal cursor visibility
-    // For inactive splits, ALL cursors use a less pronounced color (no hardware cursor)
+    // Apply cursor styling - make all cursors visible with reversed colors
+    // For active splits: apply REVERSED to ensure character under cursor is visible
+    // (especially important for block cursors where white-on-white would be invisible)
+    // For inactive splits: use a less pronounced background color (no hardware cursor)
     let is_secondary_cursor = ctx.is_cursor && ctx.byte_pos != Some(ctx.primary_cursor_position);
     if ctx.is_active {
-        if is_secondary_cursor {
+        if ctx.is_cursor {
+            // Apply REVERSED to all cursor positions (primary and secondary)
+            // This ensures the character under the cursor is always visible
             style = style.add_modifier(Modifier::REVERSED);
         }
     } else if ctx.is_cursor {
@@ -721,6 +715,7 @@ impl SplitRenderer {
         hovered_maximize_split: Option<crate::model::event::SplitId>,
         is_maximized: bool,
         relative_line_numbers: bool,
+        tab_bar_visible: bool,
     ) -> (
         Vec<(
             crate::model::event::SplitId,
@@ -754,7 +749,7 @@ impl SplitRenderer {
         for (split_id, buffer_id, split_area) in visible_buffers {
             let is_active = split_id == active_split_id;
 
-            let layout = Self::split_layout(split_area);
+            let layout = Self::split_layout(split_area, tab_bar_visible);
             let (split_buffers, tab_scroll_offset) =
                 Self::split_buffers_for_tabs(split_view_states.as_deref(), split_id, buffer_id);
 
@@ -767,69 +762,79 @@ impl SplitRenderer {
                 }
             });
 
-            // Render tabs for this split and collect hit areas
-            let tab_hit_areas = TabsRenderer::render_for_split(
-                frame,
-                layout.tabs_rect,
-                &split_buffers,
-                buffers,
-                buffer_metadata,
-                composite_buffers,
-                buffer_id, // The currently displayed buffer in this split
-                theme,
-                is_active,
-                tab_scroll_offset,
-                tab_hover_for_split,
-            );
+            // Only render tabs and split control buttons when tab bar is visible
+            if tab_bar_visible {
+                // Render tabs for this split and collect hit areas
+                let tab_hit_areas = TabsRenderer::render_for_split(
+                    frame,
+                    layout.tabs_rect,
+                    &split_buffers,
+                    buffers,
+                    buffer_metadata,
+                    composite_buffers,
+                    buffer_id, // The currently displayed buffer in this split
+                    theme,
+                    is_active,
+                    tab_scroll_offset,
+                    tab_hover_for_split,
+                );
 
-            // Add tab row to hit areas (all tabs share the same row)
-            let tab_row = layout.tabs_rect.y;
-            for (buf_id, start_col, end_col, close_start) in tab_hit_areas {
-                all_tab_areas.push((split_id, buf_id, tab_row, start_col, end_col, close_start));
-            }
-
-            // Render split control buttons at the right side of tabs row
-            // Show maximize/unmaximize button when: multiple splits exist OR we're currently maximized
-            // Show close button when: multiple splits exist AND we're not maximized
-            let show_maximize_btn = has_multiple_splits || is_maximized;
-            let show_close_btn = has_multiple_splits && !is_maximized;
-
-            if show_maximize_btn || show_close_btn {
-                // Calculate button positions from right edge
-                // Layout: [maximize] [space] [close] |
-                let mut btn_x = layout.tabs_rect.x + layout.tabs_rect.width.saturating_sub(2);
-
-                // Render close button first (rightmost) if visible
-                if show_close_btn {
-                    let is_hovered = hovered_close_split == Some(split_id);
-                    let close_fg = if is_hovered {
-                        theme.tab_close_hover_fg
-                    } else {
-                        theme.line_number_fg
-                    };
-                    let close_button = Paragraph::new("×")
-                        .style(Style::default().fg(close_fg).bg(theme.tab_separator_bg));
-                    let close_area = Rect::new(btn_x, tab_row, 1, 1);
-                    frame.render_widget(close_button, close_area);
-                    close_split_areas.push((split_id, tab_row, btn_x, btn_x + 1));
-                    btn_x = btn_x.saturating_sub(2); // Move left with 1 space for next button
+                // Add tab row to hit areas (all tabs share the same row)
+                let tab_row = layout.tabs_rect.y;
+                for (buf_id, start_col, end_col, close_start) in tab_hit_areas {
+                    all_tab_areas.push((
+                        split_id,
+                        buf_id,
+                        tab_row,
+                        start_col,
+                        end_col,
+                        close_start,
+                    ));
                 }
 
-                // Render maximize/unmaximize button
-                if show_maximize_btn {
-                    let is_hovered = hovered_maximize_split == Some(split_id);
-                    let max_fg = if is_hovered {
-                        theme.tab_close_hover_fg
-                    } else {
-                        theme.line_number_fg
-                    };
-                    // Use □ for maximize, ⧉ for unmaximize (restore)
-                    let icon = if is_maximized { "⧉" } else { "□" };
-                    let max_button = Paragraph::new(icon)
-                        .style(Style::default().fg(max_fg).bg(theme.tab_separator_bg));
-                    let max_area = Rect::new(btn_x, tab_row, 1, 1);
-                    frame.render_widget(max_button, max_area);
-                    maximize_split_areas.push((split_id, tab_row, btn_x, btn_x + 1));
+                // Render split control buttons at the right side of tabs row
+                // Show maximize/unmaximize button when: multiple splits exist OR we're currently maximized
+                // Show close button when: multiple splits exist AND we're not maximized
+                let show_maximize_btn = has_multiple_splits || is_maximized;
+                let show_close_btn = has_multiple_splits && !is_maximized;
+
+                if show_maximize_btn || show_close_btn {
+                    // Calculate button positions from right edge
+                    // Layout: [maximize] [space] [close] |
+                    let mut btn_x = layout.tabs_rect.x + layout.tabs_rect.width.saturating_sub(2);
+
+                    // Render close button first (rightmost) if visible
+                    if show_close_btn {
+                        let is_hovered = hovered_close_split == Some(split_id);
+                        let close_fg = if is_hovered {
+                            theme.tab_close_hover_fg
+                        } else {
+                            theme.line_number_fg
+                        };
+                        let close_button = Paragraph::new("×")
+                            .style(Style::default().fg(close_fg).bg(theme.tab_separator_bg));
+                        let close_area = Rect::new(btn_x, tab_row, 1, 1);
+                        frame.render_widget(close_button, close_area);
+                        close_split_areas.push((split_id, tab_row, btn_x, btn_x + 1));
+                        btn_x = btn_x.saturating_sub(2); // Move left with 1 space for next button
+                    }
+
+                    // Render maximize/unmaximize button
+                    if show_maximize_btn {
+                        let is_hovered = hovered_maximize_split == Some(split_id);
+                        let max_fg = if is_hovered {
+                            theme.tab_close_hover_fg
+                        } else {
+                            theme.line_number_fg
+                        };
+                        // Use □ for maximize, ⧉ for unmaximize (restore)
+                        let icon = if is_maximized { "⧉" } else { "□" };
+                        let max_button = Paragraph::new(icon)
+                            .style(Style::default().fg(max_fg).bg(theme.tab_separator_bg));
+                        let max_area = Rect::new(btn_x, tab_row, 1, 1);
+                        frame.render_widget(max_button, max_area);
+                        maximize_split_areas.push((split_id, tab_row, btn_x, btn_x + 1));
+                    }
                 }
             }
 
@@ -1678,8 +1683,8 @@ impl SplitRenderer {
         }
     }
 
-    fn split_layout(split_area: Rect) -> SplitLayout {
-        let tabs_height = 1u16;
+    fn split_layout(split_area: Rect, tab_bar_visible: bool) -> SplitLayout {
+        let tabs_height = if tab_bar_visible { 1u16 } else { 0u16 };
         let scrollbar_width = 1u16;
 
         let tabs_rect = Rect::new(split_area.x, split_area.y, split_area.width, tabs_height);
@@ -2824,37 +2829,40 @@ impl SplitRenderer {
             highlight_context_bytes,
         );
 
-        // Get reference highlights through debounced cache
-        let reference_spans = state
-            .reference_highlight_cache
-            .get_highlights(
-                &mut state.reference_highlighter,
-                &state.buffer,
-                primary_cursor_position,
-                viewport_start,
-                viewport_end,
-                highlight_context_bytes,
-                theme.semantic_highlight_bg,
-            )
-            .to_vec();
+        // Update reference highlight overlays (debounced, creates overlays that auto-adjust)
+        state.reference_highlight_overlay.update(
+            &state.buffer,
+            &mut state.overlays,
+            &mut state.marker_list,
+            &mut state.reference_highlighter,
+            primary_cursor_position,
+            viewport_start,
+            viewport_end,
+            highlight_context_bytes,
+            theme.semantic_highlight_bg,
+        );
 
-        // Resolve semantic tokens for this viewport (if version matches)
-        let semantic_token_spans = if let Some(store) = &state.semantic_tokens {
-            if store.version == state.buffer.version() {
-                Self::collect_semantic_token_spans(store, viewport_start, viewport_end, theme)
-            } else {
-                Vec::new()
+        // Semantic tokens are stored as overlays so their ranges track edits.
+        // Convert them into highlight spans for the render pipeline.
+        let mut semantic_token_spans = Vec::new();
+        let mut viewport_overlays = Vec::new();
+        for (overlay, range) in
+            state
+                .overlays
+                .query_viewport(viewport_start, viewport_end, &state.marker_list)
+        {
+            if crate::services::lsp::semantic_tokens::is_semantic_token_overlay(overlay) {
+                if let crate::view::overlay::OverlayFace::Foreground { color } = &overlay.face {
+                    semantic_token_spans.push(crate::primitives::highlighter::HighlightSpan {
+                        range,
+                        color: *color,
+                    });
+                }
+                continue;
             }
-        } else {
-            Vec::new()
-        };
 
-        let viewport_overlays = state
-            .overlays
-            .query_viewport(viewport_start, viewport_end, &state.marker_list)
-            .into_iter()
-            .map(|(overlay, range)| (overlay.clone(), range))
-            .collect::<Vec<_>>();
+            viewport_overlays.push((overlay.clone(), range));
+        }
 
         // Use the lsp-diagnostic namespace to identify diagnostic overlays
         let diagnostic_ns = crate::services::lsp::diagnostics::lsp_diagnostic_namespace();
@@ -2885,7 +2893,6 @@ impl SplitRenderer {
 
         DecorationContext {
             highlight_spans,
-            reference_spans,
             semantic_token_spans,
             viewport_overlays,
             virtual_text_lookup,
@@ -2894,49 +2901,7 @@ impl SplitRenderer {
         }
     }
 
-    fn collect_semantic_token_spans(
-        store: &crate::state::SemanticTokenStore,
-        viewport_start: usize,
-        viewport_end: usize,
-        theme: &crate::view::theme::Theme,
-    ) -> Vec<crate::primitives::highlighter::HighlightSpan> {
-        store
-            .tokens
-            .iter()
-            .filter(|span| span.range.end > viewport_start && span.range.start < viewport_end)
-            .map(|span| crate::primitives::highlighter::HighlightSpan {
-                range: span.range.clone(),
-                color: Self::color_for_semantic_token(&span.token_type, &span.modifiers, theme),
-            })
-            .collect()
-    }
-
-    fn color_for_semantic_token(
-        token_type: &str,
-        modifiers: &[String],
-        theme: &crate::view::theme::Theme,
-    ) -> Color {
-        if modifiers.iter().any(|m| m == "deprecated") {
-            return theme.diagnostic_warning_fg;
-        }
-
-        match token_type {
-            "keyword" | "modifier" => theme.syntax_keyword,
-            "function" | "method" | "macro" => theme.syntax_function,
-            "parameter" | "variable" | "property" | "enumMember" | "event" | "label" => {
-                theme.syntax_variable
-            }
-            "type" | "class" | "interface" | "struct" | "typeParameter" | "namespace" | "enum" => {
-                theme.syntax_type
-            }
-            "number" => theme.syntax_constant,
-            "string" | "regexp" => theme.syntax_string,
-            "operator" => theme.syntax_operator,
-            "comment" => theme.syntax_comment,
-            "decorator" => theme.syntax_function,
-            _ => theme.syntax_variable,
-        }
-    }
+    // semantic token colors are mapped when overlays are created
 
     fn calculate_viewport_end(
         state: &mut EditorState,
@@ -2987,7 +2952,6 @@ impl SplitRenderer {
         let cursor_line = state.buffer.get_line_number(primary_cursor_position);
 
         let highlight_spans = &decorations.highlight_spans;
-        let reference_spans = &decorations.reference_spans;
         let semantic_token_spans = &decorations.semantic_token_spans;
         let viewport_overlays = &decorations.viewport_overlays;
         let virtual_text_lookup = &decorations.virtual_text_lookup;
@@ -2995,6 +2959,7 @@ impl SplitRenderer {
         let line_indicators = &decorations.line_indicators;
 
         let mut lines = Vec::new();
+        let mut view_line_mappings = Vec::new();
         let mut lines_rendered = 0usize;
         let mut view_iter_idx = view_anchor.start_line_idx;
         let mut cursor_screen_x = 0u16;
@@ -3180,8 +3145,9 @@ impl SplitRenderer {
                             // IMPORTANT: If the cursor is on this ANSI byte, track it
                             if let Some(bp) = byte_pos {
                                 if bp == primary_cursor_position && !have_cursor {
-                                    cursor_screen_x =
-                                        gutter_width as u16 + visible_char_count as u16;
+                                    // Account for horizontal scrolling by using col_offset - left_col
+                                    cursor_screen_x = gutter_width as u16
+                                        + col_offset.saturating_sub(left_col) as u16;
                                     cursor_screen_y = lines_rendered.saturating_sub(1) as u16;
                                     have_cursor = true;
                                 }
@@ -3269,7 +3235,6 @@ impl SplitRenderer {
                         is_selected,
                         theme,
                         highlight_spans,
-                        reference_spans,
                         semantic_token_spans,
                         viewport_overlays,
                         primary_cursor_position,
@@ -3308,7 +3273,9 @@ impl SplitRenderer {
                             {
                                 // Flush accumulated text before inserting virtual text
                                 span_acc.flush(&mut line_spans, &mut line_view_map);
-                                let text_with_space = format!("{} ", vtext.text);
+                                // Add extra space if at end of line (before newline)
+                                let extra_space = if ch == '\n' { " " } else { "" };
+                                let text_with_space = format!("{}{} ", extra_space, vtext.text);
                                 push_span_with_map(
                                     &mut line_spans,
                                     &mut line_view_map,
@@ -3484,11 +3451,14 @@ impl SplitRenderer {
                     if is_primary_at_end && last_seg_y.is_some() {
                         // Cursor position now includes gutter width (consistent with main cursor tracking)
                         // For empty lines, cursor is at gutter width (right after gutter)
-                        // For non-empty lines without newline, cursor is after the last character
+                        // For non-empty lines without newline, cursor is after the last visible character
+                        // Account for horizontal scrolling by using col_offset - left_col
                         cursor_screen_x = if line_len_chars == 0 {
                             gutter_width as u16
                         } else {
-                            gutter_width as u16 + line_len_chars as u16
+                            // col_offset is the visual column after the last character
+                            // Subtract left_col to get the screen position after horizontal scroll
+                            gutter_width as u16 + col_offset.saturating_sub(left_col) as u16
                         };
                         cursor_screen_y = last_seg_y.unwrap();
                         have_cursor = true;
@@ -3598,6 +3568,48 @@ impl SplitRenderer {
                 }
             }
 
+            // Calculate line_end_byte for this line
+            let line_end_byte = if current_view_line.ends_with_newline {
+                // Position ON the newline - find the last source byte (the newline's position)
+                current_view_line
+                    .char_source_bytes
+                    .iter()
+                    .rev()
+                    .find_map(|m| *m)
+                    .unwrap_or(0)
+            } else {
+                // Position AFTER the last character - find last source byte and add char length
+                if let Some((char_idx, &Some(last_byte_start))) = current_view_line
+                    .char_source_bytes
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, m)| m.is_some())
+                {
+                    // Get the character at this index to find its UTF-8 byte length
+                    if let Some(last_char) = current_view_line.text.chars().nth(char_idx) {
+                        last_byte_start + last_char.len_utf8()
+                    } else {
+                        last_byte_start
+                    }
+                } else {
+                    0
+                }
+            };
+
+            // Capture accurate view line mapping for mouse clicks
+            // Content mapping starts after the gutter
+            let content_map = if line_view_map.len() >= gutter_width {
+                line_view_map[gutter_width..].to_vec()
+            } else {
+                Vec::new()
+            };
+            view_line_mappings.push(ViewLineMapping {
+                char_source_bytes: content_map.clone(),
+                visual_to_char: (0..content_map.len()).collect(),
+                line_end_byte,
+            });
+
             // Track if line was empty before moving line_spans
             let line_was_empty = line_spans.is_empty();
             lines.push(Line::from(line_spans));
@@ -3686,6 +3698,16 @@ impl SplitRenderer {
                 lines.push(Line::from(implicit_line_spans));
                 lines_rendered += 1;
 
+                // Add mapping for implicit line
+                // It has no content, so map is empty (gutter is handled by offset in screen_to_buffer_position)
+                let buffer_len = state.buffer.len();
+
+                view_line_mappings.push(ViewLineMapping {
+                    char_source_bytes: Vec::new(),
+                    visual_to_char: Vec::new(),
+                    line_end_byte: buffer_len,
+                });
+
                 // NOTE: We intentionally do NOT update last_line_end here.
                 // The implicit empty line is a visual display aid, not an actual content line.
                 // last_line_end should track the last actual content line for cursor placement logic.
@@ -3724,6 +3746,7 @@ impl SplitRenderer {
             cursor: have_cursor.then_some((cursor_screen_x, cursor_screen_y)),
             last_line_end,
             content_lines_rendered: lines_rendered,
+            view_line_mappings,
         }
     }
 
@@ -4021,71 +4044,7 @@ impl SplitRenderer {
 
         // Extract view line mappings for mouse click handling
         // This maps screen coordinates to buffer byte positions
-        Self::extract_view_line_mappings(view_lines_to_render)
-    }
-
-    /// Extract ViewLineMapping from rendered view lines
-    /// This captures the char_source_bytes and visual_to_char from each ViewLine
-    /// for accurate mouse click positioning with O(1) lookup
-    fn extract_view_line_mappings(view_lines: &[ViewLine]) -> Vec<ViewLineMapping> {
-        tracing::trace!(
-            "extract_view_line_mappings: {} view_lines",
-            view_lines.len()
-        );
-        for (i, vl) in view_lines.iter().enumerate().take(5) {
-            let first_bytes: Vec<_> = vl.char_source_bytes.iter().take(5).collect();
-            tracing::trace!(
-                "  ViewLine {}: text={:?} (len={}), first_source_bytes={:?}",
-                i,
-                vl.text.chars().take(20).collect::<String>(),
-                vl.text.len(),
-                first_bytes
-            );
-        }
-        view_lines
-            .iter()
-            .map(|vl| {
-                // Calculate line_end_byte: where the cursor should go when clicking past end of line
-                //
-                // For lines ending with newline: position ON the newline (so clicking past
-                // "hello\n" positions at byte 5, not byte 6 which would be next line)
-                //
-                // For lines NOT ending with newline (e.g., last line of file, or wrapped segments):
-                // position AFTER the last character (so clicking past "你好" positions at byte 6)
-                let line_end_byte = if vl.ends_with_newline {
-                    // Position ON the newline - find the last source byte (the newline's position)
-                    vl.char_source_bytes
-                        .iter()
-                        .rev()
-                        .find_map(|m| *m)
-                        .unwrap_or(0)
-                } else {
-                    // Position AFTER the last character - find last source byte and add char length
-                    if let Some((char_idx, &Some(last_byte_start))) = vl
-                        .char_source_bytes
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .find(|(_, m)| m.is_some())
-                    {
-                        // Get the character at this index to find its UTF-8 byte length
-                        if let Some(last_char) = vl.text.chars().nth(char_idx) {
-                            last_byte_start + last_char.len_utf8()
-                        } else {
-                            last_byte_start
-                        }
-                    } else {
-                        0
-                    }
-                };
-
-                ViewLineMapping {
-                    char_source_bytes: vl.char_source_bytes.clone(),
-                    visual_to_char: vl.visual_to_char.clone(),
-                    line_end_byte,
-                }
-            })
-            .collect()
+        render_output.view_line_mappings
     }
 
     /// Apply styles from original line_spans to a wrapped segment
@@ -4181,6 +4140,7 @@ mod tests {
     use super::*;
     use crate::model::buffer::Buffer;
     use crate::primitives::display_width::str_width;
+    use crate::view::theme;
     use crate::view::theme::Theme;
     use crate::view::viewport::Viewport;
 
@@ -4235,7 +4195,7 @@ mod tests {
             content.len().max(1),
             visible_count,
         );
-        let theme = Theme::default();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let decorations = SplitRenderer::decoration_context(
             &mut state,
             viewport_start,
@@ -4329,13 +4289,14 @@ mod tests {
     // Helper to count all cursor positions in rendered output
     // Cursors can appear as:
     // 1. Primary cursor in output.cursor (hardware cursor position)
-    // 2. Visual spans with REVERSED modifier (secondary cursors)
+    // 2. Visual spans with REVERSED modifier (secondary cursors, or primary cursor with contrast fix)
     // 3. Visual spans with special background color (inactive cursors)
     fn count_all_cursors(output: &LineRenderOutput) -> Vec<(u16, u16)> {
         let mut cursor_positions = Vec::new();
 
         // Check for primary cursor in output.cursor field
-        if let Some(cursor_pos) = output.cursor {
+        let primary_cursor = output.cursor;
+        if let Some(cursor_pos) = primary_cursor {
             cursor_positions.push(cursor_pos);
         }
 
@@ -4349,8 +4310,12 @@ mod tests {
                     .add_modifier
                     .contains(ratatui::style::Modifier::REVERSED)
                 {
-                    // Found a visual cursor - record its position
-                    cursor_positions.push((col, line_idx as u16));
+                    let pos = (col, line_idx as u16);
+                    // Only add if this is not the primary cursor position
+                    // (primary cursor may also have REVERSED for contrast)
+                    if primary_cursor != Some(pos) {
+                        cursor_positions.push(pos);
+                    }
                 }
                 // Count the visual width of this span's content
                 col += str_width(&span.content) as u16;

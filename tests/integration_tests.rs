@@ -6,6 +6,7 @@ use fresh::{
     model::event::{CursorId, Event, EventLog},
     state::EditorState,
     view::overlay::OverlayNamespace,
+    view::theme,
 };
 
 /// Test that cursor positions are correctly adjusted after buffer edits
@@ -544,7 +545,7 @@ fn test_lsp_diagnostic_to_overlay() {
         data: None,
     };
 
-    let theme = fresh::view::theme::Theme::dark();
+    let theme = fresh::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
     let result = diagnostic_to_overlay(&diagnostic, &buffer, &theme);
     assert!(result.is_some());
 

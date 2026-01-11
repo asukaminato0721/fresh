@@ -17,7 +17,7 @@ use crate::primitives::text_property::TextPropertyManager;
 use crate::view::margin::{MarginAnnotation, MarginContent, MarginManager, MarginPosition};
 use crate::view::overlay::{Overlay, OverlayFace, OverlayManager, UnderlineStyle};
 use crate::view::popup::{Popup, PopupContent, PopupListItem, PopupManager, PopupPosition};
-use crate::view::reference_highlight_cache::ReferenceHighlightCache;
+use crate::view::reference_highlight_overlay::ReferenceHighlightOverlay;
 use crate::view::virtual_text::VirtualTextManager;
 use anyhow::Result;
 use ratatui::style::{Color, Style};
@@ -126,10 +126,13 @@ pub struct EditorState {
     pub view_transform: Option<crate::services::plugins::api::ViewTransformPayload>,
 
     /// Debounced semantic highlight cache
-    pub reference_highlight_cache: ReferenceHighlightCache,
+    pub reference_highlight_overlay: ReferenceHighlightOverlay,
 
     /// Cached LSP semantic tokens (converted to buffer byte ranges)
     pub semantic_tokens: Option<SemanticTokenStore>,
+
+    /// The detected language for this buffer (e.g., "rust", "python", "text")
+    pub language: String,
 }
 
 impl EditorState {
@@ -164,8 +167,9 @@ impl EditorState {
             compose_prev_line_numbers: None,
             compose_column_guides: None,
             view_transform: None,
-            reference_highlight_cache: ReferenceHighlightCache::new(),
+            reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             semantic_tokens: None,
+            language: "text".to_string(), // Default to plain text
         }
     }
 
@@ -187,12 +191,16 @@ impl EditorState {
         self.highlighter = HighlightEngine::for_file(path, registry);
         if let Some(language) = Language::from_path(path) {
             self.reference_highlighter.set_language(&language);
+            self.language = language.to_string();
+        } else {
+            self.language = "text".to_string();
         }
         tracing::debug!(
-            "Set highlighter for virtual buffer based on name: {} -> {} (backend: {})",
+            "Set highlighter for virtual buffer based on name: {} -> {} (backend: {}, language: {})",
             name,
             filename,
-            self.highlighter.backend_name()
+            self.highlighter.backend_name(),
+            self.language
         );
     }
 
@@ -220,9 +228,12 @@ impl EditorState {
         // Initialize semantic highlighter with language if available
         let language = Language::from_path(path);
         let mut reference_highlighter = ReferenceHighlighter::new();
-        if let Some(lang) = language {
-            reference_highlighter.set_language(&lang);
-        }
+        let language_name = if let Some(lang) = &language {
+            reference_highlighter.set_language(lang);
+            lang.to_string()
+        } else {
+            "text".to_string()
+        };
 
         // Initialize marker list with buffer size
         let mut marker_list = MarkerList::new();
@@ -260,8 +271,9 @@ impl EditorState {
             compose_prev_line_numbers: None,
             compose_column_guides: None,
             view_transform: None,
-            reference_highlight_cache: ReferenceHighlightCache::new(),
+            reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             semantic_tokens: None,
+            language: language_name,
         })
     }
 
@@ -293,9 +305,12 @@ impl EditorState {
         // Initialize semantic highlighter with language if available
         let language = Language::from_path(path);
         let mut reference_highlighter = ReferenceHighlighter::new();
-        if let Some(lang) = language {
-            reference_highlighter.set_language(&lang);
-        }
+        let language_name = if let Some(lang) = &language {
+            reference_highlighter.set_language(lang);
+            lang.to_string()
+        } else {
+            "text".to_string()
+        };
 
         // Initialize marker list with buffer size
         let mut marker_list = MarkerList::new();
@@ -333,8 +348,9 @@ impl EditorState {
             compose_prev_line_numbers: None,
             compose_column_guides: None,
             view_transform: None,
-            reference_highlight_cache: ReferenceHighlightCache::new(),
+            reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             semantic_tokens: None,
+            language: language_name,
         })
     }
 
@@ -357,6 +373,9 @@ impl EditorState {
         // Invalidate highlight cache for edited range
         self.highlighter
             .invalidate_range(position..position + text.len());
+
+        // Note: reference_highlight_overlay uses markers that auto-adjust,
+        // so no manual invalidation needed
 
         // Adjust all cursors after the edit
         self.cursors.adjust_for_edit(position, 0, text.len());
@@ -401,6 +420,9 @@ impl EditorState {
 
         // Invalidate highlight cache for edited range
         self.highlighter.invalidate_range(range.clone());
+
+        // Note: reference_highlight_overlay uses markers that auto-adjust,
+        // so no manual invalidation needed
 
         // Adjust all cursors after the edit
         self.cursors.adjust_for_edit(range.start, len, 0);
@@ -1190,6 +1212,8 @@ pub struct SemanticTokenStore {
     pub version: u64,
     /// Server-provided result identifier (if any).
     pub result_id: Option<String>,
+    /// Raw semantic token data (u32 array, 5 integers per token).
+    pub data: Vec<u32>,
     /// All semantic token spans resolved to byte ranges.
     pub tokens: Vec<SemanticTokenSpan>,
 }

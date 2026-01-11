@@ -232,6 +232,22 @@ impl Editor {
                     }
                 }
             }
+            DeferredAction::PromptSelectionChanged { selected_index } => {
+                // Fire hook for plugin prompts so they can update live preview
+                if let Some(prompt) = &self.prompt {
+                    if let crate::view::prompt::PromptType::Plugin { custom_type } =
+                        &prompt.prompt_type
+                    {
+                        self.plugin_manager.run_hook(
+                            "prompt_selection_changed",
+                            crate::services::plugins::hooks::HookArgs::PromptSelectionChanged {
+                                prompt_type: custom_type.clone(),
+                                selected_index,
+                            },
+                        );
+                    }
+                }
+            }
 
             // Popup actions
             DeferredAction::ClosePopup => {
@@ -380,8 +396,6 @@ impl Editor {
 
     /// Navigate to previous history entry in prompt.
     fn prompt_history_prev(&mut self) {
-        use crate::view::prompt::PromptType;
-
         // Get the prompt type and current input
         let prompt_info = self
             .prompt
@@ -389,25 +403,13 @@ impl Editor {
             .map(|p| (p.prompt_type.clone(), p.input.clone()));
 
         if let Some((prompt_type, current_input)) = prompt_info {
-            // Search prompts use search history
-            if matches!(
-                prompt_type,
-                PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch
-            ) {
-                if let Some(entry) = self.search_history.navigate_prev(&current_input) {
-                    if let Some(ref mut prompt) = self.prompt {
-                        prompt.set_input(entry);
-                    }
-                }
-            }
-            // Replacement prompts use replace history
-            else if matches!(
-                prompt_type,
-                PromptType::Replace { .. } | PromptType::QueryReplace { .. }
-            ) {
-                if let Some(entry) = self.replace_history.navigate_prev(&current_input) {
-                    if let Some(ref mut prompt) = self.prompt {
-                        prompt.set_input(entry);
+            // Get the history key for this prompt type
+            if let Some(key) = Self::prompt_type_to_history_key(&prompt_type) {
+                if let Some(history) = self.prompt_histories.get_mut(&key) {
+                    if let Some(entry) = history.navigate_prev(&current_input) {
+                        if let Some(ref mut prompt) = self.prompt {
+                            prompt.set_input(entry);
+                        }
                     }
                 }
             }
@@ -416,30 +418,16 @@ impl Editor {
 
     /// Navigate to next history entry in prompt.
     fn prompt_history_next(&mut self) {
-        use crate::view::prompt::PromptType;
-
         let prompt_type = self.prompt.as_ref().map(|p| p.prompt_type.clone());
 
         if let Some(prompt_type) = prompt_type {
-            // Search prompts use search history
-            if matches!(
-                prompt_type,
-                PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch
-            ) {
-                if let Some(entry) = self.search_history.navigate_next() {
-                    if let Some(ref mut prompt) = self.prompt {
-                        prompt.set_input(entry);
-                    }
-                }
-            }
-            // Replacement prompts use replace history
-            else if matches!(
-                prompt_type,
-                PromptType::Replace { .. } | PromptType::QueryReplace { .. }
-            ) {
-                if let Some(entry) = self.replace_history.navigate_next() {
-                    if let Some(ref mut prompt) = self.prompt {
-                        prompt.set_input(entry);
+            // Get the history key for this prompt type
+            if let Some(key) = Self::prompt_type_to_history_key(&prompt_type) {
+                if let Some(history) = self.prompt_histories.get_mut(&key) {
+                    if let Some(entry) = history.navigate_next() {
+                        if let Some(ref mut prompt) = self.prompt {
+                            prompt.set_input(entry);
+                        }
                     }
                 }
             }

@@ -603,47 +603,19 @@ fn test_search_highlights_update_on_scroll() {
         harness.render().unwrap();
     }
 
-    // After scrolling with the fix:
-    // - Should still have highlights (for newly visible matches)
-    // - Highlights should be at DIFFERENT positions (not the old ones)
+    // After scrolling, overlays for all matches still exist
+    // (they're created for all matches, not just visible ones)
     let highlights_after_scroll = harness.count_search_highlights();
     assert!(
         highlights_after_scroll > 0,
-        "Should still have search highlights after scrolling (for newly visible matches)"
+        "Should still have search highlights after scrolling"
     );
 
-    // Get position of highlight after scrolling
-    let state = harness.editor().active_state();
-    let scrolled_highlight_pos = state
-        .overlays
-        .all()
-        .iter()
-        .find(|o| {
-            o.namespace
-                .as_ref()
-                .map(|ns| ns.as_str().starts_with("search"))
-                .unwrap_or(false)
-        })
-        .and_then(|o| state.marker_list.get_position(o.start_marker))
-        .expect("Should have at least one highlight after scrolling");
-
-    // The highlight position should have changed (we're highlighting different matches now)
-    assert!(
-        scrolled_highlight_pos != first_highlight_pos,
-        "Highlight should be at a different position after scrolling (old: {}, new: {})",
-        first_highlight_pos,
-        scrolled_highlight_pos
-    );
-
-    // Verify the highlight is actually in the visible viewport
-    let viewport_top = harness.editor().active_viewport().top_byte;
-    let viewport_end = viewport_top + 1000; // Approximate visible range
-    assert!(
-        scrolled_highlight_pos >= viewport_top && scrolled_highlight_pos < viewport_end,
-        "Highlight at {} should be in visible viewport (top: {})",
-        scrolled_highlight_pos,
-        viewport_top
-    );
+    // With all-match overlays, scrolling doesn't change which overlays exist,
+    // it just changes which ones are rendered. The first overlay position
+    // is still at the first match in the file.
+    // What matters is that F3 can still navigate through all matches.
+    let _ = first_highlight_pos; // silence unused warning
 }
 
 /// Test search history navigation with Up/Down arrows
@@ -1936,5 +1908,257 @@ fn test_search_in_large_file_with_low_threshold() {
         "Cursor should have moved to the match position (at least byte {}), but is at {}",
         expected_min_pos,
         cursor_pos
+    );
+}
+
+/// Test that F3 search works with matches outside the viewport
+/// Creates a large buffer with matches at the beginning and end (outside initial viewport)
+/// and verifies F3 correctly cycles through all matches
+#[test]
+fn test_f3_search_finds_matches_outside_viewport() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("large_test.txt");
+
+    // Create a large file with matches at beginning and end
+    // Viewport is 24 lines, so we need > 24 lines to ensure second match is outside viewport
+    let mut content = String::new();
+
+    // First match at the very beginning
+    content.push_str("UNIQUE_MATCH here at the start\n");
+
+    // Add many lines of padding (100 lines to be well outside viewport of 24 lines)
+    for i in 0..100 {
+        content.push_str(&format!("Padding line {:03} with no match content\n", i));
+    }
+
+    // Second match at the end (way outside initial viewport)
+    content.push_str("UNIQUE_MATCH here at the end\n");
+
+    std::fs::write(&file_path, &content).unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Verify cursor starts at position 0
+    assert_eq!(
+        harness.cursor_position(),
+        0,
+        "Cursor should start at position 0"
+    );
+
+    // Trigger search with Ctrl+F
+    harness
+        .send_key(KeyCode::Char('f'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Type search query
+    harness.type_text("UNIQUE_MATCH").unwrap();
+    harness.render().unwrap();
+
+    // Confirm search - should move to first match at position 0
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should be at first match (position 0)
+    let first_match_pos = harness.cursor_position();
+    assert_eq!(
+        first_match_pos, 0,
+        "After search, cursor should be at first match (position 0)"
+    );
+
+    // Press F3 to find next match (outside initial viewport)
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Calculate expected position of second match
+    // First line: "UNIQUE_MATCH here at the start\n" = 31 chars
+    // 100 padding lines: "Padding line XXX with no match content\n" = 39 chars each
+    let expected_second_match = 31 + (100 * 39);
+
+    // Should be at second match (way outside initial viewport)
+    let second_match_pos = harness.cursor_position();
+    assert_eq!(
+        second_match_pos, expected_second_match,
+        "F3 should move to second match at position {}. Got: {}",
+        expected_second_match, second_match_pos
+    );
+
+    // Press F3 again - should wrap to first match
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+
+    let wrapped_pos = harness.cursor_position();
+    assert_eq!(
+        wrapped_pos, 0,
+        "F3 should wrap to first match (position 0). Got: {}",
+        wrapped_pos
+    );
+
+    // Verify all matches were found by cycling through again
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+    assert_eq!(
+        harness.cursor_position(),
+        expected_second_match,
+        "Second F3 cycle should find second match again"
+    );
+}
+
+/// Test that F3 continues searching after buffer modifications
+/// Bug: After typing to modify the buffer, F3 (find next) should still work
+/// and the search state should be preserved (showing "Match X of Y").
+#[test]
+fn test_f3_continues_searching_after_buffer_modification() {
+    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let project_dir = harness.project_dir().unwrap();
+    let file_path = project_dir.join("test.txt");
+
+    // Create a test file with "foo" appearing multiple times
+    // Content: "foo\nfoo\nfoo\n" - "foo" at positions 0, 4, 8
+    std::fs::write(&file_path, "foo\nfoo\nfoo\n").unwrap();
+
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Verify initial content
+    let content = harness.get_buffer_content().unwrap();
+    assert_eq!(
+        content, "foo\nfoo\nfoo\n",
+        "Initial content should be correct"
+    );
+
+    // Step 1: Go to top of buffer (should already be there)
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    assert_eq!(harness.cursor_position(), 0, "Cursor should be at start");
+
+    // Step 2: Search for "foo"
+    harness
+        .send_key(KeyCode::Char('f'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    harness.type_text("foo").unwrap();
+    harness.render().unwrap();
+
+    // Confirm search - should move to first "foo" at position 0
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should be at first "foo" (position 0) and status bar shows match info
+    assert_eq!(
+        harness.cursor_position(),
+        0,
+        "After search, cursor should be at first 'foo' (position 0)"
+    );
+    let screen_after_search = harness.screen_to_string();
+    // Status bar may show "Found 3 matches" or "Match 1 of 3" depending on search mode
+    assert!(
+        screen_after_search.contains("3 match") || screen_after_search.contains("of 3"),
+        "Status should indicate 3 matches found. Screen:\n{}",
+        screen_after_search
+    );
+
+    // Step 3: Press F3 to skip to second "foo"
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should be at second "foo" (position 4)
+    assert_eq!(
+        harness.cursor_position(),
+        4,
+        "After first F3, cursor should be at second 'foo' (position 4)"
+    );
+    let screen_after_f3 = harness.screen_to_string();
+    // F3 should show "Match X of 3" format
+    assert!(
+        screen_after_f3.contains("of 3"),
+        "Status should show 'Match X of 3'. Screen:\n{}",
+        screen_after_f3
+    );
+
+    // Step 4: Move to beginning of buffer and type something to modify the buffer
+    // This will shift all subsequent positions
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Type "XXX " (4 characters) at the beginning
+    // This shifts all "foo" positions by 4 bytes:
+    // - First "foo" was at 0, now at 4
+    // - Second "foo" was at 4, now at 8
+    // - Third "foo" was at 8, now at 12
+    harness.type_text("XXX ").unwrap();
+    harness.render().unwrap();
+
+    // Verify the buffer was modified
+    let modified_content = harness.get_buffer_content().unwrap();
+    assert_eq!(
+        modified_content, "XXX foo\nfoo\nfoo\n",
+        "Buffer should be modified with 'XXX ' prefix"
+    );
+
+    // Current cursor position should be at 4 (after "XXX ")
+    assert_eq!(
+        harness.cursor_position(),
+        4,
+        "After typing, cursor should be at position 4"
+    );
+
+    // Step 5: Press F3 to find next "foo"
+    // The search state should be preserved, and F3 should find the next "foo"
+    // at its UPDATED position (accounting for the buffer modification)
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // After typing "XXX " at position 0, the "foo" positions are now:
+    // - First "foo" at position 4 (was 0)
+    // - Second "foo" at position 8 (was 4)
+    // - Third "foo" at position 12 (was 8)
+    //
+    // Before typing, current_match_index was 1 (we were at second match at position 4)
+    // F3 increments to index 2, which now points to position 12 (third "foo")
+    // The key thing is that positions are CORRECT (not stale) after the fix
+    let cursor_after_f3 = harness.cursor_position();
+    assert_eq!(
+        cursor_after_f3, 12,
+        "F3 should jump to third 'foo' at updated position 12. Got: {}",
+        cursor_after_f3
+    );
+
+    // KEY ASSERTION: Status bar shows correct match info
+    let screen_after_edit_f3 = harness.screen_to_string();
+    assert!(
+        screen_after_edit_f3.contains("of 3"),
+        "F3 should work after buffer modification and show match count. Screen:\n{}",
+        screen_after_edit_f3
+    );
+
+    // Press F3 again - should wrap to first "foo" at position 4
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+    let cursor_wrap = harness.cursor_position();
+    assert_eq!(
+        cursor_wrap, 4,
+        "F3 should wrap to first 'foo' (position 4). Got: {}",
+        cursor_wrap
+    );
+
+    // Press F3 again - should go to second "foo" at position 8
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+    let cursor_second = harness.cursor_position();
+    assert_eq!(
+        cursor_second, 8,
+        "F3 should go to second 'foo' (position 8). Got: {}",
+        cursor_second
     );
 }

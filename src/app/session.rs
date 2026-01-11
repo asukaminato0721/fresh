@@ -199,6 +199,8 @@ impl Editor {
                 width_percent: self.file_explorer_width_percent,
                 expanded_dirs,
                 scroll_offset: explorer.get_scroll_offset(),
+                show_hidden: explorer.ignore_patterns().show_hidden(),
+                show_gitignored: explorer.ignore_patterns().show_gitignored(),
             }
         } else {
             FileExplorerState {
@@ -206,6 +208,8 @@ impl Editor {
                 width_percent: self.file_explorer_width_percent,
                 expanded_dirs: Vec::new(),
                 scroll_offset: 0,
+                show_hidden: false,
+                show_gitignored: false,
             }
         };
 
@@ -220,15 +224,25 @@ impl Editor {
             menu_bar_hidden: Some(!self.menu_bar_visible),
         };
 
-        // Capture histories using the items() accessor
-        // Note: Only search and replace histories exist in Editor currently.
-        // Other history fields are placeholders for future features.
+        // Capture histories using the items() accessor from the prompt_histories HashMap
         let histories = SessionHistories {
-            search: self.search_history.items().to_vec(),
-            replace: self.replace_history.items().to_vec(),
+            search: self
+                .prompt_histories
+                .get("search")
+                .map(|h| h.items().to_vec())
+                .unwrap_or_default(),
+            replace: self
+                .prompt_histories
+                .get("replace")
+                .map(|h| h.items().to_vec())
+                .unwrap_or_default(),
             command_palette: Vec::new(), // Future: when command palette has history
-            goto_line: Vec::new(),       // Future: when goto line prompt has history
-            open_file: Vec::new(),       // Future: when file open prompt has history
+            goto_line: self
+                .prompt_histories
+                .get("goto_line")
+                .map(|h| h.items().to_vec())
+                .unwrap_or_default(),
+            open_file: Vec::new(), // Future: when file open prompt has history
         };
         tracing::trace!(
             "Captured histories: {} search, {} replace",
@@ -248,6 +262,19 @@ impl Editor {
         let bookmarks =
             serialize_bookmarks(&self.bookmarks, &self.buffer_metadata, &self.working_dir);
 
+        // Capture external files (files outside working_dir)
+        // These are stored as absolute paths since they can't be made relative
+        let external_files: Vec<PathBuf> = self
+            .buffer_metadata
+            .values()
+            .filter_map(|meta| meta.file_path())
+            .filter(|abs_path| abs_path.strip_prefix(&self.working_dir).is_err())
+            .cloned()
+            .collect();
+        if !external_files.is_empty() {
+            tracing::debug!("Captured {} external files", external_files.len());
+        }
+
         Session {
             version: SESSION_VERSION,
             working_dir: self.working_dir.clone(),
@@ -260,6 +287,7 @@ impl Editor {
             search_options,
             bookmarks,
             terminals,
+            external_files,
             saved_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -440,20 +468,36 @@ impl Editor {
 
         // 3. Restore histories (merge with any existing)
         tracing::debug!(
-            "Restoring histories: {} search, {} replace",
+            "Restoring histories: {} search, {} replace, {} goto_line",
             session.histories.search.len(),
-            session.histories.replace.len()
+            session.histories.replace.len(),
+            session.histories.goto_line.len()
         );
         for item in &session.histories.search {
-            self.search_history.push(item.clone());
+            self.get_or_create_prompt_history("search")
+                .push(item.clone());
         }
         for item in &session.histories.replace {
-            self.replace_history.push(item.clone());
+            self.get_or_create_prompt_history("replace")
+                .push(item.clone());
+        }
+        for item in &session.histories.goto_line {
+            self.get_or_create_prompt_history("goto_line")
+                .push(item.clone());
         }
 
         // 4. Restore file explorer state
         self.file_explorer_visible = session.file_explorer.visible;
         self.file_explorer_width_percent = session.file_explorer.width_percent;
+
+        // Store pending show_hidden and show_gitignored settings (fixes #569)
+        // These will be applied when the file explorer is initialized (async)
+        if session.file_explorer.show_hidden {
+            self.pending_file_explorer_show_hidden = Some(true);
+        }
+        if session.file_explorer.show_gitignored {
+            self.pending_file_explorer_show_gitignored = Some(true);
+        }
 
         // Initialize file explorer if it was visible in the session
         // Note: We keep key_context as Normal so the editor has focus, not the explorer
@@ -495,6 +539,34 @@ impl Editor {
         }
 
         tracing::debug!("Opened {} files from session", path_to_buffer.len());
+
+        // 5b. Restore external files (files outside the working directory)
+        // These are stored as absolute paths
+        if !session.external_files.is_empty() {
+            tracing::debug!(
+                "Restoring {} external files: {:?}",
+                session.external_files.len(),
+                session.external_files
+            );
+            for abs_path in &session.external_files {
+                if abs_path.exists() {
+                    match self.open_file_internal(abs_path) {
+                        Ok(buffer_id) => {
+                            tracing::debug!(
+                                "Restored external file {:?} as buffer {:?}",
+                                abs_path,
+                                buffer_id
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to restore external file {:?}: {}", abs_path, e);
+                        }
+                    }
+                } else {
+                    tracing::debug!("Skipping non-existent external file: {:?}", abs_path);
+                }
+            }
+        }
 
         // Restore terminals and build index -> buffer map
         let mut terminal_buffer_map: HashMap<usize, BufferId> = HashMap::new();

@@ -59,6 +59,10 @@ struct Args {
     #[arg(long)]
     no_session: bool,
 
+    /// Disable upgrade checking and anonymous telemetry
+    #[arg(long)]
+    no_upgrade_check: bool,
+
     /// Print the effective configuration as JSON and exit
     #[arg(long)]
     dump_config: bool,
@@ -66,6 +70,10 @@ struct Args {
     /// Print the directories used by Fresh and exit
     #[arg(long)]
     show_paths: bool,
+
+    /// Override the locale (e.g., 'en', 'ja', 'zh-CN')
+    #[arg(long, value_name = "LOCALE")]
+    locale: Option<String>,
 }
 
 /// Parsed file location from CLI argument in file:line:col format
@@ -488,7 +496,7 @@ fn initialize_app(args: &Args) -> AnyhowResult<SetupState> {
 
     let dir_context = fresh::config_io::DirectoryContext::from_system()?;
 
-    let config = if let Some(config_path) = &args.config {
+    let mut config = if let Some(config_path) = &args.config {
         // Explicit config file overrides layered system
         match config::Config::load_from_file(config_path) {
             Ok(cfg) => cfg,
@@ -505,9 +513,15 @@ fn initialize_app(args: &Args) -> AnyhowResult<SetupState> {
         config::Config::load_with_layers(&dir_context, &effective_working_dir)
     };
 
-    // Initialize i18n with the config's locale before creating the editor
+    // CLI flag overrides config
+    if args.no_upgrade_check {
+        config.check_for_updates = false;
+    }
+
+    // Initialize i18n with locale: CLI arg > config > environment
     // This ensures menu defaults are created with the correct translations
-    fresh::i18n::init_with_config(config.locale.as_option());
+    let locale_override = args.locale.as_deref().or(config.locale.as_option());
+    fresh::i18n::init_with_config(locale_override);
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;

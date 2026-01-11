@@ -3,6 +3,8 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use fresh::config::Config;
 use tempfile::TempDir;
 
+use fresh::view::theme;
+
 /// Helper to create a harness with auto-indent enabled
 /// Uses `.without_empty_plugins_dir()` so that embedded plugins are loaded,
 /// which is required for tree-sitter based smart editing to work.
@@ -878,7 +880,7 @@ fn apply_test_diagnostics(
     diagnostics: Vec<lsp_types::Diagnostic>,
 ) {
     let state = harness.editor_mut().active_state_mut();
-    let theme = fresh::view::theme::Theme::dark();
+    let theme = fresh::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
     fresh::services::lsp::diagnostics::apply_diagnostics_to_state(state, &diagnostics, &theme);
 }
 

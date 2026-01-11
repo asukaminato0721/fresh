@@ -2552,3 +2552,346 @@ fn test_scrollback_stable_after_multiple_mode_toggles() {
         &final_content[..final_content.len().min(1000)]
     );
 }
+
+/// Test that Open File dialog uses terminal's initial CWD, not the backing file directory
+///
+/// When the user opens the file dialog from a terminal buffer, it should start in
+/// the terminal's working directory (project root by default), not the internal
+/// backing file directory (~/.local/share/fresh/terminals/).
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_open_file_from_terminal_uses_correct_directory() {
+    // Skip if PTY is not available
+    if native_pty_system()
+        .openpty(PtySize {
+            rows: 1,
+            cols: 1,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .is_err()
+    {
+        eprintln!("Skipping terminal test: PTY not available in this environment");
+        return;
+    }
+
+    // Create harness with temp project so we have a known project root
+    let mut harness = EditorTestHarness::with_temp_project(100, 30).unwrap();
+    let project_root = harness.project_dir().unwrap();
+
+    // Open a terminal - it should start in the project root
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+    harness.assert_screen_contains("*Terminal 0*");
+
+    // Exit terminal mode (Ctrl+])
+    harness
+        .editor_mut()
+        .handle_terminal_key(KeyCode::Char(']'), KeyModifiers::CONTROL);
+    harness.render().unwrap();
+    assert!(!harness.editor().is_terminal_mode());
+
+    // Now open the file dialog (Ctrl+O)
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // The file open dialog should show the project root directory, not the terminal
+    // backing file directory (which would be something like ~/.local/share/fresh/terminals/)
+    let screen = harness.screen_to_string();
+
+    // The dialog should show the project root path
+    assert!(
+        screen.contains(&project_root.to_string_lossy().to_string()),
+        "Open File dialog should show project root directory.\nScreen:\n{}",
+        screen
+    );
+
+    // It should NOT show the terminals data directory
+    assert!(
+        !screen.contains("terminals/"),
+        "Open File dialog should NOT show terminal backing file directory.\nScreen:\n{}",
+        screen
+    );
+}
+
+/// BUG: Re-entering scrollback mode after scrolling up jumps to old scroll position
+///
+/// When:
+/// 1. Enter scrollback mode
+/// 2. Scroll up to view history
+/// 3. Exit scrollback (re-enter terminal mode)
+/// 4. Enter scrollback mode again
+///
+/// Expected: Viewport should be at the bottom (showing cursor/prompt)
+/// Actual: Viewport jumps to the previous scroll position from step 2
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_scrollback_viewport_resets_on_reentry() {
+    let mut harness = harness_or_return!(80, 24);
+
+    // Open a terminal
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+    assert!(harness.editor().is_terminal_mode());
+
+    // Disable jump_to_end_on_output so terminal output doesn't affect our test
+    harness
+        .editor_mut()
+        .set_terminal_jump_to_end_on_output(false);
+
+    // Generate enough output to create scrollback history
+    harness
+        .editor_mut()
+        .send_terminal_input(b"echo 'HISTORY_START_MARKER'\n");
+
+    harness
+        .wait_until(|h| h.screen_to_string().contains("HISTORY_START_MARKER"))
+        .unwrap();
+
+    // Generate many lines to push the start marker into scrollback
+    harness
+        .editor_mut()
+        .send_terminal_input(b"for i in $(seq 1 50); do echo \"History line $i\"; done\n");
+
+    harness
+        .wait_until(|h| h.screen_to_string().contains("History line 50"))
+        .unwrap();
+
+    // Add an end marker that will be visible at the bottom
+    harness
+        .editor_mut()
+        .send_terminal_input(b"echo 'BOTTOM_MARKER_XYZ'\n");
+
+    harness
+        .wait_until(|h| h.screen_to_string().contains("BOTTOM_MARKER_XYZ"))
+        .unwrap();
+
+    // === First scrollback entry ===
+    // Exit terminal mode to enter scrollback
+    harness
+        .editor_mut()
+        .handle_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    assert!(!harness.editor().is_terminal_mode());
+
+    // Should see the bottom marker (viewport at end)
+    harness.assert_screen_contains("BOTTOM_MARKER_XYZ");
+
+    // Scroll up significantly to view history
+    for _ in 0..15 {
+        harness
+            .editor_mut()
+            .handle_key(KeyCode::PageUp, KeyModifiers::NONE)
+            .unwrap();
+    }
+    harness.render().unwrap();
+
+    // After scrolling up, bottom marker should NOT be visible
+    harness.assert_screen_not_contains("BOTTOM_MARKER_XYZ");
+    // But history start marker should be visible
+    harness.assert_screen_contains("HISTORY_START_MARKER");
+
+    // === Exit scrollback, re-enter terminal mode ===
+    harness
+        .editor_mut()
+        .handle_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    assert!(harness.editor().is_terminal_mode());
+
+    // === Second scrollback entry - this is where the bug manifests ===
+    harness
+        .editor_mut()
+        .handle_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    assert!(!harness.editor().is_terminal_mode());
+
+    // BUG: The viewport should be at the bottom again, showing BOTTOM_MARKER_XYZ
+    // But with the bug, it jumps to the old scroll position (showing HISTORY_START_MARKER)
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("BOTTOM_MARKER_XYZ"),
+        "BUG: After re-entering scrollback mode, viewport should be at the bottom.\n\
+         Expected to see BOTTOM_MARKER_XYZ but got:\n{}",
+        screen
+    );
+}
+
+/// Same as test_scrollback_viewport_resets_on_reentry but using mouse scroll
+///
+/// This test uses mouse scroll which sets the skip_ensure_visible flag differently
+/// than keyboard scrolling, which is the actual bug trigger in real usage.
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_scrollback_viewport_resets_on_reentry_mouse_scroll() {
+    let mut harness = harness_or_return!(80, 24);
+
+    // Open a terminal
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+    assert!(harness.editor().is_terminal_mode());
+
+    // Disable jump_to_end_on_output so terminal output doesn't affect our test
+    harness
+        .editor_mut()
+        .set_terminal_jump_to_end_on_output(false);
+
+    // Generate enough output to create scrollback history
+    harness
+        .editor_mut()
+        .send_terminal_input(b"echo 'HISTORY_START_MARKER'\n");
+
+    harness
+        .wait_until(|h| h.screen_to_string().contains("HISTORY_START_MARKER"))
+        .unwrap();
+
+    // Generate many lines to push the start marker into scrollback
+    harness
+        .editor_mut()
+        .send_terminal_input(b"for i in $(seq 1 50); do echo \"History line $i\"; done\n");
+
+    harness
+        .wait_until(|h| h.screen_to_string().contains("History line 50"))
+        .unwrap();
+
+    // Add an end marker that will be visible at the bottom
+    harness
+        .editor_mut()
+        .send_terminal_input(b"echo 'BOTTOM_MARKER_XYZ'\n");
+
+    harness
+        .wait_until(|h| h.screen_to_string().contains("BOTTOM_MARKER_XYZ"))
+        .unwrap();
+
+    // === First scrollback entry ===
+    // Exit terminal mode to enter scrollback
+    harness
+        .editor_mut()
+        .handle_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    assert!(!harness.editor().is_terminal_mode());
+
+    // Should see the bottom marker (viewport at end)
+    harness.assert_screen_contains("BOTTOM_MARKER_XYZ");
+
+    // Scroll up using MOUSE SCROLL (this sets skip_ensure_visible flag)
+    // Mouse scroll at position in the content area (col 40, row 12)
+    for _ in 0..50 {
+        harness.mouse_scroll_up(40, 12).unwrap();
+    }
+    harness.render().unwrap();
+
+    // After scrolling up, bottom marker should NOT be visible
+    harness.assert_screen_not_contains("BOTTOM_MARKER_XYZ");
+    // But history start marker should be visible
+    harness.assert_screen_contains("HISTORY_START_MARKER");
+
+    // === Exit scrollback, re-enter terminal mode ===
+    harness
+        .editor_mut()
+        .handle_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    assert!(harness.editor().is_terminal_mode());
+
+    // === Second scrollback entry - this is where the bug manifests ===
+    harness
+        .editor_mut()
+        .handle_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    assert!(!harness.editor().is_terminal_mode());
+
+    // The viewport should be at the bottom again, showing BOTTOM_MARKER_XYZ
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("BOTTOM_MARKER_XYZ"),
+        "After re-entering scrollback mode, viewport should be at the bottom.\n\
+         Expected to see BOTTOM_MARKER_XYZ but got:\n{}",
+        screen
+    );
+}
+
+/// Test that terminal process exit keeps buffer open with exit message
+///
+/// When a terminal process exits (e.g., via 'exit' command):
+/// 1. The final screen state should be preserved in the buffer
+/// 2. An "[Terminal process exited]" message should be appended
+/// 3. The buffer should remain open in read-only scrollback mode
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_terminal_exit_keeps_buffer_with_message() {
+    let mut harness = harness_or_return!(80, 24);
+
+    // Open a terminal
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+    assert!(harness.editor().is_terminal_mode());
+
+    let buffer_id = harness.editor().active_buffer_id();
+
+    // Generate some output before exiting
+    harness
+        .editor_mut()
+        .send_terminal_input(b"echo 'BEFORE_EXIT_MARKER'\n");
+
+    harness
+        .wait_until(|h| h.screen_to_string().contains("BEFORE_EXIT_MARKER"))
+        .unwrap();
+
+    // Exit the terminal by typing 'exit'
+    harness.editor_mut().send_terminal_input(b"exit\n");
+
+    // Wait for terminal to exit and buffer to show the exit message
+    harness
+        .wait_until(|h| {
+            let content = h.editor().get_buffer_content(buffer_id).unwrap_or_default();
+            content.contains("[Terminal process exited]")
+        })
+        .unwrap();
+
+    harness.render().unwrap();
+
+    // Buffer should still be open - we can verify by checking active_buffer_id matches
+    assert_eq!(
+        harness.editor().active_buffer_id(),
+        buffer_id,
+        "Buffer should still be the active buffer after terminal exit"
+    );
+
+    // Should no longer be in terminal mode
+    assert!(
+        !harness.editor().is_terminal_mode(),
+        "Should not be in terminal mode after terminal exit"
+    );
+
+    // Buffer should be read-only (editing disabled) - verify via is_editing_disabled
+    assert!(
+        harness.editor().is_editing_disabled(),
+        "Buffer should be read-only after terminal exit"
+    );
+
+    // Buffer content should contain the exit marker and exit message
+    let content = harness
+        .editor()
+        .get_buffer_content(buffer_id)
+        .unwrap_or_default();
+    assert!(
+        content.contains("BEFORE_EXIT_MARKER"),
+        "Buffer should preserve content from before exit.\nContent:\n{}",
+        content
+    );
+    assert!(
+        content.contains("[Terminal process exited]"),
+        "Buffer should contain exit message.\nContent:\n{}",
+        content
+    );
+
+    // Screen should show the exit message
+    harness.assert_screen_contains("[Terminal process exited]");
+}

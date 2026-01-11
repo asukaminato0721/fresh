@@ -725,14 +725,28 @@ impl DirectoryContext {
         self.data_dir.join("sessions")
     }
 
-    /// Get the search history file path
-    pub fn search_history_path(&self) -> std::path::PathBuf {
-        self.data_dir.join("search_history.json")
+    /// Get the history file path for a specific prompt type
+    /// This is the generic method used by prompt_histories HashMap.
+    /// history_name can be: "search", "replace", "goto_line", "plugin:custom_name", etc.
+    pub fn prompt_history_path(&self, history_name: &str) -> std::path::PathBuf {
+        // Sanitize the name for filesystem safety (replace : with _)
+        let safe_name = history_name.replace(':', "_");
+        self.data_dir.join(format!("{}_history.json", safe_name))
     }
 
-    /// Get the replace history file path
+    /// Get the search history file path (legacy, calls generic method)
+    pub fn search_history_path(&self) -> std::path::PathBuf {
+        self.prompt_history_path("search")
+    }
+
+    /// Get the replace history file path (legacy, calls generic method)
     pub fn replace_history_path(&self) -> std::path::PathBuf {
-        self.data_dir.join("replace_history.json")
+        self.prompt_history_path("replace")
+    }
+
+    /// Get the goto line history file path (legacy, calls generic method)
+    pub fn goto_line_history_path(&self) -> std::path::PathBuf {
+        self.prompt_history_path("goto_line")
     }
 
     /// Get the terminals root directory

@@ -118,7 +118,13 @@ impl Editor {
         use crate::services::styled_html::render_styled_html;
 
         // Load the requested theme
-        let theme = crate::view::theme::Theme::from_name(theme_name);
+        let theme = match crate::view::theme::Theme::from_name(theme_name) {
+            Some(t) => t,
+            None => {
+                self.status_message = Some(format!("Theme '{}' not found", theme_name));
+                return;
+            }
+        };
 
         // Collect ranges and their byte offsets
         let ranges: Vec<_> = {

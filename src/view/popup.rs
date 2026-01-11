@@ -383,6 +383,37 @@ impl Popup {
         (total, visible, self.scroll_offset)
     }
 
+    /// Find the link URL at a given relative position within the popup content area.
+    /// `relative_col` and `relative_row` are relative to the inner content area (after borders).
+    /// Returns None if:
+    /// - The popup doesn't contain markdown content
+    /// - The position doesn't have a link
+    pub fn link_at_position(&self, relative_col: usize, relative_row: usize) -> Option<String> {
+        let PopupContent::Markdown(styled_lines) = &self.content else {
+            return None;
+        };
+
+        // Calculate the content width for wrapping
+        let border_width = if self.bordered { 2 } else { 0 };
+        let scrollbar_reserved = 2;
+        let content_width = self
+            .width
+            .saturating_sub(border_width)
+            .saturating_sub(scrollbar_reserved) as usize;
+
+        // Wrap the styled lines
+        let wrapped_lines = wrap_styled_lines(styled_lines, content_width);
+
+        // Account for scroll offset
+        let line_index = self.scroll_offset + relative_row;
+
+        // Get the line at this position
+        let line = wrapped_lines.get(line_index)?;
+
+        // Find the link at the column position
+        line.link_at_column(relative_col).map(|s| s.to_string())
+    }
+
     /// Get the height of the description area (including blank line separator)
     /// Returns 0 if there is no description.
     pub fn description_height(&self) -> u16 {
@@ -703,15 +734,35 @@ impl Popup {
             PopupContent::Markdown(styled_lines) => {
                 // Word-wrap styled lines to fit content area width
                 let wrapped_lines = wrap_styled_lines(styled_lines, content_area.width as usize);
+
+                // Collect link overlay info for OSC 8 rendering after the main draw
+                // Each entry: (visible_line_idx, start_column, link_text, url)
+                let mut link_overlays: Vec<(usize, usize, String, String)> = Vec::new();
+
                 let visible_lines: Vec<Line> = wrapped_lines
                     .iter()
                     .skip(self.scroll_offset)
                     .take(content_area.height as usize)
-                    .map(|styled_line| {
+                    .enumerate()
+                    .map(|(line_idx, styled_line)| {
+                        let mut col = 0usize;
                         let spans: Vec<Span> = styled_line
                             .spans
                             .iter()
-                            .map(|s| Span::styled(s.text.clone(), s.style))
+                            .map(|s| {
+                                let span_width =
+                                    unicode_width::UnicodeWidthStr::width(s.text.as_str());
+                                if let Some(url) = &s.link_url {
+                                    link_overlays.push((
+                                        line_idx,
+                                        col,
+                                        s.text.clone(),
+                                        url.clone(),
+                                    ));
+                                }
+                                col += span_width;
+                                Span::styled(s.text.clone(), s.style)
+                            })
                             .collect();
                         Line::from(spans)
                     })
@@ -719,6 +770,18 @@ impl Popup {
 
                 let paragraph = Paragraph::new(visible_lines);
                 frame.render_widget(paragraph, content_area);
+
+                // Apply OSC 8 hyperlinks following Ratatui's official workaround
+                let buffer = frame.buffer_mut();
+                let max_x = content_area.x + content_area.width;
+                for (line_idx, col_start, text, url) in link_overlays {
+                    let y = content_area.y + line_idx as u16;
+                    if y >= content_area.y + content_area.height {
+                        continue;
+                    }
+                    let start_x = content_area.x + col_start as u16;
+                    apply_hyperlink_overlay(buffer, start_x, y, max_x, &text, &url);
+                }
             }
             PopupContent::List { items, selected } => {
                 let list_items: Vec<ListItem> = items
@@ -891,9 +954,51 @@ impl Default for PopupManager {
     }
 }
 
+/// Overlay OSC 8 hyperlinks in 2-character chunks to keep text layout aligned.
+///
+/// This mirrors the approach used in Ratatui's official hyperlink example to
+/// work around Crossterm width accounting bugs for OSC sequences.
+fn apply_hyperlink_overlay(
+    buffer: &mut ratatui::buffer::Buffer,
+    start_x: u16,
+    y: u16,
+    max_x: u16,
+    text: &str,
+    url: &str,
+) {
+    let mut chunk_index = 0u16;
+    let mut chars = text.chars();
+
+    loop {
+        let mut chunk = String::new();
+        for _ in 0..2 {
+            if let Some(ch) = chars.next() {
+                chunk.push(ch);
+            } else {
+                break;
+            }
+        }
+
+        if chunk.is_empty() {
+            break;
+        }
+
+        let x = start_x + chunk_index * 2;
+        if x >= max_x {
+            break;
+        }
+
+        let hyperlink = format!("\x1B]8;;{}\x07{}\x1B]8;;\x07", url, chunk);
+        buffer[(x, y)].set_symbol(&hyperlink);
+
+        chunk_index += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::theme;
 
     #[test]
     fn test_popup_list_item() {
@@ -908,7 +1013,7 @@ mod tests {
 
     #[test]
     fn test_popup_selection() {
-        let theme = crate::view::theme::Theme::dark();
+        let theme = crate::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
         let items = vec![
             PopupListItem::new("item1".to_string()),
             PopupListItem::new("item2".to_string()),
@@ -940,7 +1045,7 @@ mod tests {
 
     #[test]
     fn test_popup_manager() {
-        let theme = crate::view::theme::Theme::dark();
+        let theme = crate::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
         let mut manager = PopupManager::new();
 
         assert!(!manager.is_visible());
@@ -967,7 +1072,7 @@ mod tests {
 
     #[test]
     fn test_popup_area_calculation() {
-        let theme = crate::view::theme::Theme::dark();
+        let theme = crate::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
         let terminal_area = Rect {
             x: 0,
             y: 0,
@@ -997,7 +1102,7 @@ mod tests {
 
     #[test]
     fn test_popup_fixed_position_clamping() {
-        let theme = crate::view::theme::Theme::dark();
+        let theme = crate::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
         let terminal_area = Rect {
             x: 0,
             y: 0,
@@ -1087,5 +1192,30 @@ mod tests {
         assert_eq!(clamped.y, 49); // y clamped to last valid position
         assert_eq!(clamped.width, 1); // width clamped to fit
         assert_eq!(clamped.height, 1); // height clamped to fit
+    }
+
+    #[test]
+    fn hyperlink_overlay_chunks_pairs() {
+        use ratatui::{buffer::Buffer, layout::Rect};
+
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 1));
+        buffer[(0, 0)].set_symbol("P");
+        buffer[(1, 0)].set_symbol("l");
+        buffer[(2, 0)].set_symbol("a");
+        buffer[(3, 0)].set_symbol("y");
+
+        apply_hyperlink_overlay(&mut buffer, 0, 0, 10, "Play", "https://example.com");
+
+        let first = buffer[(0, 0)].symbol().to_string();
+        let second = buffer[(2, 0)].symbol().to_string();
+
+        assert!(
+            first.contains("Pl"),
+            "first chunk should contain 'Pl', got {first:?}"
+        );
+        assert!(
+            second.contains("ay"),
+            "second chunk should contain 'ay', got {second:?}"
+        );
     }
 }

@@ -78,6 +78,11 @@ pub struct Session {
     #[serde(default)]
     pub terminals: Vec<SerializedTerminalSession>,
 
+    /// External files open in the session (files outside working_dir)
+    /// These are stored as absolute paths since they can't be made relative
+    #[serde(default)]
+    pub external_files: Vec<PathBuf>,
+
     /// Timestamp when session was saved (Unix epoch seconds)
     pub saved_at: u64,
 }
@@ -221,6 +226,12 @@ pub struct FileExplorerState {
     /// Scroll offset
     #[serde(default)]
     pub scroll_offset: usize,
+    /// Show hidden files (fixes #569)
+    #[serde(default)]
+    pub show_hidden: bool,
+    /// Show gitignored files (fixes #569)
+    #[serde(default)]
+    pub show_gitignored: bool,
 }
 
 impl Default for FileExplorerState {
@@ -230,6 +241,8 @@ impl Default for FileExplorerState {
             width_percent: 0.3,
             expanded_dirs: Vec::new(),
             scroll_offset: 0,
+            show_hidden: false,
+            show_gitignored: false,
         }
     }
 }
@@ -713,6 +726,7 @@ impl Session {
             search_options: SearchOptions::default(),
             bookmarks: HashMap::new(),
             terminals: Vec::new(),
+            external_files: Vec::new(),
             saved_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1080,6 +1094,8 @@ mod tests {
                 PathBuf::from("tests"),
             ],
             scroll_offset: 5,
+            show_hidden: true,
+            show_gitignored: false,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -1089,5 +1105,7 @@ mod tests {
         assert_eq!(restored.width_percent, 0.25);
         assert_eq!(restored.expanded_dirs.len(), 3);
         assert_eq!(restored.scroll_offset, 5);
+        assert!(restored.show_hidden);
+        assert!(!restored.show_gitignored);
     }
 }

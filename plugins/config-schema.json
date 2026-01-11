@@ -22,7 +22,7 @@
       "default": null
     },
     "check_for_updates": {
-      "description": "Check for new versions on quit (default: true)",
+      "description": "Check for new versions on startup (default: true).\nWhen enabled, also sends basic anonymous telemetry (version, OS, terminal type).",
       "type": "boolean",
       "default": true
     },
@@ -42,6 +42,7 @@
         "large_file_threshold_bytes": 1048576,
         "estimated_line_length": 80,
         "enable_inlay_hints": true,
+        "enable_semantic_tokens_full": false,
         "recovery_enabled": true,
         "auto_save_interval_secs": 2,
         "highlight_context_bytes": 10000,
@@ -52,7 +53,9 @@
         "file_tree_poll_interval_ms": 3000,
         "default_line_ending": "lf",
         "cursor_style": "default",
-        "quick_suggestions": true
+        "quick_suggestions": true,
+        "show_menu_bar": true,
+        "show_tab_bar": true
       }
     },
     "file_explorer": {
@@ -123,6 +126,16 @@
       "default": {
         "show_status_indicator": true
       }
+    },
+    "plugins": {
+      "description": "Plugin configurations by plugin name\nPlugins are auto-discovered from the plugins directory.\nUse this to enable/disable specific plugins.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/PluginConfig"
+      },
+      "x-standalone-category": true,
+      "x-no-add": true,
+      "default": {}
     }
   },
   "$defs": {
@@ -145,6 +158,7 @@
         "en",
         "es",
         "fr",
+        "it",
         "ja",
         "ko",
         "pt-BR",
@@ -230,6 +244,11 @@
           "type": "boolean",
           "default": true
         },
+        "enable_semantic_tokens_full": {
+          "description": "Whether to request full-document LSP semantic tokens.\nRange requests are still used when supported.\nDefault: false (range-only to avoid heavy full refreshes).",
+          "type": "boolean",
+          "default": false
+        },
         "recovery_enabled": {
           "description": "Whether to enable file recovery (Emacs-style auto-save)\nWhen enabled, buffers are periodically saved to recovery files\nso they can be recovered if the editor crashes.",
           "type": "boolean",
@@ -294,6 +313,16 @@
         },
         "quick_suggestions": {
           "description": "Enable quick suggestions (VS Code-like behavior).\nWhen enabled, completion suggestions appear automatically while typing,\nnot just on trigger characters (like `.` or `::`).\nDefault: true",
+          "type": "boolean",
+          "default": true
+        },
+        "show_menu_bar": {
+          "description": "Whether the menu bar is visible by default.\nThe menu bar provides access to menus (File, Edit, View, etc.) at the top of the screen.\nCan be toggled at runtime via command palette or keybinding.\nDefault: true",
+          "type": "boolean",
+          "default": true
+        },
+        "show_tab_bar": {
+          "description": "Whether the tab bar is visible by default.\nThe tab bar shows open files in each split pane.\nCan be toggled at runtime via command palette or keybinding.\nDefault: true",
           "type": "boolean",
           "default": true
         }
@@ -762,6 +791,26 @@
           "default": true
         }
       }
+    },
+    "PluginConfig": {
+      "description": "Configuration for an individual plugin",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether this plugin is enabled (default: true)\nWhen disabled, the plugin will not be loaded or executed.",
+          "type": "boolean",
+          "default": true
+        },
+        "path": {
+          "description": "Path to the plugin file (populated automatically when scanning)\nThis is filled in by the plugin system and should not be set manually.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "readOnly": true
+        }
+      },
+      "x-display-field": "/enabled"
     }
   }
 }

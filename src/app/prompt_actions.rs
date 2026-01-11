@@ -309,8 +309,9 @@ impl Editor {
             PromptType::FileExplorerRename {
                 original_path,
                 original_name,
+                is_new_file,
             } => {
-                self.perform_file_explorer_rename(original_path, original_name, input);
+                self.perform_file_explorer_rename(original_path, original_name, input, is_new_file);
             }
             PromptType::ConfirmDeleteFile { path, is_dir } => {
                 let input_lower = input.trim().to_lowercase();
@@ -420,6 +421,16 @@ impl Editor {
 
                 let metadata = BufferMetadata::with_file(full_path.clone(), &self.working_dir);
                 self.buffer_metadata.insert(self.active_buffer(), metadata);
+
+                // Auto-detect language if it's currently "text"
+                // This ensures syntax highlighting works immediately after "Save As"
+                if let Some(state) = self.buffers.get_mut(&self.active_buffer()) {
+                    if state.language == "text" {
+                        if let Some(filename) = full_path.file_name().and_then(|n| n.to_str()) {
+                            state.set_language_from_name(filename, &self.grammar_registry);
+                        }
+                    }
+                }
 
                 self.active_event_log_mut().mark_saved();
                 tracing::debug!(

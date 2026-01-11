@@ -391,6 +391,21 @@ impl Editor {
                                 self.set_status_message(
                                     t!("explorer.created_file", name = &filename).to_string(),
                                 );
+
+                                // Open the file in the buffer
+                                let _ = self.open_file(&path_clone);
+
+                                // Enter rename mode for the new file with empty prompt
+                                // so user can type the desired filename from scratch
+                                let prompt = crate::view::prompt::Prompt::new(
+                                    t!("explorer.rename_prompt").to_string(),
+                                    crate::view::prompt::PromptType::FileExplorerRename {
+                                        original_path: path_clone,
+                                        original_name: filename.clone(),
+                                        is_new_file: true,
+                                    },
+                                );
+                                self.prompt = Some(prompt);
                             }
                             Err(e) => {
                                 self.set_status_message(
@@ -437,6 +452,7 @@ impl Editor {
                                     crate::view::prompt::PromptType::FileExplorerRename {
                                         original_path: path_clone,
                                         original_name: dirname_clone,
+                                        is_new_file: true,
                                     },
                                     dirname,
                                 );
@@ -498,11 +514,33 @@ impl Editor {
                         if let Some(node) = explorer.tree().get_node_by_path(&path) {
                             let node_id = node.id;
                             let parent_id = get_parent_node_id(explorer.tree(), node_id, false);
+
+                            // Remember the index of the deleted node in the visible list
+                            let deleted_index = explorer.get_selected_index();
+
                             let _ = runtime.block_on(explorer.tree_mut().refresh_node(parent_id));
+
+                            // After refresh, select the next best node:
+                            // Try to stay at the same index, or select the last visible item
+                            let visible = explorer.tree().get_visible_nodes();
+                            if !visible.is_empty() {
+                                let new_index = if let Some(idx) = deleted_index {
+                                    idx.min(visible.len().saturating_sub(1))
+                                } else {
+                                    0
+                                };
+                                explorer.set_selected(Some(visible[new_index]));
+                            } else {
+                                // No visible nodes, select parent
+                                explorer.set_selected(Some(parent_id));
+                            }
                         }
                     }
                 }
                 self.set_status_message(t!("explorer.moved_to_trash", name = &name).to_string());
+
+                // Ensure focus remains on file explorer
+                self.key_context = KeyContext::FileExplorer;
             }
             Err(e) => {
                 self.set_status_message(
@@ -532,6 +570,7 @@ impl Editor {
                         crate::view::prompt::PromptType::FileExplorerRename {
                             original_path: old_path,
                             original_name: old_name.clone(),
+                            is_new_file: false,
                         },
                         old_name,
                     );
@@ -547,6 +586,7 @@ impl Editor {
         original_path: std::path::PathBuf,
         original_name: String,
         new_name: String,
+        is_new_file: bool,
     ) {
         if new_name.is_empty() || new_name == original_name {
             self.set_status_message(t!("explorer.rename_cancelled").to_string());
@@ -574,6 +614,47 @@ impl Editor {
                         // Navigate to the renamed file to restore selection
                         explorer.navigate_to_path(&new_path);
                     }
+
+                    // Update buffer metadata if this file is open in a buffer
+                    let buffer_to_update = self
+                        .buffers
+                        .iter()
+                        .find(|(_, state)| state.buffer.file_path() == Some(&original_path))
+                        .map(|(id, _)| *id);
+
+                    if let Some(buffer_id) = buffer_to_update {
+                        // Update the buffer's file path
+                        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                            state.buffer.set_file_path(new_path.clone());
+                        }
+
+                        // Update the buffer metadata
+                        if let Some(metadata) = self.buffer_metadata.get_mut(&buffer_id) {
+                            // Compute new URI
+                            let file_uri = url::Url::from_file_path(&new_path)
+                                .ok()
+                                .and_then(|u| u.as_str().parse::<lsp_types::Uri>().ok());
+
+                            // Update kind with new path and URI
+                            metadata.kind = super::BufferKind::File {
+                                path: new_path.clone(),
+                                uri: file_uri,
+                            };
+
+                            // Update display name
+                            metadata.display_name = super::BufferMetadata::display_name_for_path(
+                                &new_path,
+                                &self.working_dir,
+                            );
+                        }
+
+                        // Only switch focus to the buffer if this is a new file being created
+                        // For renaming existing files from the explorer, keep focus in explorer.
+                        if is_new_file {
+                            self.key_context = KeyContext::Normal;
+                        }
+                    }
+
                     self.set_status_message(
                         t!("explorer.renamed", old = &original_name, new = &new_name).to_string(),
                     );

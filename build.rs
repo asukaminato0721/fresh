@@ -167,15 +167,44 @@ fn rust_type_to_ts(rust_type: &str) -> String {
 
     // Handle tuples like (String, String)
     if rust_type.starts_with('(') && rust_type.ends_with(')') {
+        // Unit type () maps to void, not empty array
+        if rust_type == "()" {
+            return "void".to_string();
+        }
         let inner = &rust_type[1..rust_type.len() - 1];
-        let parts: Vec<&str> = inner.split(',').collect();
-        let ts_parts: Vec<String> = parts.iter().map(|p| rust_type_to_ts(p.trim())).collect();
+        // Split by comma, but respect nested brackets
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0;
+        for ch in inner.chars() {
+            match ch {
+                '<' | '(' | '[' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '>' | ')' | ']' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    parts.push(current.trim().to_string());
+                    current.clear();
+                }
+                _ => current.push(ch),
+            }
+        }
+        if !current.trim().is_empty() {
+            parts.push(current.trim().to_string());
+        }
+        let ts_parts: Vec<String> = parts.iter().map(|p| rust_type_to_ts(p)).collect();
         return format!("[{}]", ts_parts.join(", "));
     }
 
     match rust_type {
         // Primitives
-        "u32" | "u8" | "usize" | "i32" | "i64" | "u64" | "f32" | "f64" => "number".to_string(),
+        "u32" | "u16" | "u8" | "usize" | "i32" | "i16" | "i64" | "u64" | "f32" | "f64" => {
+            "number".to_string()
+        }
         "bool" => "boolean".to_string(),
         "String" | "&str" => "string".to_string(),
         "()" => "void".to_string(),
@@ -257,6 +286,17 @@ fn extract_doc_comments(lines: &[&str], target_line: usize) -> String {
     docs.reverse();
     docs.join("\n")
 }
+
+// TODO: Rewrite TypeScript type generation to use a more structured approach
+// instead of manually parsing Rust source code. Consider using:
+// - ts-rs crate for automatic TypeScript type generation from Rust structs
+// - A proper Rust parser (syn) instead of line-by-line text parsing
+// - Or a schema-first approach with shared type definitions
+//
+// Current issues with manual parsing:
+// - Fragile: breaks when code formatting changes
+// - Incomplete: misses JavaScript wrapper methods (t, getL10n, etc.)
+// - Hard to maintain: type mappings scattered across multiple functions
 
 /// Extract op definitions from Rust source
 fn extract_ops(rust_source: &str) -> Vec<OpInfo> {
@@ -355,9 +395,23 @@ fn parse_fn_signature(
         }
     }
 
-    // Extract parameters between ( and )
+    // Extract parameters between ( and ) - must balance parens for types like Vec<(T, T)>
     let params_start = full_sig.find('(')? + 1;
-    let params_end = full_sig.find(')')?;
+    let mut depth = 1;
+    let mut params_end = params_start;
+    for (i, ch) in full_sig[params_start..].chars().enumerate() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    params_end = params_start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
     let params_str = &full_sig[params_start..params_end];
 
     // Parse parameters
@@ -449,6 +503,7 @@ fn parse_param(param_str: &str) -> Option<ParamInfo> {
     let clean_param = param_str
         .replace("#[string]", "")
         .replace("#[serde]", "")
+        .replace("#[bigint]", "")
         .trim()
         .to_string();
 
@@ -776,9 +831,6 @@ interface EditorAPI {
 
     output.push_str(
         r#"}
-
-// Export for module compatibility
-export {};
 "#,
     );
 

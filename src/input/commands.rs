@@ -662,6 +662,18 @@ pub fn get_all_commands() -> Vec<Command> {
             source: CommandSource::Builtin,
         },
         Command {
+            name: t!("cmd.toggle_tab_bar").to_string(),
+            description: t!("cmd.toggle_tab_bar_desc").to_string(),
+            action: Action::ToggleTabBar,
+            contexts: vec![
+                KeyContext::Normal,
+                KeyContext::FileExplorer,
+                KeyContext::Terminal,
+            ],
+            custom_contexts: vec![],
+            source: CommandSource::Builtin,
+        },
+        Command {
             name: t!("cmd.focus_file_explorer").to_string(),
             description: t!("cmd.focus_file_explorer_desc").to_string(),
             action: Action::FocusFileExplorer,
@@ -1164,7 +1176,7 @@ pub fn get_all_commands() -> Vec<Command> {
             name: t!("cmd.open_terminal").to_string(),
             description: t!("cmd.open_terminal_desc").to_string(),
             action: Action::OpenTerminal,
-            contexts: vec![KeyContext::Normal, KeyContext::Terminal],
+            contexts: vec![], // Available in all contexts (file explorer, normal, terminal, etc.)
             custom_contexts: vec![],
             source: CommandSource::Builtin,
         },

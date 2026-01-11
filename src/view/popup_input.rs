@@ -108,6 +108,7 @@ impl InputHandler for PopupManager {
 mod tests {
     use super::*;
     use crate::view::popup::{Popup, PopupListItem};
+    use crate::view::theme;
     use crate::view::theme::Theme;
     use crossterm::event::KeyModifiers;
 
@@ -116,7 +117,7 @@ mod tests {
     }
 
     fn create_popup_with_items(count: usize) -> PopupManager {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let items: Vec<PopupListItem> = (0..count)
             .map(|i| PopupListItem::new(format!("Item {}", i)))
             .collect();
@@ -200,7 +201,7 @@ mod tests {
         let mut manager = PopupManager::new();
         assert!(!manager.is_modal());
 
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         manager.show(Popup::text(vec!["test".to_string()], &theme));
         assert!(manager.is_modal());
     }

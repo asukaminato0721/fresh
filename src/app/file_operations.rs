@@ -49,6 +49,18 @@ impl Editor {
 
     /// Internal helper to finalize save state (mark as saved, notify LSP, etc.)
     pub(crate) fn finalize_save(&mut self, path: Option<PathBuf>) -> anyhow::Result<()> {
+        // Auto-detect language if it's currently "text" and we have a path
+        if let Some(ref p) = path {
+            let buffer_id = self.active_buffer();
+            if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                if state.language == "text" {
+                    if let Some(filename) = p.file_name().and_then(|n| n.to_str()) {
+                        state.set_language_from_name(filename, &self.grammar_registry);
+                    }
+                }
+            }
+        }
+
         self.status_message = Some(t!("status.file_saved").to_string());
 
         // Mark the event log position as saved (for undo modified tracking)
@@ -596,7 +608,11 @@ impl Editor {
     /// This is used for auto-reverting background buffers that aren't currently
     /// visible in the active split. It reloads the buffer content and updates
     /// cursors (clamped to valid positions), but does NOT touch any viewport state.
-    fn revert_buffer_by_id(&mut self, buffer_id: BufferId, path: &Path) -> anyhow::Result<()> {
+    pub(crate) fn revert_buffer_by_id(
+        &mut self,
+        buffer_id: BufferId,
+        path: &Path,
+    ) -> anyhow::Result<()> {
         // Load the file content fresh from disk
         let new_state = EditorState::from_file_with_languages(
             path,
@@ -668,6 +684,12 @@ impl Editor {
         }
 
         for buffer_id in buffer_ids {
+            // Skip terminal buffers - they manage their own content via PTY streaming
+            // and should not be auto-reverted (which would reset editing_disabled and line_numbers)
+            if self.terminal_buffers.contains_key(&buffer_id) {
+                continue;
+            }
+
             let state = match self.buffers.get(&buffer_id) {
                 Some(s) => s,
                 None => continue,

@@ -3,6 +3,50 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub const THEME_DARK: &str = "dark";
+pub const THEME_LIGHT: &str = "light";
+pub const THEME_HIGH_CONTRAST: &str = "high-contrast";
+pub const THEME_NOSTALGIA: &str = "nostalgia";
+pub const THEME_DRACULA: &str = "dracula";
+pub const THEME_NORD: &str = "nord";
+pub const THEME_SOLARIZED_DARK: &str = "solarized-dark";
+
+struct BuiltinTheme {
+    name: &'static str,
+    json: &'static str,
+}
+
+const BUILTIN_THEMES: &[BuiltinTheme] = &[
+    BuiltinTheme {
+        name: THEME_DARK,
+        json: include_str!("../../themes/dark.json"),
+    },
+    BuiltinTheme {
+        name: THEME_LIGHT,
+        json: include_str!("../../themes/light.json"),
+    },
+    BuiltinTheme {
+        name: THEME_HIGH_CONTRAST,
+        json: include_str!("../../themes/high-contrast.json"),
+    },
+    BuiltinTheme {
+        name: THEME_NOSTALGIA,
+        json: include_str!("../../themes/nostalgia.json"),
+    },
+    BuiltinTheme {
+        name: THEME_DRACULA,
+        json: include_str!("../../themes/dracula.json"),
+    },
+    BuiltinTheme {
+        name: THEME_NORD,
+        json: include_str!("../../themes/nord.json"),
+    },
+    BuiltinTheme {
+        name: THEME_SOLARIZED_DARK,
+        json: include_str!("../../themes/solarized-dark.json"),
+    },
+];
+
 /// Convert a ratatui Color to RGB values.
 /// Returns None for Reset or Indexed colors.
 pub fn color_to_rgb(color: Color) -> Option<(u8, u8, u8)> {
@@ -77,6 +121,39 @@ impl From<ColorDef> for Color {
                 "Default" | "Reset" => Color::Reset,
                 _ => Color::White, // Default fallback
             },
+        }
+    }
+}
+
+impl From<Color> for ColorDef {
+    fn from(color: Color) -> Self {
+        match color {
+            Color::Rgb(r, g, b) => ColorDef::Rgb(r, g, b),
+            Color::White => ColorDef::Named("White".to_string()),
+            Color::Black => ColorDef::Named("Black".to_string()),
+            Color::Red => ColorDef::Named("Red".to_string()),
+            Color::Green => ColorDef::Named("Green".to_string()),
+            Color::Blue => ColorDef::Named("Blue".to_string()),
+            Color::Yellow => ColorDef::Named("Yellow".to_string()),
+            Color::Magenta => ColorDef::Named("Magenta".to_string()),
+            Color::Cyan => ColorDef::Named("Cyan".to_string()),
+            Color::Gray => ColorDef::Named("Gray".to_string()),
+            Color::DarkGray => ColorDef::Named("DarkGray".to_string()),
+            Color::LightRed => ColorDef::Named("LightRed".to_string()),
+            Color::LightGreen => ColorDef::Named("LightGreen".to_string()),
+            Color::LightBlue => ColorDef::Named("LightBlue".to_string()),
+            Color::LightYellow => ColorDef::Named("LightYellow".to_string()),
+            Color::LightMagenta => ColorDef::Named("LightMagenta".to_string()),
+            Color::LightCyan => ColorDef::Named("LightCyan".to_string()),
+            Color::Reset => ColorDef::Named("Default".to_string()),
+            Color::Indexed(_) => {
+                // Fallback for indexed colors
+                if let Some((r, g, b)) = color_to_rgb(color) {
+                    ColorDef::Rgb(r, g, b)
+                } else {
+                    ColorDef::Named("Default".to_string())
+                }
+            }
         }
     }
 }
@@ -916,6 +993,113 @@ impl From<ThemeFile> for Theme {
     }
 }
 
+impl From<Theme> for ThemeFile {
+    fn from(theme: Theme) -> Self {
+        Self {
+            name: theme.name,
+            editor: EditorColors {
+                bg: theme.editor_bg.into(),
+                fg: theme.editor_fg.into(),
+                cursor: theme.cursor.into(),
+                inactive_cursor: theme.inactive_cursor.into(),
+                selection_bg: theme.selection_bg.into(),
+                current_line_bg: theme.current_line_bg.into(),
+                line_number_fg: theme.line_number_fg.into(),
+                line_number_bg: theme.line_number_bg.into(),
+                diff_add_bg: theme.diff_add_bg.into(),
+                diff_remove_bg: theme.diff_remove_bg.into(),
+                diff_modify_bg: theme.diff_modify_bg.into(),
+            },
+            ui: UiColors {
+                tab_active_fg: theme.tab_active_fg.into(),
+                tab_active_bg: theme.tab_active_bg.into(),
+                tab_inactive_fg: theme.tab_inactive_fg.into(),
+                tab_inactive_bg: theme.tab_inactive_bg.into(),
+                tab_separator_bg: theme.tab_separator_bg.into(),
+                tab_close_hover_fg: theme.tab_close_hover_fg.into(),
+                tab_hover_bg: theme.tab_hover_bg.into(),
+                menu_bg: theme.menu_bg.into(),
+                menu_fg: theme.menu_fg.into(),
+                menu_active_bg: theme.menu_active_bg.into(),
+                menu_active_fg: theme.menu_active_fg.into(),
+                menu_dropdown_bg: theme.menu_dropdown_bg.into(),
+                menu_dropdown_fg: theme.menu_dropdown_fg.into(),
+                menu_highlight_bg: theme.menu_highlight_bg.into(),
+                menu_highlight_fg: theme.menu_highlight_fg.into(),
+                menu_border_fg: theme.menu_border_fg.into(),
+                menu_separator_fg: theme.menu_separator_fg.into(),
+                menu_hover_bg: theme.menu_hover_bg.into(),
+                menu_hover_fg: theme.menu_hover_fg.into(),
+                menu_disabled_fg: theme.menu_disabled_fg.into(),
+                menu_disabled_bg: theme.menu_disabled_bg.into(),
+                status_bar_fg: theme.status_bar_fg.into(),
+                status_bar_bg: theme.status_bar_bg.into(),
+                prompt_fg: theme.prompt_fg.into(),
+                prompt_bg: theme.prompt_bg.into(),
+                prompt_selection_fg: theme.prompt_selection_fg.into(),
+                prompt_selection_bg: theme.prompt_selection_bg.into(),
+                popup_border_fg: theme.popup_border_fg.into(),
+                popup_bg: theme.popup_bg.into(),
+                popup_selection_bg: theme.popup_selection_bg.into(),
+                popup_text_fg: theme.popup_text_fg.into(),
+                suggestion_bg: theme.suggestion_bg.into(),
+                suggestion_selected_bg: theme.suggestion_selected_bg.into(),
+                help_bg: theme.help_bg.into(),
+                help_fg: theme.help_fg.into(),
+                help_key_fg: theme.help_key_fg.into(),
+                help_separator_fg: theme.help_separator_fg.into(),
+                help_indicator_fg: theme.help_indicator_fg.into(),
+                help_indicator_bg: theme.help_indicator_bg.into(),
+                inline_code_bg: theme.inline_code_bg.into(),
+                split_separator_fg: theme.split_separator_fg.into(),
+                split_separator_hover_fg: theme.split_separator_hover_fg.into(),
+                scrollbar_track_fg: theme.scrollbar_track_fg.into(),
+                scrollbar_thumb_fg: theme.scrollbar_thumb_fg.into(),
+                scrollbar_track_hover_fg: theme.scrollbar_track_hover_fg.into(),
+                scrollbar_thumb_hover_fg: theme.scrollbar_thumb_hover_fg.into(),
+                compose_margin_bg: theme.compose_margin_bg.into(),
+                semantic_highlight_bg: theme.semantic_highlight_bg.into(),
+                terminal_bg: theme.terminal_bg.into(),
+                terminal_fg: theme.terminal_fg.into(),
+                status_warning_indicator_bg: theme.status_warning_indicator_bg.into(),
+                status_warning_indicator_fg: theme.status_warning_indicator_fg.into(),
+                status_error_indicator_bg: theme.status_error_indicator_bg.into(),
+                status_error_indicator_fg: theme.status_error_indicator_fg.into(),
+                status_warning_indicator_hover_bg: theme.status_warning_indicator_hover_bg.into(),
+                status_warning_indicator_hover_fg: theme.status_warning_indicator_hover_fg.into(),
+                status_error_indicator_hover_bg: theme.status_error_indicator_hover_bg.into(),
+                status_error_indicator_hover_fg: theme.status_error_indicator_hover_fg.into(),
+                tab_drop_zone_bg: theme.tab_drop_zone_bg.into(),
+                tab_drop_zone_border: theme.tab_drop_zone_border.into(),
+            },
+            search: SearchColors {
+                match_bg: theme.search_match_bg.into(),
+                match_fg: theme.search_match_fg.into(),
+            },
+            diagnostic: DiagnosticColors {
+                error_fg: theme.diagnostic_error_fg.into(),
+                error_bg: theme.diagnostic_error_bg.into(),
+                warning_fg: theme.diagnostic_warning_fg.into(),
+                warning_bg: theme.diagnostic_warning_bg.into(),
+                info_fg: theme.diagnostic_info_fg.into(),
+                info_bg: theme.diagnostic_info_bg.into(),
+                hint_fg: theme.diagnostic_hint_fg.into(),
+                hint_bg: theme.diagnostic_hint_bg.into(),
+            },
+            syntax: SyntaxColors {
+                keyword: theme.syntax_keyword.into(),
+                string: theme.syntax_string.into(),
+                comment: theme.syntax_comment.into(),
+                function: theme.syntax_function.into(),
+                type_: theme.syntax_type.into(),
+                variable: theme.syntax_variable.into(),
+                constant: theme.syntax_constant.into(),
+                operator: theme.syntax_operator.into(),
+            },
+        }
+    }
+}
+
 impl Theme {
     /// Load theme from a JSON file
     fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, String> {
@@ -926,8 +1110,16 @@ impl Theme {
         Ok(theme_file.into())
     }
 
-    /// Load builtin theme from the themes directory
+    /// Load builtin theme from embedded JSON or themes directory
     fn load_builtin_theme(name: &str) -> Option<Self> {
+        // 1. Check embedded themes first
+        if let Some(theme) = BUILTIN_THEMES.iter().find(|t| t.name == name) {
+            if let Ok(theme_file) = serde_json::from_str::<ThemeFile>(theme.json) {
+                return Some(theme_file.into());
+            }
+        }
+
+        // 2. Fall back to filesystem (for development or user themes in the themes dir)
         // Build list of paths to search
         let mut theme_paths = vec![
             format!("themes/{}.json", name),
@@ -953,427 +1145,17 @@ impl Theme {
         None
     }
 
-    /// Default dark theme (VSCode Dark+ inspired)
-    /// Fallback if JSON file cannot be loaded
-    pub fn dark() -> Self {
-        Self {
-            name: "dark".to_string(),
-
-            // Editor colors
-            editor_bg: Color::Rgb(30, 30, 30),
-            editor_fg: Color::Rgb(212, 212, 212),
-            cursor: Color::Rgb(255, 255, 255),
-            inactive_cursor: Color::Rgb(100, 100, 100),
-            selection_bg: Color::Rgb(38, 79, 120),
-            current_line_bg: Color::Rgb(40, 40, 40),
-            line_number_fg: Color::Rgb(100, 100, 100),
-            line_number_bg: Color::Rgb(30, 30, 30),
-
-            // Diff highlighting colors
-            diff_add_bg: Color::Rgb(35, 60, 35),    // Dark green
-            diff_remove_bg: Color::Rgb(70, 35, 35), // Dark red
-            diff_modify_bg: Color::Rgb(40, 38, 30), // Subtle yellow tint, close to editor_bg
-            diff_add_highlight_bg: Color::Rgb(60, 110, 60), // Brighter green for inline
-            diff_remove_highlight_bg: Color::Rgb(120, 50, 50), // Brighter red for inline
-
-            // UI element colors
-            tab_active_fg: Color::Yellow,
-            tab_active_bg: Color::Blue,
-            tab_inactive_fg: Color::White,
-            tab_inactive_bg: Color::DarkGray,
-            tab_separator_bg: Color::Rgb(45, 45, 48),
-            tab_close_hover_fg: Color::Rgb(255, 100, 100),
-            tab_hover_bg: Color::Rgb(70, 70, 75),
-
-            // Menu bar colors
-            menu_bg: Color::Rgb(60, 60, 65),
-            menu_fg: Color::Rgb(220, 220, 220),
-            menu_active_bg: Color::Rgb(60, 60, 60),
-            menu_active_fg: Color::Rgb(255, 255, 255),
-            menu_dropdown_bg: Color::Rgb(50, 50, 50),
-            menu_dropdown_fg: Color::Rgb(220, 220, 220),
-            menu_highlight_bg: Color::Rgb(70, 130, 180),
-            menu_highlight_fg: Color::Rgb(255, 255, 255),
-            menu_border_fg: Color::Rgb(100, 100, 100),
-            menu_separator_fg: Color::Rgb(80, 80, 80),
-            menu_hover_bg: Color::Rgb(55, 55, 55),
-            menu_hover_fg: Color::Rgb(255, 255, 255),
-            menu_disabled_fg: Color::Rgb(100, 100, 100), // Gray for disabled items
-            menu_disabled_bg: Color::Rgb(50, 50, 50),
-
-            status_bar_fg: Color::White,
-            status_bar_bg: Color::Rgb(30, 30, 30), // Darker than DarkGray
-            prompt_fg: Color::White,
-            prompt_bg: Color::Rgb(20, 20, 20), // Very dark
-            prompt_selection_fg: Color::White,
-            prompt_selection_bg: Color::Rgb(58, 79, 120), // Blue selection
-
-            popup_border_fg: Color::Gray,
-            popup_bg: Color::Rgb(30, 30, 30),
-            popup_selection_bg: Color::Rgb(58, 79, 120),
-            popup_text_fg: Color::White,
-
-            suggestion_bg: Color::Rgb(30, 30, 30),
-            suggestion_selected_bg: Color::Rgb(58, 79, 120),
-
-            help_bg: Color::Black,
-            help_fg: Color::White,
-            help_key_fg: Color::Cyan,
-            help_separator_fg: Color::DarkGray,
-
-            help_indicator_fg: Color::Red,
-            help_indicator_bg: Color::Black,
-
-            inline_code_bg: Color::Rgb(60, 60, 60), // Dark gray for code blocks
-
-            split_separator_fg: Color::Rgb(100, 100, 100),
-            split_separator_hover_fg: Color::Rgb(100, 149, 237), // Cornflower blue
-
-            // Scrollbar colors
-            scrollbar_track_fg: Color::DarkGray,
-            scrollbar_thumb_fg: Color::Gray,
-            scrollbar_track_hover_fg: Color::Gray,
-            scrollbar_thumb_hover_fg: Color::White,
-
-            // Compose mode colors
-            compose_margin_bg: Color::Rgb(18, 18, 18), // Darker than editor_bg for "desk" effect
-
-            // Semantic highlighting (word under cursor)
-            semantic_highlight_bg: Color::Rgb(60, 60, 80), // Subtle dark highlight
-
-            // Terminal colors (use terminal's default colors to preserve transparency)
-            terminal_bg: Color::Reset,
-            terminal_fg: Color::Reset,
-
-            // Status bar warning/error indicator colors
-            status_warning_indicator_bg: Color::Rgb(181, 137, 0), // Solarized amber
-            status_warning_indicator_fg: Color::Rgb(0, 0, 0),     // Black text
-            status_error_indicator_bg: Color::Rgb(220, 50, 47),   // Solarized red
-            status_error_indicator_fg: Color::Rgb(255, 255, 255), // White text
-            status_warning_indicator_hover_bg: Color::Rgb(211, 167, 30), // Lighter amber
-            status_warning_indicator_hover_fg: Color::Rgb(0, 0, 0),
-            status_error_indicator_hover_bg: Color::Rgb(250, 80, 77), // Lighter red
-            status_error_indicator_hover_fg: Color::Rgb(255, 255, 255),
-
-            // Tab drag-and-drop colors
-            tab_drop_zone_bg: Color::Rgb(70, 130, 180), // Steel blue
-            tab_drop_zone_border: Color::Rgb(100, 149, 237), // Cornflower blue
-
-            // Search colors
-            search_match_bg: Color::Rgb(100, 100, 20), // Yellow-brown highlight
-            search_match_fg: Color::Rgb(255, 255, 255),
-
-            // Diagnostic colors
-            diagnostic_error_fg: Color::Red,
-            diagnostic_error_bg: Color::Rgb(60, 20, 20),
-            diagnostic_warning_fg: Color::Yellow,
-            diagnostic_warning_bg: Color::Rgb(60, 50, 0),
-            diagnostic_info_fg: Color::Blue,
-            diagnostic_info_bg: Color::Rgb(0, 30, 60),
-            diagnostic_hint_fg: Color::Gray,
-            diagnostic_hint_bg: Color::Rgb(30, 30, 30),
-
-            // Syntax highlighting colors (VSCode Dark+ palette)
-            syntax_keyword: Color::Rgb(86, 156, 214),
-            syntax_string: Color::Rgb(206, 145, 120),
-            syntax_comment: Color::Rgb(106, 153, 85),
-            syntax_function: Color::Rgb(220, 220, 170),
-            syntax_type: Color::Rgb(78, 201, 176),
-            syntax_variable: Color::Rgb(156, 220, 254),
-            syntax_constant: Color::Rgb(79, 193, 255),
-            syntax_operator: Color::Rgb(212, 212, 212),
-        }
-    }
-
-    /// Light theme (VSCode Light+ inspired)
-    pub fn light() -> Self {
-        Self {
-            name: "light".to_string(),
-
-            // Editor colors
-            editor_bg: Color::Rgb(255, 255, 255),
-            editor_fg: Color::Rgb(0, 0, 0),
-            cursor: Color::Rgb(0, 0, 0),
-            inactive_cursor: Color::Rgb(180, 180, 180),
-            selection_bg: Color::Rgb(173, 214, 255),
-            current_line_bg: Color::Rgb(245, 245, 245),
-            line_number_fg: Color::Rgb(140, 140, 140),
-            line_number_bg: Color::Rgb(255, 255, 255),
-
-            // Diff highlighting colors
-            diff_add_bg: Color::Rgb(200, 255, 200), // Light green
-            diff_remove_bg: Color::Rgb(255, 200, 200), // Light red
-            diff_modify_bg: Color::Rgb(255, 252, 240), // Subtle cream, close to white
-            diff_add_highlight_bg: Color::Rgb(140, 220, 140), // Darker green for inline (contrast on light bg)
-            diff_remove_highlight_bg: Color::Rgb(220, 140, 140), // Darker red for inline
-
-            // UI element colors
-            tab_active_fg: Color::Rgb(40, 40, 40),
-            tab_active_bg: Color::Rgb(255, 255, 255),
-            tab_inactive_fg: Color::Rgb(100, 100, 100),
-            tab_inactive_bg: Color::Rgb(230, 230, 230),
-            tab_separator_bg: Color::Rgb(200, 200, 200),
-            tab_close_hover_fg: Color::Rgb(220, 50, 50),
-            tab_hover_bg: Color::Rgb(210, 210, 210),
-
-            // Menu bar colors - dark text on light backgrounds
-            menu_bg: Color::Rgb(245, 245, 245),
-            menu_fg: Color::Rgb(30, 30, 30),
-            menu_active_bg: Color::Rgb(225, 225, 225),
-            menu_active_fg: Color::Rgb(0, 0, 0),
-            menu_dropdown_bg: Color::Rgb(248, 248, 248),
-            menu_dropdown_fg: Color::Rgb(30, 30, 30),
-            menu_highlight_bg: Color::Rgb(209, 226, 243), // Light blue highlight
-            menu_highlight_fg: Color::Rgb(0, 0, 0),       // Dark text on light highlight
-            menu_border_fg: Color::Rgb(180, 180, 180),
-            menu_separator_fg: Color::Rgb(210, 210, 210),
-            menu_hover_bg: Color::Rgb(230, 235, 240),
-            menu_hover_fg: Color::Rgb(0, 0, 0),
-            menu_disabled_fg: Color::Rgb(160, 160, 160), // Gray for disabled items
-            menu_disabled_bg: Color::Rgb(248, 248, 248),
-
-            status_bar_fg: Color::Black,
-            status_bar_bg: Color::Rgb(220, 220, 220), // Light grey
-            prompt_fg: Color::Black,
-            prompt_bg: Color::Rgb(230, 240, 250), // Very light blue
-            prompt_selection_fg: Color::Black,
-            prompt_selection_bg: Color::Rgb(173, 214, 255), // Light blue selection
-
-            popup_border_fg: Color::Rgb(180, 180, 180),
-            popup_bg: Color::Rgb(232, 238, 245), // Light blue-gray
-            popup_selection_bg: Color::Rgb(209, 226, 243),
-            popup_text_fg: Color::Rgb(30, 30, 30),
-
-            suggestion_bg: Color::Rgb(232, 238, 245), // Light blue-gray
-            suggestion_selected_bg: Color::Rgb(209, 226, 243),
-
-            help_bg: Color::White,
-            help_fg: Color::Black,
-            help_key_fg: Color::Blue,
-            help_separator_fg: Color::Gray,
-
-            help_indicator_fg: Color::Red,
-            help_indicator_bg: Color::White,
-
-            inline_code_bg: Color::Rgb(230, 230, 235), // Light gray for code blocks
-
-            split_separator_fg: Color::Rgb(140, 140, 140),
-            split_separator_hover_fg: Color::Rgb(70, 130, 180), // Steel blue
-
-            // Scrollbar colors
-            scrollbar_track_fg: Color::Rgb(220, 220, 220),
-            scrollbar_thumb_fg: Color::Rgb(180, 180, 180),
-            scrollbar_track_hover_fg: Color::Rgb(200, 200, 200),
-            scrollbar_thumb_hover_fg: Color::Rgb(140, 140, 140),
-
-            // Compose mode colors
-            compose_margin_bg: Color::Rgb(220, 220, 225), // Slightly darker than white for "desk" effect
-
-            // Semantic highlighting (word under cursor)
-            semantic_highlight_bg: Color::Rgb(220, 230, 240), // Subtle light blue highlight
-
-            // Terminal colors (use terminal's default colors to preserve transparency)
-            terminal_bg: Color::Reset,
-            terminal_fg: Color::Reset,
-
-            // Status bar warning/error indicator colors (darker for light theme)
-            status_warning_indicator_bg: Color::Rgb(202, 145, 0), // Darker amber for light bg
-            status_warning_indicator_fg: Color::Rgb(0, 0, 0),     // Black text
-            status_error_indicator_bg: Color::Rgb(200, 40, 40),   // Darker red for light bg
-            status_error_indicator_fg: Color::Rgb(255, 255, 255), // White text
-            status_warning_indicator_hover_bg: Color::Rgb(232, 175, 30), // Lighter amber
-            status_warning_indicator_hover_fg: Color::Rgb(0, 0, 0),
-            status_error_indicator_hover_bg: Color::Rgb(230, 70, 70), // Lighter red
-            status_error_indicator_hover_fg: Color::Rgb(255, 255, 255),
-
-            // Tab drag-and-drop colors (lighter for light theme)
-            tab_drop_zone_bg: Color::Rgb(173, 214, 255), // Light blue
-            tab_drop_zone_border: Color::Rgb(70, 130, 180), // Steel blue
-
-            // Search colors
-            search_match_bg: Color::Rgb(255, 255, 150), // Light yellow highlight
-            search_match_fg: Color::Rgb(0, 0, 0),
-
-            // Diagnostic colors
-            diagnostic_error_fg: Color::Red,
-            diagnostic_error_bg: Color::Rgb(255, 220, 220),
-            diagnostic_warning_fg: Color::Rgb(128, 128, 0),
-            diagnostic_warning_bg: Color::Rgb(255, 255, 200),
-            diagnostic_info_fg: Color::Blue,
-            diagnostic_info_bg: Color::Rgb(220, 240, 255),
-            diagnostic_hint_fg: Color::DarkGray,
-            diagnostic_hint_bg: Color::Rgb(240, 240, 240),
-
-            // Syntax highlighting colors (improved light theme palette)
-            syntax_keyword: Color::Rgb(175, 0, 219), // Purple keywords
-            syntax_string: Color::Rgb(163, 21, 21),  // Dark red strings
-            syntax_comment: Color::Rgb(0, 128, 0),   // Green comments
-            syntax_function: Color::Rgb(121, 94, 38), // Brown functions
-            syntax_type: Color::Rgb(0, 128, 128),    // Teal types
-            syntax_variable: Color::Rgb(0, 16, 128), // Dark blue variables
-            syntax_constant: Color::Rgb(0, 112, 193), // Blue constants
-            syntax_operator: Color::Rgb(0, 0, 0),    // Black operators
-        }
-    }
-
-    /// High contrast theme for accessibility
-    pub fn high_contrast() -> Self {
-        Self {
-            name: "high-contrast".to_string(),
-
-            // Editor colors
-            editor_bg: Color::Black,
-            editor_fg: Color::White,
-            cursor: Color::White,
-            inactive_cursor: Color::DarkGray,
-            selection_bg: Color::Rgb(0, 100, 200),
-            current_line_bg: Color::Rgb(20, 20, 20),
-            line_number_fg: Color::Rgb(140, 140, 140),
-            line_number_bg: Color::Black,
-
-            // Diff highlighting colors
-            diff_add_bg: Color::Rgb(0, 80, 0),     // Dark green
-            diff_remove_bg: Color::Rgb(100, 0, 0), // Dark red
-            diff_modify_bg: Color::Rgb(25, 22, 0), // Subtle yellow, close to black
-            diff_add_highlight_bg: Color::Rgb(0, 140, 0), // Brighter green
-            diff_remove_highlight_bg: Color::Rgb(180, 0, 0), // Brighter red
-
-            // UI element colors
-            tab_active_fg: Color::Black,
-            tab_active_bg: Color::Yellow,
-            tab_inactive_fg: Color::White,
-            tab_inactive_bg: Color::Black,
-            tab_separator_bg: Color::Rgb(30, 30, 35),
-            tab_close_hover_fg: Color::Rgb(249, 38, 114), // Monokai pink for hover
-            tab_hover_bg: Color::Rgb(50, 50, 55),
-
-            // Menu bar colors
-            menu_bg: Color::Rgb(50, 50, 55),
-            menu_fg: Color::White,
-            menu_active_bg: Color::Yellow,
-            menu_active_fg: Color::Black,
-            menu_dropdown_bg: Color::Rgb(20, 20, 20),
-            menu_dropdown_fg: Color::White,
-            menu_highlight_bg: Color::Rgb(0, 100, 200),
-            menu_highlight_fg: Color::White,
-            menu_border_fg: Color::Yellow,
-            menu_separator_fg: Color::White,
-            menu_hover_bg: Color::Rgb(50, 50, 50),
-            menu_hover_fg: Color::Yellow,
-            menu_disabled_fg: Color::DarkGray, // Low contrast gray for disabled
-            menu_disabled_bg: Color::Rgb(20, 20, 20),
-
-            status_bar_fg: Color::White,
-            status_bar_bg: Color::Rgb(20, 20, 20), // Darker for high contrast
-            prompt_fg: Color::White,
-            prompt_bg: Color::Rgb(10, 10, 10), // Very dark
-            prompt_selection_fg: Color::White,
-            prompt_selection_bg: Color::Rgb(0, 100, 200), // Blue selection
-
-            popup_border_fg: Color::LightCyan,
-            popup_bg: Color::Black,
-            popup_selection_bg: Color::Rgb(0, 100, 200),
-            popup_text_fg: Color::White,
-
-            suggestion_bg: Color::Black,
-            suggestion_selected_bg: Color::Rgb(0, 100, 200),
-
-            help_bg: Color::Black,
-            help_fg: Color::White,
-            help_key_fg: Color::LightCyan,
-            help_separator_fg: Color::White,
-
-            help_indicator_fg: Color::Red,
-            help_indicator_bg: Color::Black,
-
-            inline_code_bg: Color::Rgb(40, 40, 40), // Dark gray for code blocks
-
-            split_separator_fg: Color::Rgb(140, 140, 140),
-            split_separator_hover_fg: Color::Yellow,
-
-            // Scrollbar colors
-            scrollbar_track_fg: Color::White,
-            scrollbar_thumb_fg: Color::Yellow,
-            scrollbar_track_hover_fg: Color::Yellow,
-            scrollbar_thumb_hover_fg: Color::Cyan,
-
-            // Compose mode colors
-            compose_margin_bg: Color::Rgb(10, 10, 10), // Very dark for high contrast "desk" effect
-
-            // Semantic highlighting (word under cursor)
-            semantic_highlight_bg: Color::Rgb(0, 60, 100), // Bright blue highlight for visibility
-
-            // Terminal colors (use terminal's default colors to preserve transparency)
-            terminal_bg: Color::Reset,
-            terminal_fg: Color::Reset,
-
-            // Status bar warning/error indicator colors (high visibility)
-            status_warning_indicator_bg: Color::Yellow, // Bright yellow
-            status_warning_indicator_fg: Color::Black,  // Black text
-            status_error_indicator_bg: Color::Red,      // Bright red
-            status_error_indicator_fg: Color::White,    // White text
-            status_warning_indicator_hover_bg: Color::LightYellow, // Lighter yellow
-            status_warning_indicator_hover_fg: Color::Black,
-            status_error_indicator_hover_bg: Color::LightRed, // Lighter red
-            status_error_indicator_hover_fg: Color::White,
-
-            // Tab drag-and-drop colors (high visibility)
-            tab_drop_zone_bg: Color::Rgb(0, 100, 200), // Bright blue
-            tab_drop_zone_border: Color::Yellow,       // Yellow border for visibility
-
-            // Search colors
-            search_match_bg: Color::Yellow,
-            search_match_fg: Color::Black,
-
-            // Diagnostic colors
-            diagnostic_error_fg: Color::Red,
-            diagnostic_error_bg: Color::Rgb(100, 0, 0),
-            diagnostic_warning_fg: Color::Yellow,
-            diagnostic_warning_bg: Color::Rgb(100, 100, 0),
-            diagnostic_info_fg: Color::Cyan,
-            diagnostic_info_bg: Color::Rgb(0, 50, 100),
-            diagnostic_hint_fg: Color::White,
-            diagnostic_hint_bg: Color::Rgb(50, 50, 50),
-
-            // Syntax highlighting colors (high contrast)
-            syntax_keyword: Color::Cyan,
-            syntax_string: Color::Green,
-            syntax_comment: Color::Gray,
-            syntax_function: Color::Yellow,
-            syntax_type: Color::Magenta,
-            syntax_variable: Color::White,
-            syntax_constant: Color::LightBlue,
-            syntax_operator: Color::White,
-        }
-    }
-
-    /// Get a theme by name, defaults to dark if not found
-    /// Tries to load from JSON file first, falls back to hardcoded themes
-    pub fn from_name(name: &str) -> Self {
+    /// Get a theme by name.
+    /// Tries to load from JSON file first, falls back to embedded themes
+    pub fn from_name(name: &str) -> Option<Self> {
         let normalized_name = name.to_lowercase().replace('_', "-");
 
-        // Try to load from JSON file first
-        if let Some(theme) = Self::load_builtin_theme(&normalized_name) {
-            return theme;
-        }
-
-        // Fall back to hardcoded themes
-        match normalized_name.as_str() {
-            "light" => Self::light(),
-            "high-contrast" => Self::high_contrast(),
-            "nostalgia" => Self::nostalgia(),
-            _ => Self::dark(),
-        }
+        Self::load_builtin_theme(&normalized_name)
     }
 
     /// Get all available theme names (builtin + user themes)
     pub fn available_themes() -> Vec<String> {
-        let mut themes: Vec<String> = vec![
-            "dark".to_string(),
-            "light".to_string(),
-            "high-contrast".to_string(),
-            "nostalgia".to_string(),
-        ];
+        let mut themes: Vec<String> = BUILTIN_THEMES.iter().map(|t| t.name.to_string()).collect();
 
         // Scan built-in themes directory (themes/*.json in the project)
         if let Ok(entries) = std::fs::read_dir("themes") {
@@ -1413,137 +1195,6 @@ impl Theme {
         themes
     }
 
-    /// Nostalgia theme (Turbo Pascal 5 / WordPerfect 5 inspired)
-    pub fn nostalgia() -> Self {
-        Self {
-            name: "nostalgia".to_string(),
-
-            // Editor colors - classic blue background with yellow/white text
-            editor_bg: Color::Rgb(0, 0, 170),    // Classic DOS blue
-            editor_fg: Color::Rgb(255, 255, 85), // Bright yellow
-            cursor: Color::Rgb(255, 255, 255),   // White block cursor
-            inactive_cursor: Color::Rgb(170, 170, 170),
-            selection_bg: Color::Rgb(170, 170, 170), // Gray selection
-            current_line_bg: Color::Rgb(0, 0, 128),  // Slightly darker blue
-            line_number_fg: Color::Rgb(85, 255, 255), // Cyan
-            line_number_bg: Color::Rgb(0, 0, 170),
-
-            // Diff highlighting colors
-            diff_add_bg: Color::Rgb(0, 100, 0),      // DOS green
-            diff_remove_bg: Color::Rgb(170, 0, 0),   // DOS red
-            diff_modify_bg: Color::Rgb(20, 20, 140), // Subtle purple-blue, close to DOS blue bg
-            diff_add_highlight_bg: Color::Rgb(0, 170, 0), // Brighter DOS green
-            diff_remove_highlight_bg: Color::Rgb(255, 0, 0), // Brighter DOS red
-
-            // UI element colors
-            tab_active_fg: Color::Rgb(0, 0, 0),
-            tab_active_bg: Color::Rgb(170, 170, 170),
-            tab_inactive_fg: Color::Rgb(255, 255, 85),
-            tab_inactive_bg: Color::Rgb(0, 0, 128),
-            tab_separator_bg: Color::Rgb(0, 0, 170),
-            tab_close_hover_fg: Color::Rgb(255, 85, 85), // Bright red for close hover
-            tab_hover_bg: Color::Rgb(0, 0, 200),         // Slightly brighter blue for hover
-
-            // Menu bar colors - classic DOS menu style
-            menu_bg: Color::Rgb(170, 170, 170),
-            menu_fg: Color::Rgb(0, 0, 0),
-            menu_active_bg: Color::Rgb(0, 170, 0),
-            menu_active_fg: Color::Rgb(255, 255, 255),
-            menu_dropdown_bg: Color::Rgb(170, 170, 170),
-            menu_dropdown_fg: Color::Rgb(0, 0, 0),
-            menu_highlight_bg: Color::Rgb(0, 170, 0), // Green highlight
-            menu_highlight_fg: Color::Rgb(255, 255, 255),
-            menu_border_fg: Color::Rgb(0, 0, 0),
-            menu_separator_fg: Color::Rgb(85, 85, 85),
-            menu_hover_bg: Color::Rgb(0, 170, 0),
-            menu_hover_fg: Color::Rgb(255, 255, 255),
-            menu_disabled_fg: Color::Rgb(85, 85, 85), // Dark gray for disabled
-            menu_disabled_bg: Color::Rgb(170, 170, 170),
-
-            status_bar_fg: Color::Rgb(0, 0, 0),
-            status_bar_bg: Color::Rgb(0, 170, 170), // Cyan status bar
-            prompt_fg: Color::Rgb(255, 255, 85),    // Yellow text
-            prompt_bg: Color::Rgb(0, 0, 170),       // Blue background
-            prompt_selection_fg: Color::Rgb(0, 0, 0),
-            prompt_selection_bg: Color::Rgb(170, 170, 170),
-
-            popup_border_fg: Color::Rgb(255, 255, 255),
-            popup_bg: Color::Rgb(0, 0, 170),
-            popup_selection_bg: Color::Rgb(0, 170, 0),
-            popup_text_fg: Color::Rgb(255, 255, 85),
-
-            suggestion_bg: Color::Rgb(0, 0, 170),
-            suggestion_selected_bg: Color::Rgb(0, 170, 0),
-
-            help_bg: Color::Rgb(0, 0, 170),
-            help_fg: Color::Rgb(255, 255, 85),
-            help_key_fg: Color::Rgb(85, 255, 255),
-            help_separator_fg: Color::Rgb(170, 170, 170),
-
-            help_indicator_fg: Color::Rgb(255, 85, 85),
-            help_indicator_bg: Color::Rgb(0, 0, 170),
-
-            inline_code_bg: Color::Rgb(0, 0, 85), // Darker blue for code blocks
-
-            split_separator_fg: Color::Rgb(85, 255, 255),
-            split_separator_hover_fg: Color::Rgb(255, 255, 255),
-
-            // Scrollbar colors
-            scrollbar_track_fg: Color::Rgb(0, 0, 128),
-            scrollbar_thumb_fg: Color::Rgb(170, 170, 170),
-            scrollbar_track_hover_fg: Color::Rgb(0, 0, 128),
-            scrollbar_thumb_hover_fg: Color::Rgb(255, 255, 255),
-
-            // Compose mode colors
-            compose_margin_bg: Color::Rgb(0, 0, 128), // Darker blue for margins
-
-            // Semantic highlighting (word under cursor)
-            semantic_highlight_bg: Color::Rgb(0, 85, 170), // Lighter blue highlight
-
-            // Terminal colors (Turbo Pascal style - blue background, yellow text)
-            terminal_bg: Color::Rgb(0, 0, 170), // Classic DOS blue
-            terminal_fg: Color::Rgb(255, 255, 85), // Bright yellow
-
-            // Status bar warning/error indicator colors (DOS style)
-            status_warning_indicator_bg: Color::Rgb(170, 85, 0), // Brown/orange (DOS warning)
-            status_warning_indicator_fg: Color::Rgb(255, 255, 255), // White text
-            status_error_indicator_bg: Color::Rgb(170, 0, 0),    // DOS red
-            status_error_indicator_fg: Color::Rgb(255, 255, 255), // White text
-            status_warning_indicator_hover_bg: Color::Rgb(200, 115, 30), // Lighter brown
-            status_warning_indicator_hover_fg: Color::Rgb(255, 255, 255),
-            status_error_indicator_hover_bg: Color::Rgb(200, 30, 30), // Lighter red
-            status_error_indicator_hover_fg: Color::Rgb(255, 255, 255),
-
-            // Tab drag-and-drop colors (DOS style)
-            tab_drop_zone_bg: Color::Rgb(0, 170, 170), // Cyan (DOS style)
-            tab_drop_zone_border: Color::Rgb(255, 255, 255), // White border
-
-            // Search colors
-            search_match_bg: Color::Rgb(170, 85, 0), // Orange/brown
-            search_match_fg: Color::Rgb(255, 255, 255),
-
-            // Diagnostic colors
-            diagnostic_error_fg: Color::Rgb(255, 85, 85),
-            diagnostic_error_bg: Color::Rgb(128, 0, 0),
-            diagnostic_warning_fg: Color::Rgb(255, 255, 85),
-            diagnostic_warning_bg: Color::Rgb(128, 128, 0),
-            diagnostic_info_fg: Color::Rgb(85, 255, 255),
-            diagnostic_info_bg: Color::Rgb(0, 85, 128),
-            diagnostic_hint_fg: Color::Rgb(170, 170, 170),
-            diagnostic_hint_bg: Color::Rgb(0, 0, 128),
-
-            // Syntax highlighting colors (Turbo Pascal / Borland style)
-            syntax_keyword: Color::Rgb(255, 255, 255), // Bright white keywords
-            syntax_string: Color::Rgb(0, 255, 255),    // Bright cyan strings
-            syntax_comment: Color::Rgb(128, 128, 128), // Dark gray comments
-            syntax_function: Color::Rgb(255, 255, 0),  // Bright yellow functions
-            syntax_type: Color::Rgb(0, 255, 0),        // Bright green types
-            syntax_variable: Color::Rgb(255, 255, 85), // Yellow variables
-            syntax_constant: Color::Rgb(255, 0, 255),  // Bright magenta constants
-            syntax_operator: Color::Rgb(170, 170, 170), // Light gray operators
-        }
-    }
-
     /// Set the terminal cursor color using OSC 12 escape sequence.
     /// This makes the hardware cursor visible on any background.
     pub fn set_terminal_cursor_color(&self) {
@@ -1570,12 +1221,6 @@ impl Theme {
     }
 }
 
-impl Default for Theme {
-    fn default() -> Self {
-        Self::high_contrast()
-    }
-}
-
 // =============================================================================
 // Theme Schema Generation for Plugin API
 // =============================================================================
@@ -1589,32 +1234,53 @@ pub fn get_theme_schema() -> serde_json::Value {
     serde_json::to_value(&schema).unwrap_or_default()
 }
 
+/// Returns a map of built-in theme names to their JSON content.
+pub fn get_builtin_themes() -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for theme in BUILTIN_THEMES {
+        map.insert(
+            theme.name.to_string(),
+            serde_json::Value::String(theme.json.to_string()),
+        );
+    }
+    serde_json::Value::Object(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_theme_creation() {
-        let dark = Theme::dark();
-        assert_eq!(dark.name, "dark");
+        let dark = Theme::from_name(THEME_DARK).expect("Dark theme must exist");
+        assert_eq!(dark.name, THEME_DARK);
 
-        let light = Theme::light();
-        assert_eq!(light.name, "light");
+        let light = Theme::from_name(THEME_LIGHT).expect("Light theme must exist");
+        assert_eq!(light.name, THEME_LIGHT);
 
-        let high_contrast = Theme::high_contrast();
-        assert_eq!(high_contrast.name, "high-contrast");
+        let high_contrast =
+            Theme::from_name(THEME_HIGH_CONTRAST).expect("High contrast theme must exist");
+        assert_eq!(high_contrast.name, THEME_HIGH_CONTRAST);
     }
 
     #[test]
     fn test_theme_from_name() {
-        let theme = Theme::from_name("light");
-        assert_eq!(theme.name, "light");
+        let theme = Theme::from_name(THEME_LIGHT).expect("Light theme must exist");
+        assert_eq!(theme.name, THEME_LIGHT);
 
-        let theme = Theme::from_name("high-contrast");
-        assert_eq!(theme.name, "high-contrast");
+        let theme = Theme::from_name(THEME_HIGH_CONTRAST).expect("High contrast theme must exist");
+        assert_eq!(theme.name, THEME_HIGH_CONTRAST);
 
         let theme = Theme::from_name("unknown");
-        assert_eq!(theme.name, "dark");
+        assert!(theme.is_none());
+    }
+
+    #[test]
+    fn test_builtin_themes_match_schema() {
+        for theme in BUILTIN_THEMES {
+            let _: ThemeFile = serde_json::from_str(theme.json)
+                .expect(&format!("Theme '{}' does not match schema", theme.name));
+        }
     }
 
     #[test]
@@ -1630,7 +1296,7 @@ mod tests {
 
     #[test]
     fn test_default_theme() {
-        let theme = Theme::default();
+        let theme = Theme::from_name(THEME_HIGH_CONTRAST).expect("Default theme must exist");
         assert_eq!(theme.name, "high-contrast");
     }
 

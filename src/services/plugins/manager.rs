@@ -5,7 +5,9 @@
 //! disabled, all methods are no-ops, avoiding the need for cfg attributes
 //! scattered throughout the codebase.
 
+use crate::config::PluginConfig;
 use crate::input::command_registry::CommandRegistry;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -28,11 +30,15 @@ impl PluginManager {
     ///
     /// When `plugins` feature is enabled and `enable` is true, spawns the plugin thread.
     /// Otherwise, creates a no-op manager.
-    pub fn new(enable: bool, command_registry: Arc<RwLock<CommandRegistry>>) -> Self {
+    pub fn new(
+        enable: bool,
+        command_registry: Arc<RwLock<CommandRegistry>>,
+        dir_context: crate::config_io::DirectoryContext,
+    ) -> Self {
         #[cfg(feature = "plugins")]
         {
             if enable {
-                match PluginThreadHandle::spawn(command_registry) {
+                match PluginThreadHandle::spawn(command_registry, dir_context) {
                     Ok(handle) => {
                         return Self {
                             inner: Some(handle),
@@ -53,6 +59,7 @@ impl PluginManager {
         #[cfg(not(feature = "plugins"))]
         {
             let _ = command_registry; // Suppress unused warning
+            let _ = dir_context; // Suppress unused warning
             if enable {
                 tracing::warn!("Plugins requested but compiled without plugin support");
             }
@@ -87,6 +94,60 @@ impl PluginManager {
         {
             let _ = dir;
             Vec::new()
+        }
+    }
+
+    /// Load plugins from a directory with config support.
+    /// Returns (errors, discovered_plugins) where discovered_plugins is a map of
+    /// plugin name -> PluginConfig with paths populated.
+    pub fn load_plugins_from_dir_with_config(
+        &self,
+        dir: &Path,
+        plugin_configs: &HashMap<String, PluginConfig>,
+    ) -> (Vec<String>, HashMap<String, PluginConfig>) {
+        #[cfg(feature = "plugins")]
+        {
+            if let Some(ref manager) = self.inner {
+                return manager.load_plugins_from_dir_with_config(dir, plugin_configs);
+            }
+            (Vec::new(), HashMap::new())
+        }
+        #[cfg(not(feature = "plugins"))]
+        {
+            let _ = (dir, plugin_configs);
+            (Vec::new(), HashMap::new())
+        }
+    }
+
+    /// Unload a plugin by name.
+    pub fn unload_plugin(&self, name: &str) -> anyhow::Result<()> {
+        #[cfg(feature = "plugins")]
+        {
+            self.inner
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Plugin system not active"))?
+                .unload_plugin(name)
+        }
+        #[cfg(not(feature = "plugins"))]
+        {
+            let _ = name;
+            Ok(())
+        }
+    }
+
+    /// Load a single plugin by path.
+    pub fn load_plugin(&self, path: &Path) -> anyhow::Result<()> {
+        #[cfg(feature = "plugins")]
+        {
+            self.inner
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Plugin system not active"))?
+                .load_plugin(path)
+        }
+        #[cfg(not(feature = "plugins"))]
+        {
+            let _ = path;
+            Ok(())
         }
     }
 

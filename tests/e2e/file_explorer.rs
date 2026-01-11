@@ -659,6 +659,98 @@ fn test_file_explorer_delete_smoke() {
     // Test passes if no panic occurs
 }
 
+/// Test that focus returns to file explorer after confirming file deletion
+#[test]
+fn test_file_explorer_focus_after_delete() {
+    let mut harness = EditorTestHarness::with_temp_project(120, 40).unwrap();
+    let project_root = harness.project_dir().unwrap();
+
+    // Create multiple test files
+    fs::write(project_root.join("file1.txt"), "content 1").unwrap();
+    fs::write(project_root.join("file2.txt"), "content 2").unwrap();
+
+    // Open and focus file explorer
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+    harness.wait_for_file_explorer_item("file1.txt").unwrap();
+
+    // Verify we're in file explorer context
+    let key_context_before = harness.editor().get_key_context();
+    println!("Key context before deletion: {:?}", key_context_before);
+    assert!(
+        matches!(
+            key_context_before,
+            fresh::input::keybindings::KeyContext::FileExplorer
+        ),
+        "Should be in FileExplorer context before deletion"
+    );
+
+    // Navigate to file1.txt
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    let screen_before = harness.screen_to_string();
+    println!("Screen before deletion:\n{}", screen_before);
+
+    // Initiate deletion using the method directly (since Delete key isn't bound by default)
+    harness.editor_mut().file_explorer_delete();
+    harness.render().unwrap();
+
+    let screen_prompt = harness.screen_to_string();
+    println!("Screen with delete prompt:\n{}", screen_prompt);
+
+    // Should see confirmation prompt
+    assert!(
+        screen_prompt.contains("Delete") || screen_prompt.contains("delete"),
+        "Should show delete confirmation prompt. Screen:\n{}",
+        screen_prompt
+    );
+
+    // Confirm deletion with 'y'
+    harness.type_text("y").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.sleep(std::time::Duration::from_millis(100));
+    harness.render().unwrap();
+
+    let screen_after = harness.screen_to_string();
+    println!("Screen after deletion:\n{}", screen_after);
+
+    // Check that focus is back to file explorer
+    let key_context_after = harness.editor().get_key_context();
+    println!("Key context after deletion: {:?}", key_context_after);
+
+    // The critical assertion: focus should be on file explorer after deletion
+    assert!(
+        matches!(
+            key_context_after,
+            fresh::input::keybindings::KeyContext::FileExplorer
+        ),
+        "Should be in FileExplorer context after deletion. Got: {:?}",
+        key_context_after
+    );
+
+    // Verify file explorer is still visible
+    assert!(
+        screen_after.contains("File Explorer"),
+        "File Explorer should still be visible after deletion"
+    );
+
+    // Verify the deleted file is gone from the file explorer tree
+    // (but it may appear in status messages like "Moved to trash: file1.txt")
+    // Check that the file explorer tree shows "1 item" (only file2.txt remains)
+    assert!(
+        screen_after.contains("1 item"),
+        "File explorer should show only 1 item remaining after deletion"
+    );
+
+    // Verify arrow keys work in file explorer (not captured by editor)
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+    // If we can navigate without error, the focus is correctly on file explorer
+}
+
 /// Test Feature 1: Enter key on directory toggles expand/collapse
 #[test]
 fn test_enter_toggles_directory() {
@@ -1908,5 +2000,234 @@ fn test_folder_modified_indicator_cleared_after_save() {
         !has_modified_indicator,
         "mydir should NOT show modified indicator after save. Line: '{}'",
         mydir_line_after
+    );
+}
+
+/// Test that creating a new file from file explorer opens a rename prompt
+/// and opens the file in the buffer
+/// Tests:
+/// 1. Prompt starts empty (not showing the randomly generated name)
+/// 2. After renaming, focus switches to the editor buffer
+/// 3. Buffer tab name is synced with the renamed file name
+#[test]
+fn test_file_explorer_new_file_opens_rename_prompt_and_buffer() {
+    let mut harness = EditorTestHarness::with_temp_project(120, 40).unwrap();
+    let project_root = harness.project_dir().unwrap();
+
+    // Open file explorer
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+
+    let screen_before = harness.screen_to_string();
+    println!("Screen before new file:\n{}", screen_before);
+
+    // Create new file using Ctrl+n
+    harness
+        .send_key(KeyCode::Char('n'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    let screen_after = harness.screen_to_string();
+    println!("Screen after new file:\n{}", screen_after);
+
+    // A rename prompt should be visible (asking for the new file name)
+    assert!(
+        screen_after.contains("Rename to:"),
+        "A rename prompt should appear after creating new file. Screen:\n{}",
+        screen_after
+    );
+
+    // The prompt should start EMPTY (not showing the generated filename)
+    // The generated filename (untitled_XXX.txt) should NOT appear in the prompt input area
+    // Note: the file IS created on disk with the generated name, but the prompt is empty
+    // so user can type the desired name from scratch
+    let prompt_line = screen_after
+        .lines()
+        .find(|l| l.contains("Rename to:"))
+        .unwrap_or("");
+    println!("Prompt line: '{}'", prompt_line);
+
+    // Verify prompt is empty (just "Rename to:" without any filename after)
+    // The prompt line should end with "Rename to:" followed by only whitespace
+    assert!(
+        prompt_line.trim() == "Rename to:" || prompt_line.trim().ends_with("Rename to:"),
+        "Prompt should start empty (no pre-filled filename). Got: '{}'",
+        prompt_line
+    );
+
+    // Type the new name (prompt starts empty, so just type directly)
+    harness.type_text("my_new_file.rs").unwrap();
+    harness.render().unwrap();
+
+    let screen_typing = harness.screen_to_string();
+    println!("Screen while typing:\n{}", screen_typing);
+
+    // Confirm the rename
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.sleep(std::time::Duration::from_millis(100));
+    harness.render().unwrap();
+
+    let screen_final = harness.screen_to_string();
+    println!("Screen after rename:\n{}", screen_final);
+
+    // Verify 1: The file should be open in the buffer (shown in tabs)
+    assert!(
+        screen_final.contains("my_new_file.rs"),
+        "The new file should be visible in tabs after renaming. Screen:\n{}",
+        screen_final
+    );
+
+    // Verify 2: Focus should be on the editor (Normal key context), not file explorer
+    let key_context = harness.editor().get_key_context();
+    assert!(
+        matches!(key_context, fresh::input::keybindings::KeyContext::Normal),
+        "Focus should be on editor (Normal context) after rename. Got: {:?}",
+        key_context
+    );
+
+    // Verify 3: The file should exist on disk with the new name
+    assert!(
+        project_root.join("my_new_file.rs").exists(),
+        "The renamed file should exist on disk"
+    );
+
+    // Verify 4: Typing should work in the buffer (proves focus is on editor)
+    harness.type_text("fn main() {}").unwrap();
+    harness.render().unwrap();
+
+    let buffer_content = harness.get_buffer_content().unwrap_or_default();
+    assert!(
+        buffer_content.contains("fn main() {}"),
+        "Should be able to type in the buffer after rename. Content: '{}'",
+        buffer_content
+    );
+
+    // Verify 5: The old generated filename should NOT exist on disk
+    // (it was renamed to my_new_file.rs)
+    let untitled_files: Vec<_> = std::fs::read_dir(&project_root)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("untitled_"))
+        .collect();
+    assert!(
+        untitled_files.is_empty(),
+        "The old generated filename should not exist on disk. Found: {:?}",
+        untitled_files
+    );
+}
+
+/// Test that renaming an existing file from file explorer updates buffer metadata
+/// but keeps focus in file explorer (not switching to editor)
+#[test]
+fn test_file_explorer_rename_existing_file_keeps_focus() {
+    let mut harness = EditorTestHarness::with_temp_project(120, 40).unwrap();
+    let project_root = harness.project_dir().unwrap();
+
+    // Create a test file
+    fs::write(project_root.join("original.txt"), "file content").unwrap();
+
+    // Open the file in the editor
+    harness
+        .editor_mut()
+        .open_file(&project_root.join("original.txt"))
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify file is open with correct name in tab
+    let screen_with_file = harness.screen_to_string();
+    assert!(
+        screen_with_file.contains("original.txt"),
+        "File should be open in editor. Screen:\n{}",
+        screen_with_file
+    );
+
+    // Open file explorer and navigate to the file
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+    harness.wait_for_file_explorer_item("original.txt").unwrap();
+
+    // Navigate down to select the file
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    // Verify we're in FileExplorer context
+    let key_context_before = harness.editor().get_key_context();
+    assert!(
+        matches!(
+            key_context_before,
+            fresh::input::keybindings::KeyContext::FileExplorer
+        ),
+        "Should be in FileExplorer context before rename. Got: {:?}",
+        key_context_before
+    );
+
+    // Trigger rename on the existing file (using the file_explorer_rename method)
+    harness.editor_mut().file_explorer_rename();
+    harness.render().unwrap();
+
+    let screen_rename_prompt = harness.screen_to_string();
+    println!("Screen with rename prompt:\n{}", screen_rename_prompt);
+
+    // Rename prompt should appear with the old name pre-filled
+    assert!(
+        screen_rename_prompt.contains("Rename to:"),
+        "Rename prompt should appear. Screen:\n{}",
+        screen_rename_prompt
+    );
+    assert!(
+        screen_rename_prompt.contains("original.txt"),
+        "Rename prompt should show old name. Screen:\n{}",
+        screen_rename_prompt
+    );
+
+    // Type new name (clear old name first with Ctrl+A, then type)
+    harness
+        .send_key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.type_text("renamed.txt").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.sleep(std::time::Duration::from_millis(100));
+    harness.render().unwrap();
+
+    let screen_after_rename = harness.screen_to_string();
+    println!("Screen after rename:\n{}", screen_after_rename);
+
+    // Verify 1: Buffer tab should show new name
+    assert!(
+        screen_after_rename.contains("renamed.txt"),
+        "Buffer tab should show new name. Screen:\n{}",
+        screen_after_rename
+    );
+
+    // Verify 2: Focus should STILL be on file explorer (not switched to editor)
+    let key_context_after = harness.editor().get_key_context();
+    assert!(
+        matches!(
+            key_context_after,
+            fresh::input::keybindings::KeyContext::FileExplorer
+        ),
+        "Focus should stay on FileExplorer after renaming existing file. Got: {:?}",
+        key_context_after
+    );
+
+    // Verify 3: File explorer should still be visible
+    assert!(
+        screen_after_rename.contains("File Explorer"),
+        "File explorer should still be visible. Screen:\n{}",
+        screen_after_rename
+    );
+
+    // Verify 4: File on disk was renamed
+    assert!(
+        project_root.join("renamed.txt").exists(),
+        "File should be renamed on disk"
+    );
+    assert!(
+        !project_root.join("original.txt").exists(),
+        "Old file should not exist on disk"
     );
 }

@@ -1,4 +1,4 @@
-/// <reference path="../types/fresh.d.ts" />
+/// <reference path="./lib/fresh.d.ts" />
 const editor = getEditor();
 
 
@@ -32,16 +32,17 @@ let searchRegex: boolean = false;
 const MAX_RESULTS = 200;
 
 // Define the search-replace mode with keybindings
+// Inherits from "normal" for cursor navigation (Up/Down)
+// Simplified keybindings following UX best practices:
+// - Enter: Execute replace (primary action)
+// - Space: Toggle selection
+// - Escape: Close panel
 editor.defineMode(
   "search-replace-list",
-  null,
+  "normal", // Inherit from normal for cursor movement
   [
-    ["Return", "search_replace_preview"],
+    ["Return", "search_replace_execute"],
     ["space", "search_replace_toggle_item"],
-    ["a", "search_replace_select_all"],
-    ["n", "search_replace_select_none"],
-    ["r", "search_replace_execute"],
-    ["q", "search_replace_close"],
     ["Escape", "search_replace_close"],
   ],
   true // read-only
@@ -225,7 +226,7 @@ async function showResultsPanel(): Promise<void> {
   const entries = buildPanelEntries();
 
   try {
-    resultsBufferId = await editor.createVirtualBufferInSplit({
+    const result = await editor.createVirtualBufferInSplit({
       name: "*Search/Replace*",
       mode: "search-replace-list",
       read_only: true,
@@ -235,9 +236,10 @@ async function showResultsPanel(): Promise<void> {
       show_line_numbers: false,
       show_cursors: true,
     });
+    resultsBufferId = result.buffer_id;
+    resultsSplitId = result.split_id ?? editor.getActiveSplitId();
 
     panelOpen = true;
-    resultsSplitId = editor.getActiveSplitId();
     editor.debug(`Search/Replace panel opened with buffer ID ${resultsBufferId}`);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

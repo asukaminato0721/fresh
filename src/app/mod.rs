@@ -113,6 +113,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 // Re-export BufferId from event module for backward compatibility
 pub use self::types::{BufferKind, BufferMetadata, HoverTarget};
@@ -129,6 +130,29 @@ fn uri_to_path(uri: &lsp_types::Uri) -> Result<PathBuf, String> {
         .map_err(|e| format!("Failed to parse URI: {}", e))?
         .to_file_path()
         .map_err(|_| "URI is not a file path".to_string())
+}
+
+/// Track an in-flight semantic token range request.
+#[derive(Clone, Debug)]
+struct SemanticTokenRangeRequest {
+    buffer_id: BufferId,
+    version: u64,
+    range: Range<usize>,
+    start_line: usize,
+    end_line: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SemanticTokensFullRequestKind {
+    Full,
+    FullDelta,
+}
+
+#[derive(Clone, Debug)]
+struct SemanticTokenFullRequest {
+    buffer_id: BufferId,
+    version: u64,
+    kind: SemanticTokensFullRequestKind,
 }
 
 /// The main editor struct - manages multiple buffers, clipboard, and rendering
@@ -247,12 +271,21 @@ pub struct Editor {
     /// Cached file explorer decorations (resolved + bubbled)
     file_explorer_decoration_cache: crate::view::file_tree::FileExplorerDecorationCache,
 
+    /// Pending show_hidden setting to apply when file explorer is initialized (from session restore)
+    pending_file_explorer_show_hidden: Option<bool>,
+
+    /// Pending show_gitignored setting to apply when file explorer is initialized (from session restore)
+    pending_file_explorer_show_gitignored: Option<bool>,
+
     /// Whether menu bar is visible
     menu_bar_visible: bool,
 
     /// Whether menu bar was auto-shown (temporarily visible due to menu activation)
     /// When true, the menu bar will be hidden again when the menu is closed
     menu_bar_auto_shown: bool,
+
+    /// Whether tab bar is visible
+    tab_bar_visible: bool,
 
     /// Whether mouse capture is enabled
     mouse_enabled: bool,
@@ -314,11 +347,26 @@ pub struct Editor {
     /// Pending LSP inlay hints request ID (if any)
     pending_inlay_hints_request: Option<u64>,
 
-    /// Pending semantic token requests keyed by LSP request ID -> (buffer_id, buffer_version)
-    pending_semantic_token_requests: HashMap<u64, (BufferId, u64)>,
+    /// Pending semantic token requests keyed by LSP request ID
+    pending_semantic_token_requests: HashMap<u64, SemanticTokenFullRequest>,
 
     /// Track semantic token requests per buffer to prevent duplicate inflight requests
-    semantic_tokens_in_flight: HashMap<BufferId, (u64, u64)>,
+    semantic_tokens_in_flight: HashMap<BufferId, (u64, u64, SemanticTokensFullRequestKind)>,
+
+    /// Pending semantic token range requests keyed by LSP request ID
+    pending_semantic_token_range_requests: HashMap<u64, SemanticTokenRangeRequest>,
+
+    /// Track semantic token range requests per buffer (request_id, start_line, end_line, version)
+    semantic_tokens_range_in_flight: HashMap<BufferId, (u64, usize, usize, u64)>,
+
+    /// Track last semantic token range request per buffer (start_line, end_line, version, time)
+    semantic_tokens_range_last_request: HashMap<BufferId, (usize, usize, u64, Instant)>,
+
+    /// Track last applied semantic token range per buffer (start_line, end_line, version)
+    semantic_tokens_range_applied: HashMap<BufferId, (usize, usize, u64)>,
+
+    /// Next time a full semantic token refresh is allowed for a buffer
+    semantic_tokens_full_debounce: HashMap<BufferId, Instant>,
 
     /// Hover symbol range (byte offsets) - for highlighting the symbol under hover
     /// Format: (start_byte_offset, end_byte_offset)
@@ -373,11 +421,9 @@ pub struct Editor {
     /// Maps panel ID (e.g., "diagnostics") to buffer ID
     panel_ids: HashMap<String, BufferId>,
 
-    /// Search history (for search and find operations)
-    search_history: crate::input::input_history::InputHistory,
-
-    /// Replace history (for replace operations)
-    replace_history: crate::input::input_history::InputHistory,
+    /// Prompt histories keyed by prompt type name (e.g., "search", "replace", "goto_line", "plugin:custom_name")
+    /// This provides a generic history system that works for all prompt types including plugin prompts.
+    prompt_histories: HashMap<String, crate::input::input_history::InputHistory>,
 
     /// LSP progress tracking (token -> progress info)
     lsp_progress: std::collections::HashMap<String, LspProgressInfo>,
@@ -656,7 +702,7 @@ impl Editor {
     /// This is primarily used for testing with slow or mock backends
     /// to verify editor behavior under various I/O conditions
     fn with_options(
-        config: Config,
+        mut config: Config,
         width: u16,
         height: u16,
         working_dir: Option<PathBuf>,
@@ -680,7 +726,8 @@ impl Editor {
         let working_dir = working_dir.canonicalize().unwrap_or_else(|_| working_dir);
 
         // Load theme from config
-        let theme = crate::view::theme::Theme::from_name(&config.theme);
+        let theme = crate::view::theme::Theme::from_name(&config.theme)
+            .ok_or_else(|| anyhow::anyhow!("Theme '{:?}' not found", config.theme))?;
 
         // Set terminal cursor color to match theme
         theme.set_terminal_cursor_color();
@@ -697,11 +744,13 @@ impl Editor {
         let mut event_logs = HashMap::new();
 
         let buffer_id = BufferId(0);
-        let state = EditorState::new(
+        let mut state = EditorState::new(
             width,
             height,
             config.editor.large_file_threshold_bytes as usize,
         );
+        // Apply line_numbers default from config (fixes #539)
+        state.margins.set_line_numbers(config.editor.line_numbers);
         // Note: line_wrap_enabled is now stored in SplitViewState.viewport
         tracing::info!("EditorState created for buffer {:?}", buffer_id);
         buffers.insert(buffer_id, state);
@@ -763,7 +812,11 @@ impl Editor {
         let command_registry = Arc::new(RwLock::new(CommandRegistry::new()));
 
         // Initialize plugin manager (handles both enabled and disabled cases internally)
-        let plugin_manager = PluginManager::new(enable_plugins, Arc::clone(&command_registry));
+        let plugin_manager = PluginManager::new(
+            enable_plugins,
+            Arc::clone(&command_registry),
+            dir_context.clone(),
+        );
 
         // Load TypeScript plugins from multiple directories:
         // 1. Next to the executable (for cargo-dist installations)
@@ -806,10 +859,18 @@ impl Editor {
                 );
             }
 
-            // Load from all found plugin directories
+            // Load from all found plugin directories, respecting config
             for plugin_dir in plugin_dirs {
                 tracing::info!("Loading TypeScript plugins from: {:?}", plugin_dir);
-                let errors = plugin_manager.load_plugins_from_dir(&plugin_dir);
+                let (errors, discovered_plugins) =
+                    plugin_manager.load_plugins_from_dir_with_config(&plugin_dir, &config.plugins);
+
+                // Merge discovered plugins into config
+                // discovered_plugins already contains the merged config (saved enabled state + discovered path)
+                for (name, plugin_config) in discovered_plugins {
+                    config.plugins.insert(name, plugin_config);
+                }
+
                 if !errors.is_empty() {
                     for err in &errors {
                         tracing::error!("TypeScript plugin load error: {}", err);
@@ -830,8 +891,10 @@ impl Editor {
         let recovery_enabled = config.editor.recovery_enabled;
         let auto_save_interval_secs = config.editor.auto_save_interval_secs;
         let check_for_updates = config.check_for_updates;
+        let show_menu_bar = config.editor.show_menu_bar;
+        let show_tab_bar = config.editor.show_tab_bar;
 
-        // Start periodic update checker if enabled
+        // Start periodic update checker if enabled (also sends daily telemetry)
         let update_checker = if check_for_updates {
             tracing::debug!("Update checking enabled, starting periodic checker");
             Some(
@@ -882,7 +945,12 @@ impl Editor {
             file_explorer_decoration_cache:
                 crate::view::file_tree::FileExplorerDecorationCache::default(),
             menu_bar_visible: true,
+            menu_bar_visible: true,
+            pending_file_explorer_show_hidden: None,
+            pending_file_explorer_show_gitignored: None,
+            menu_bar_visible: show_menu_bar,
             menu_bar_auto_shown: false,
+            tab_bar_visible: show_tab_bar,
             mouse_enabled: true,
             mouse_cursor_position: None,
             gpm_active: false,
@@ -904,6 +972,11 @@ impl Editor {
             pending_inlay_hints_request: None,
             pending_semantic_token_requests: HashMap::new(),
             semantic_tokens_in_flight: HashMap::new(),
+            pending_semantic_token_range_requests: HashMap::new(),
+            semantic_tokens_range_in_flight: HashMap::new(),
+            semantic_tokens_range_last_request: HashMap::new(),
+            semantic_tokens_range_applied: HashMap::new(),
+            semantic_tokens_full_debounce: HashMap::new(),
             hover_symbol_range: None,
             hover_symbol_overlay: None,
             mouse_hover_screen_position: None,
@@ -924,25 +997,19 @@ impl Editor {
             plugin_manager,
             seen_byte_ranges: HashMap::new(),
             panel_ids: HashMap::new(),
-            search_history: {
-                // Load search history from disk if available
-                let path = dir_context.search_history_path();
-                crate::input::input_history::InputHistory::load_from_file(&path).unwrap_or_else(
-                    |e| {
-                        tracing::warn!("Failed to load search history: {}", e);
-                        crate::input::input_history::InputHistory::new()
-                    },
-                )
-            },
-            replace_history: {
-                // Load replace history from disk if available
-                let path = dir_context.replace_history_path();
-                crate::input::input_history::InputHistory::load_from_file(&path).unwrap_or_else(
-                    |e| {
-                        tracing::warn!("Failed to load replace history: {}", e);
-                        crate::input::input_history::InputHistory::new()
-                    },
-                )
+            prompt_histories: {
+                // Load prompt histories from disk if available
+                let mut histories = HashMap::new();
+                for history_name in ["search", "replace", "goto_line"] {
+                    let path = dir_context.prompt_history_path(history_name);
+                    let history = crate::input::input_history::InputHistory::load_from_file(&path)
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to load {} history: {}", history_name, e);
+                            crate::input::input_history::InputHistory::new()
+                        });
+                    histories.insert(history_name.to_string(), history);
+                }
+                histories
             },
             lsp_progress: std::collections::HashMap::new(),
             lsp_server_statuses: std::collections::HashMap::new(),
@@ -1048,11 +1115,30 @@ impl Editor {
     }
 
     /// Remove a pending semantic token request from tracking maps.
-    fn take_pending_semantic_token_request(&mut self, request_id: u64) -> Option<(BufferId, u64)> {
-        if let Some((buffer_id, version)) = self.pending_semantic_token_requests.remove(&request_id)
+    fn take_pending_semantic_token_request(
+        &mut self,
+        request_id: u64,
+    ) -> Option<SemanticTokenFullRequest> {
+        if let Some(request) = self.pending_semantic_token_requests.remove(&request_id) {
+            self.semantic_tokens_in_flight.remove(&request.buffer_id);
+            Some(request)
+        } else {
+            None
+        }
+    }
+
+    /// Remove a pending semantic token range request from tracking maps.
+    fn take_pending_semantic_token_range_request(
+        &mut self,
+        request_id: u64,
+    ) -> Option<SemanticTokenRangeRequest> {
+        if let Some(request) = self
+            .pending_semantic_token_range_requests
+            .remove(&request_id)
         {
-            self.semantic_tokens_in_flight.remove(&buffer_id);
-            Some((buffer_id, version))
+            self.semantic_tokens_range_in_flight
+                .remove(&request.buffer_id);
+            Some(request)
         } else {
             None
         }
@@ -1400,7 +1486,7 @@ impl Editor {
     pub fn check_semantic_highlight_timer(&self) -> bool {
         // Check all buffers for pending semantic highlight redraws
         for state in self.buffers.values() {
-            if let Some(remaining) = state.reference_highlight_cache.needs_redraw() {
+            if let Some(remaining) = state.reference_highlight_overlay.needs_redraw() {
                 if remaining.is_zero() {
                     return true;
                 }
@@ -1683,6 +1769,7 @@ impl Editor {
         match event {
             Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => {
                 self.invalidate_layouts_for_buffer(self.active_buffer());
+                self.schedule_semantic_tokens_full_refresh(self.active_buffer());
             }
             Event::Batch { events, .. } => {
                 let has_edits = events
@@ -1690,6 +1777,7 @@ impl Editor {
                     .any(|e| matches!(e, Event::Insert { .. } | Event::Delete { .. }));
                 if has_edits {
                     self.invalidate_layouts_for_buffer(self.active_buffer());
+                    self.schedule_semantic_tokens_full_refresh(self.active_buffer());
                 }
             }
             _ => {}
@@ -1703,23 +1791,12 @@ impl Editor {
         // EXCEPT during interactive replace where we want to keep highlights visible
         let in_interactive_replace = self.interactive_replace_state.is_some();
 
-        if !in_interactive_replace {
-            match event {
-                Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => {
-                    self.clear_search_highlights();
-                }
-                Event::Batch { events, .. } => {
-                    // Check if batch contains any Insert/Delete events
-                    let has_edits = events
-                        .iter()
-                        .any(|e| matches!(e, Event::Insert { .. } | Event::Delete { .. }));
-                    if has_edits {
-                        self.clear_search_highlights();
-                    }
-                }
-                _ => {}
-            }
-        }
+        // Note: We intentionally do NOT clear search overlays on buffer modification.
+        // Overlays have markers that automatically track position changes through edits,
+        // which allows F3/Shift+F3 to find matches at their updated positions.
+        // The visual highlights may be on text that no longer matches the query,
+        // but that's acceptable - user can see where original matches were.
+        let _ = in_interactive_replace; // silence unused warning
 
         // 3. Trigger plugin hooks for this event (with pre-calculated line info)
         self.trigger_plugin_hooks_for_event(event, line_info);
@@ -1831,6 +1908,16 @@ impl Editor {
         // These take precedence over implicit cursor updates from Insert/Delete
         for (cursor_id, ref mut pos, ref mut anchor) in &mut new_cursors {
             let mut found_move_cursor = false;
+            // Save original position before any modifications - needed for shift calculation
+            let original_pos = *pos;
+
+            // Check if this cursor has an Insert at its original position (auto-close pattern).
+            // For auto-close, Insert is at cursor position and MoveCursor is relative to original state.
+            // For other operations (like indent), Insert is elsewhere and MoveCursor already accounts for shifts.
+            let insert_at_cursor_pos = events.iter().any(|e| {
+                matches!(e, Event::Insert { position, cursor_id: c, .. }
+                    if *c == *cursor_id && *position == original_pos)
+            });
 
             // First pass: look for explicit MoveCursor events for this cursor
             for event in &events {
@@ -1842,7 +1929,15 @@ impl Editor {
                 } = event
                 {
                     if event_cursor == cursor_id {
-                        *pos = *new_position;
+                        // Only adjust for shifts if the Insert was at the cursor's original position
+                        // (like auto-close). For other operations (like indent where Insert is at
+                        // line start), the MoveCursor already accounts for the shift.
+                        let shift = if insert_at_cursor_pos {
+                            calc_shift(original_pos)
+                        } else {
+                            0
+                        };
+                        *pos = (*new_position as isize + shift) as usize;
                         *anchor = *new_anchor;
                         found_move_cursor = true;
                     }
@@ -1906,7 +2001,7 @@ impl Editor {
         self.sync_editor_state_to_split_view_state();
         self.invalidate_layouts_for_buffer(self.active_buffer());
         self.adjust_other_split_cursors_for_event(&bulk_edit);
-        self.clear_search_highlights();
+        // Note: Do NOT clear search overlays - markers track through edits for F3/Shift+F3
 
         Some(bulk_edit)
     }
@@ -2440,8 +2535,10 @@ impl Editor {
 
         // Determine the default text: selection > last history > empty
         let from_history = selected_text.is_none();
-        let default_text =
-            selected_text.or_else(|| self.search_history.last().map(|s| s.to_string()));
+        let default_text = selected_text.or_else(|| {
+            self.get_prompt_history("search")
+                .and_then(|h| h.last().map(|s| s.to_string()))
+        });
 
         // Start the prompt
         self.start_prompt(message, prompt_type);
@@ -2454,7 +2551,7 @@ impl Editor {
                 prompt.cursor_pos = text.len();
             }
             if from_history {
-                self.search_history.init_at_last();
+                self.get_or_create_prompt_history("search").init_at_last();
             }
             self.update_search_highlights(&text);
         }
@@ -2558,13 +2655,23 @@ impl Editor {
     /// directory loading.
     fn init_file_open_state(&mut self) {
         // Determine initial directory
-        let initial_dir = self
-            .active_state()
-            .buffer
-            .file_path()
-            .and_then(|path| path.parent())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| self.working_dir.clone());
+        let buffer_id = self.active_buffer();
+
+        // For terminal buffers, use the terminal's initial CWD or fall back to project root
+        // This avoids showing the terminal backing file directory which is confusing for users
+        let initial_dir = if self.is_terminal_buffer(buffer_id) {
+            self.get_terminal_id(buffer_id)
+                .and_then(|tid| self.terminal_manager.get(tid))
+                .and_then(|handle| handle.cwd())
+                .unwrap_or_else(|| self.working_dir.clone())
+        } else {
+            self.active_state()
+                .buffer
+                .file_path()
+                .and_then(|path| path.parent())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| self.working_dir.clone())
+        };
 
         // Create the file open state with config-based show_hidden setting
         let show_hidden = self.config.file_browser.show_hidden;
@@ -2688,13 +2795,15 @@ impl Editor {
 
         // Determine prompt type and reset appropriate history navigation
         if let Some(ref prompt) = self.prompt {
+            // Reset history navigation for this prompt type
+            if let Some(key) = Self::prompt_type_to_history_key(&prompt.prompt_type) {
+                if let Some(history) = self.prompt_histories.get_mut(&key) {
+                    history.reset_navigation();
+                }
+            }
             match &prompt.prompt_type {
                 PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch => {
-                    self.search_history.reset_navigation();
                     self.clear_search_highlights();
-                }
-                PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
-                    self.replace_history.reset_navigation();
                 }
                 PromptType::Plugin { custom_type } => {
                     // Fire plugin hook for prompt cancellation
@@ -2740,7 +2849,7 @@ impl Editor {
     pub fn confirm_prompt(&mut self) -> Option<(String, PromptType, Option<usize>)> {
         if let Some(prompt) = self.prompt.take() {
             let selected_index = prompt.selected_suggestion;
-            // For command, file, theme, and LSP stop prompts, prefer the selected suggestion over raw input
+            // For command, file, theme, plugin, and LSP stop prompts, prefer the selected suggestion over raw input
             let final_input = if matches!(
                 prompt.prompt_type,
                 PromptType::Command
@@ -2751,12 +2860,20 @@ impl Editor {
                     | PromptType::SelectTheme { .. }
                     | PromptType::SelectLocale
                     | PromptType::SwitchToTab
+                    | PromptType::Plugin { .. }
             ) {
                 // Use the selected suggestion if any
                 if let Some(selected_idx) = prompt.selected_suggestion {
                     if let Some(suggestion) = prompt.suggestions.get(selected_idx) {
-                        // Don't confirm disabled commands
+                        // Don't confirm disabled commands, but still record usage for history
                         if suggestion.disabled {
+                            // Record usage even for disabled commands so they appear in history
+                            if matches!(prompt.prompt_type, PromptType::Command) {
+                                self.command_registry
+                                    .write()
+                                    .unwrap()
+                                    .record_usage(&suggestion.text);
+                            }
                             self.set_status_message(
                                 t!(
                                     "error.command_not_available",
@@ -2795,18 +2912,10 @@ impl Editor {
             }
 
             // Add to appropriate history based on prompt type
-            match prompt.prompt_type {
-                PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch => {
-                    self.search_history.push(final_input.clone());
-                    // Reset navigation state
-                    self.search_history.reset_navigation();
-                }
-                PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
-                    self.replace_history.push(final_input.clone());
-                    // Reset navigation state
-                    self.replace_history.reset_navigation();
-                }
-                _ => {}
+            if let Some(key) = Self::prompt_type_to_history_key(&prompt.prompt_type) {
+                let history = self.get_or_create_prompt_history(&key);
+                history.push(final_input.clone());
+                history.reset_navigation();
             }
 
             Some((final_input, prompt.prompt_type, selected_index))
@@ -2818,6 +2927,37 @@ impl Editor {
     /// Check if currently in prompt mode
     pub fn is_prompting(&self) -> bool {
         self.prompt.is_some()
+    }
+
+    /// Get or create a prompt history for the given key
+    fn get_or_create_prompt_history(
+        &mut self,
+        key: &str,
+    ) -> &mut crate::input::input_history::InputHistory {
+        self.prompt_histories
+            .entry(key.to_string())
+            .or_insert_with(crate::input::input_history::InputHistory::new)
+    }
+
+    /// Get a prompt history for the given key (immutable)
+    fn get_prompt_history(&self, key: &str) -> Option<&crate::input::input_history::InputHistory> {
+        self.prompt_histories.get(key)
+    }
+
+    /// Get the history key for a prompt type
+    fn prompt_type_to_history_key(prompt_type: &crate::view::prompt::PromptType) -> Option<String> {
+        use crate::view::prompt::PromptType;
+        match prompt_type {
+            PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch => {
+                Some("search".to_string())
+            }
+            PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
+                Some("replace".to_string())
+            }
+            PromptType::GotoLine => Some("goto_line".to_string()),
+            PromptType::Plugin { custom_type } => Some(format!("plugin:{}", custom_type)),
+            _ => None,
+        }
     }
 
     /// Get the current global editor mode (e.g., "vi-normal", "vi-insert")
@@ -2910,17 +3050,32 @@ impl Editor {
                 // Update incremental search highlights as user types
                 self.update_search_highlights(&input);
                 // Reset history navigation when user types - allows Up to navigate history
-                self.search_history.reset_navigation();
+                if let Some(history) = self.prompt_histories.get_mut("search") {
+                    history.reset_navigation();
+                }
             }
             PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
                 // Reset history navigation when user types - allows Up to navigate history
-                self.replace_history.reset_navigation();
+                if let Some(history) = self.prompt_histories.get_mut("replace") {
+                    history.reset_navigation();
+                }
+            }
+            PromptType::GotoLine => {
+                // Reset history navigation when user types - allows Up to navigate history
+                if let Some(history) = self.prompt_histories.get_mut("goto_line") {
+                    history.reset_navigation();
+                }
             }
             PromptType::OpenFile | PromptType::SwitchProject | PromptType::SaveFileAs => {
                 // For OpenFile/SwitchProject/SaveFileAs, update the file browser filter (native implementation)
                 self.update_file_open_filter();
             }
             PromptType::Plugin { custom_type } => {
+                // Reset history navigation when user types - allows Up to navigate history
+                let key = format!("plugin:{}", custom_type);
+                if let Some(history) = self.prompt_histories.get_mut(&key) {
+                    history.reset_navigation();
+                }
                 // Fire plugin hook for prompt input change
                 use crate::services::plugins::hooks::HookArgs;
                 self.plugin_manager.run_hook(
@@ -2977,6 +3132,8 @@ impl Editor {
                     completion_trigger_characters,
                     semantic_tokens_legend,
                     semantic_tokens_full,
+                    semantic_tokens_full_delta,
+                    semantic_tokens_range,
                 } => {
                     tracing::info!("LSP server initialized for language: {}", language);
                     tracing::debug!(
@@ -2996,6 +3153,8 @@ impl Editor {
                             &language,
                             semantic_tokens_legend,
                             semantic_tokens_full,
+                            semantic_tokens_full_delta,
+                            semantic_tokens_range,
                         );
                     }
 
@@ -3135,9 +3294,9 @@ impl Editor {
                 AsyncMessage::LspSemanticTokens {
                     request_id,
                     uri,
-                    result,
+                    response,
                 } => {
-                    self.handle_lsp_semantic_tokens(request_id, uri, result);
+                    self.handle_lsp_semantic_tokens(request_id, uri, response);
                 }
                 AsyncMessage::LspServerQuiescent { language } => {
                     self.handle_lsp_server_quiescent(language);
@@ -3249,13 +3408,48 @@ impl Editor {
                 }
                 AsyncMessage::TerminalExited { terminal_id } => {
                     tracing::info!("Terminal {:?} exited", terminal_id);
-                    // Find and close the buffer associated with this terminal
+                    // Find the buffer associated with this terminal
                     if let Some((&buffer_id, _)) = self
                         .terminal_buffers
                         .iter()
                         .find(|(_, &tid)| tid == terminal_id)
                     {
+                        // Exit terminal mode if this is the active buffer
+                        if self.active_buffer() == buffer_id && self.terminal_mode {
+                            self.terminal_mode = false;
+                            self.key_context = crate::input::keybindings::KeyContext::Normal;
+                        }
+
+                        // Sync terminal content to buffer (final screen state)
+                        self.sync_terminal_to_buffer(buffer_id);
+
+                        // Append exit message to the backing file and reload
+                        let exit_msg = "\n[Terminal process exited]\n";
+
+                        if let Some(backing_path) =
+                            self.terminal_backing_files.get(&terminal_id).cloned()
+                        {
+                            if let Ok(mut file) =
+                                std::fs::OpenOptions::new().append(true).open(&backing_path)
+                            {
+                                use std::io::Write;
+                                let _ = file.write_all(exit_msg.as_bytes());
+                            }
+
+                            // Force reload buffer from file to pick up the exit message
+                            let _ = self.revert_buffer_by_id(buffer_id, &backing_path);
+                        }
+
+                        // Ensure buffer remains read-only with no line numbers
+                        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                            state.editing_disabled = true;
+                            state.margins.set_line_numbers(false);
+                            state.buffer.set_modified(false);
+                        }
+
+                        // Remove from terminal_buffers so it's no longer treated as a terminal
                         self.terminal_buffers.remove(&buffer_id);
+
                         self.set_status_message(
                             t!("terminal.exited", id = terminal_id.0).to_string(),
                         );

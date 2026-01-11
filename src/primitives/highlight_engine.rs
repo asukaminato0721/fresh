@@ -843,6 +843,7 @@ fn merge_adjacent_highlight_spans(spans: &mut Vec<HighlightSpan>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::theme;
 
     #[test]
     fn test_highlighter_preference_default() {
@@ -925,7 +926,7 @@ mod tests {
 
         // Create empty buffer
         let buffer = Buffer::from_str("", 0);
-        let theme = Theme::default();
+        let theme = Theme::from_name(theme::THEME_LIGHT).unwrap();
 
         // Test the specific case that triggered the overflow:
         // viewport_start=100, context_bytes=10 => parse_start=90, parse_end=0
@@ -953,7 +954,7 @@ mod tests {
         // Line 3: "public" at bytes 16-21 (after two "public\r\n" = 16 bytes)
         let content = b"public\r\npublic\r\npublic\r\n";
         let buffer = Buffer::from_bytes(content.to_vec());
-        let theme = Theme::default();
+        let theme = Theme::from_name(theme::THEME_LIGHT).unwrap();
 
         if let HighlightEngine::TextMate(ref mut tm) = engine {
             // Highlight the entire content
