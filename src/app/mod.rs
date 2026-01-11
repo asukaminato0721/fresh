@@ -944,8 +944,6 @@ impl Editor {
             file_explorer_decorations: HashMap::new(),
             file_explorer_decoration_cache:
                 crate::view::file_tree::FileExplorerDecorationCache::default(),
-            menu_bar_visible: true,
-            menu_bar_visible: true,
             pending_file_explorer_show_hidden: None,
             pending_file_explorer_show_gitignored: None,
             menu_bar_visible: show_menu_bar,
