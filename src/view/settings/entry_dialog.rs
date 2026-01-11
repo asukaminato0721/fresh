@@ -74,7 +74,9 @@ impl EntryDialogState {
             control: SettingControl::Text(TextInputState::new("Key").with_value(&key)),
             default: None,
             modified: false,
+            layer_source: crate::config_io::ConfigLayer::System,
             read_only: !is_new, // Key is editable only for new entries
+            is_auto_managed: false,
         };
         items.push(key_item);
 

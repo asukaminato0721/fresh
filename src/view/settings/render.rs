@@ -303,11 +303,10 @@ fn render_separator(frame: &mut Frame, area: Rect, theme: &Theme) {
 }
 
 /// Context for rendering a setting item (extracted to avoid borrow issues)
-struct RenderContext<'a> {
+struct RenderContext {
     selected_item: usize,
     settings_focused: bool,
     hover_hit: Option<SettingsHit>,
-    layer_sources: &'a std::collections::HashMap<String, crate::config_io::ConfigLayer>,
 }
 
 /// Render the settings panel for the current category
@@ -365,7 +364,6 @@ fn render_settings_panel(
         selected_item: state.selected_item,
         settings_focused: state.focus_panel == FocusPanel::Settings,
         hover_hit: state.hover_hit.clone(),
-        layer_sources: &state.layer_sources,
     };
 
     // Area for items (below header)
@@ -483,7 +481,7 @@ fn render_setting_item_pure(
     item: &super::items::SettingItem,
     idx: usize,
     skip_top: u16,
-    ctx: &RenderContext<'_>,
+    ctx: &RenderContext,
     theme: &Theme,
     label_width: Option<u16>,
 ) -> ControlLayoutInfo {
@@ -567,13 +565,9 @@ fn render_setting_item_pure(
     // Description is also offset by focus_indicator_width to align with control
     let desc_start_row = control_height.saturating_sub(skip_top);
 
-    // Get layer source for this item (only show if not default)
-    let layer_source = ctx
-        .layer_sources
-        .get(&item.path)
-        .copied()
-        .unwrap_or(crate::config_io::ConfigLayer::System);
-    let layer_label = match layer_source {
+    // Get layer source label for this item (only show if not default)
+    // We use item.layer_source directly since it's now tracked per-item
+    let layer_label = match item.layer_source {
         crate::config_io::ConfigLayer::System => None, // Don't show for defaults
         crate::config_io::ConfigLayer::User => Some("user"),
         crate::config_io::ConfigLayer::Project => Some("project"),

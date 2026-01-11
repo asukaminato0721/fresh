@@ -101,6 +101,10 @@ pub struct SettingsState {
     /// Maps JSON pointer paths (e.g., "/editor/tab_size") to their source layer.
     /// Values not in this map come from system defaults.
     pub layer_sources: HashMap<String, ConfigLayer>,
+    /// Paths to be removed from the current layer on save.
+    /// When a user "resets" a setting, we remove it from the delta rather than
+    /// setting it to the schema default.
+    pub pending_deletions: std::collections::HashSet<String>,
 }
 
 impl SettingsState {
@@ -108,7 +112,14 @@ impl SettingsState {
     pub fn new(schema_json: &str, config: &Config) -> Result<Self, serde_json::Error> {
         let categories = parse_schema(schema_json)?;
         let config_value = serde_json::to_value(config)?;
-        let pages = super::items::build_pages(&categories, &config_value);
+        let layer_sources = HashMap::new(); // Populated via set_layer_sources()
+        let target_layer = ConfigLayer::User; // Default to user-global settings
+        let pages = super::items::build_pages(
+            &categories,
+            &config_value,
+            &layer_sources,
+            target_layer,
+        );
 
         Ok(Self {
             categories,
@@ -133,8 +144,9 @@ impl SettingsState {
             hover_position: None,
             hover_hit: None,
             entry_dialog_stack: Vec::new(),
-            target_layer: ConfigLayer::User, // Default to user-global settings
-            layer_sources: HashMap::new(),   // Populated via set_layer_sources()
+            target_layer,
+            layer_sources,
+            pending_deletions: std::collections::HashSet::new(),
         })
     }
 
@@ -366,7 +378,7 @@ impl SettingsState {
 
     /// Check if there are unsaved changes
     pub fn has_changes(&self) -> bool {
-        !self.pending_changes.is_empty()
+        !self.pending_changes.is_empty() || !self.pending_deletions.is_empty()
     }
 
     /// Apply pending changes to a config
@@ -385,8 +397,14 @@ impl SettingsState {
     /// Discard all pending changes
     pub fn discard_changes(&mut self) {
         self.pending_changes.clear();
-        // Rebuild pages from original config
-        self.pages = super::items::build_pages(&self.categories, &self.original_config);
+        self.pending_deletions.clear();
+        // Rebuild pages from original config with layer info
+        self.pages = super::items::build_pages(
+            &self.categories,
+            &self.original_config,
+            &self.layer_sources,
+            self.target_layer,
+        );
     }
 
     /// Set the target layer for saving changes.
@@ -396,6 +414,14 @@ impl SettingsState {
             self.target_layer = layer;
             // Clear pending changes when switching layers
             self.pending_changes.clear();
+            self.pending_deletions.clear();
+            // Rebuild pages with new target layer (affects "modified" indicators)
+            self.pages = super::items::build_pages(
+                &self.categories,
+                &self.original_config,
+                &self.layer_sources,
+                self.target_layer,
+            );
         }
     }
 
@@ -409,6 +435,14 @@ impl SettingsState {
         };
         // Clear pending changes when switching layers
         self.pending_changes.clear();
+        self.pending_deletions.clear();
+        // Rebuild pages with new target layer (affects "modified" indicators)
+        self.pages = super::items::build_pages(
+            &self.categories,
+            &self.original_config,
+            &self.layer_sources,
+            self.target_layer,
+        );
     }
 
     /// Get a display name for the current target layer.
@@ -422,8 +456,16 @@ impl SettingsState {
     }
 
     /// Set the layer sources map (called by Editor when opening settings).
+    /// This also rebuilds pages to update modified indicators.
     pub fn set_layer_sources(&mut self, sources: HashMap<String, ConfigLayer>) {
         self.layer_sources = sources;
+        // Rebuild pages with new layer sources (affects "modified" indicators)
+        self.pages = super::items::build_pages(
+            &self.categories,
+            &self.original_config,
+            &self.layer_sources,
+            self.target_layer,
+        );
     }
 
     /// Get the source layer for a setting path.
@@ -445,42 +487,64 @@ impl SettingsState {
         }
     }
 
-    /// Reset the current item to its default value
+    /// Reset the current item by removing it from the target layer.
+    ///
+    /// NEW SEMANTICS: Instead of setting to schema default, we remove the value
+    /// from the current layer's delta. The value then falls back to inherited
+    /// (from lower-precedence layers) or to the schema default.
+    ///
+    /// Only items defined in the target layer can be reset.
     pub fn reset_current_to_default(&mut self) {
         // Get the info we need first, then release the borrow
         let reset_info = self.current_item().and_then(|item| {
+            // Only allow reset if the item is defined in the target layer
+            // (i.e., if it's "modified" in the new semantics)
+            if !item.modified || item.is_auto_managed {
+                return None;
+            }
             item.default
                 .as_ref()
                 .map(|default| (item.path.clone(), default.clone()))
         });
 
         if let Some((path, default)) = reset_info {
-            self.set_pending_change(&path, default.clone());
+            // Mark this path for deletion from the target layer
+            self.pending_deletions.insert(path.clone());
+            // Remove any pending change for this path
+            self.pending_changes.remove(&path);
 
-            // Now update the control state
+            // Update the control state to show the inherited value.
+            // Since we don't have access to other layers' values here,
+            // we use the schema default as the fallback display value.
             if let Some(item) = self.current_item_mut() {
                 update_control_from_value(&mut item.control, &default);
                 item.modified = false;
+                // Update layer source to show where value now comes from
+                item.layer_source = ConfigLayer::System; // Falls back to default
             }
         }
     }
 
     /// Handle a value change from user interaction
     pub fn on_value_changed(&mut self) {
+        // Capture target_layer before any borrows
+        let target_layer = self.target_layer;
+
         // Get value and path first, then release borrow
         let change_info = self.current_item().map(|item| {
             let value = control_to_value(&item.control);
-            let modified = match &item.default {
-                Some(default) => &value != default,
-                None => true,
-            };
-            (item.path.clone(), value, modified)
+            (item.path.clone(), value)
         });
 
-        if let Some((path, value, modified)) = change_info {
-            // Update modified flag
+        if let Some((path, value)) = change_info {
+            // When user changes a value, it becomes "modified" (defined in target layer)
+            // Remove from pending deletions if it was scheduled for removal
+            self.pending_deletions.remove(&path);
+
+            // Update the item's state
             if let Some(item) = self.current_item_mut() {
-                item.modified = modified;
+                item.modified = true; // New semantic: value is now defined in target layer
+                item.layer_source = target_layer; // Value now comes from target layer
             }
             self.set_pending_change(&path, value);
         }
