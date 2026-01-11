@@ -907,7 +907,7 @@ impl Editor {
             None
         };
 
-        Ok(Editor {
+        let mut editor = Editor {
             buffers,
             event_logs,
             next_buffer_id: 1,
@@ -1076,7 +1076,20 @@ impl Editor {
             active_action_popup: None,
             composite_buffers: HashMap::new(),
             composite_view_states: HashMap::new(),
-        })
+        };
+
+        #[cfg(feature = "plugins")]
+        {
+            editor.update_plugin_state_snapshot();
+            if editor.plugin_manager.is_active() {
+                editor.plugin_manager.run_hook(
+                    "editor_initialized",
+                    crate::services::plugins::hooks::HookArgs::EditorInitialized,
+                );
+            }
+        }
+
+        Ok(editor)
     }
 
     /// Get a reference to the event broadcaster

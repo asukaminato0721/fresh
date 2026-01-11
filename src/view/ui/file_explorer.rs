@@ -193,7 +193,7 @@ impl FileExplorerRenderer {
 
         // Calculate the left side width for padding calculation
         let indent_width = indent * 2;
-        let indicator_width = 2; // "▼ " or "● " or "  "
+        let indicator_width = if node.is_dir() { 3 } else { 2 }; // "▼● " or "● " or "  "
         let name_width = str_width(&node.entry.name);
         let left_side_width = indent_width + indicator_width + name_width;
 
@@ -228,22 +228,22 @@ impl FileExplorerRenderer {
             // Show a change indicator if folder contains unsaved or decorated children
             if has_unsaved {
                 spans.push(Span::styled(
-                    "●",
+                    "● ",
                     Style::default().fg(theme.diagnostic_warning_fg),
                 ));
             } else if let Some(decoration) = direct_decoration {
                 let symbol = Self::decoration_symbol(&decoration.symbol);
                 spans.push(Span::styled(
-                    symbol,
+                    format!("{symbol} "),
                     Style::default().fg(Self::decoration_color(decoration)),
                 ));
             } else if let Some(decoration) = bubbled_decoration {
                 spans.push(Span::styled(
-                    "●",
+                    "● ",
                     Style::default().fg(Self::decoration_color(decoration)),
                 ));
             } else {
-                spans.push(Span::raw(" "));
+                spans.push(Span::raw("  "));
             }
         } else {
             // For files, show unsaved indicator first, then plugin decoration

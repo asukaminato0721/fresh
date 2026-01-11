@@ -148,7 +148,12 @@ globalThis.onGitExplorerAfterFileSave = () => {
   refreshGitExplorerDecorations();
 };
 
+globalThis.onGitExplorerEditorInitialized = () => {
+  refreshGitExplorerDecorations();
+};
+
 editor.on("after_file_open", "onGitExplorerAfterFileOpen");
 editor.on("after_file_save", "onGitExplorerAfterFileSave");
+editor.on("editor_initialized", "onGitExplorerEditorInitialized");
 
 refreshGitExplorerDecorations();

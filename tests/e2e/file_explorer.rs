@@ -553,8 +553,6 @@ fn test_file_explorer_git_change_indicator() {
         harness.screen_to_string()
     );
 
-    // Trigger git plugin refresh via after_file_open hook.
-    harness.open_file(&repo.path.join("changed.txt")).unwrap();
     let found_file = harness
         .wait_for_async(|h| h.screen_to_string().contains("M changed.txt"), 2000)
         .unwrap();
