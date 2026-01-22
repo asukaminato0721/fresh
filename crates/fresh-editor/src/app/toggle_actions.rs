@@ -13,6 +13,7 @@ use crate::config_io::{ConfigLayer, ConfigResolver};
 use crate::input::keybindings::KeybindingResolver;
 use crate::services::lsp::manager::detect_language;
 
+use super::lsp_requests::INLAY_HINT_VTEXT_PREFIX;
 use super::Editor;
 
 impl Editor {
@@ -176,7 +177,9 @@ impl Editor {
         } else {
             // Clear inlay hints from all buffers
             for state in self.buffers.values_mut() {
-                state.virtual_texts.clear(&mut state.marker_list);
+                state
+                    .virtual_texts
+                    .remove_by_prefix(&mut state.marker_list, INLAY_HINT_VTEXT_PREFIX);
             }
             self.set_status_message(t!("toggle.inlay_hints_disabled").to_string());
         }

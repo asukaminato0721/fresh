@@ -49,7 +49,7 @@ oxc_diagnostics = "0.108"
 tree-sitter = "0.25.10"
 tree-sitter-highlight = "0.25.10"
 crossterm = "0.28"
-lsp-types = "0.97"
+lsp-types = { version = "0.97", features = ["proposed"] }
 ts-rs = { version = "11.1", features = ["serde_json"] }
 # Add more as needed during refactor
 

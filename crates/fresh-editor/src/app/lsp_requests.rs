@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use lsp_types::TextDocumentContentChangeEvent;
 
 use crate::model::event::{BufferId, Event};
+use crate::primitives::snippet::{expand_snippet, is_snippet};
 use crate::primitives::word_navigation::{find_word_end, find_word_start};
 use crate::services::lsp::manager::detect_language;
 use crate::view::prompt::{Prompt, PromptType};
@@ -27,6 +28,9 @@ use super::{uri_to_path, Editor, SemanticTokenRangeRequest};
 const SEMANTIC_TOKENS_FULL_DEBOUNCE_MS: u64 = 500;
 const SEMANTIC_TOKENS_RANGE_DEBOUNCE_MS: u64 = 50;
 const SEMANTIC_TOKENS_RANGE_PADDING_LINES: usize = 10;
+pub(crate) const INLAY_HINT_VTEXT_PREFIX: &str = "lsp-inlay-hint:";
+pub(crate) const INLINE_COMPLETION_VTEXT_PREFIX: &str = "lsp-inline-completion:";
+const INLINE_COMPLETION_VTEXT_PRIORITY: i32 = 10;
 
 impl Editor {
     /// Handle LSP completion response
@@ -170,6 +174,87 @@ impl Editor {
         Ok(())
     }
 
+    /// Handle LSP inline completion response (ghost text)
+    pub(crate) fn handle_inline_completion_response(
+        &mut self,
+        request_id: u64,
+        items: Vec<lsp_types::InlineCompletionItem>,
+    ) -> AnyhowResult<()> {
+        if self.pending_inline_completion_request != Some(request_id) {
+            tracing::debug!(
+                "Ignoring inline completion response for outdated request {}",
+                request_id
+            );
+            return Ok(());
+        }
+
+        self.pending_inline_completion_request = None;
+
+        // Clear any previous inline completion
+        self.clear_inline_completion();
+
+        if items.is_empty() {
+            tracing::debug!("No inline completion items received");
+            return Ok(());
+        }
+
+        // Only show inline completions for a single cursor with no selection
+        if self.has_active_selection() || self.active_state().cursors.count() > 1 {
+            return Ok(());
+        }
+
+        let item = items.into_iter().next().unwrap();
+
+        let (display_text, cursor_pos, buffer_id) = {
+            let state = self.active_state_mut();
+            let cursor_pos = state.cursors.primary().position;
+            let display_text = match Self::inline_completion_display_text(state, &item, cursor_pos)
+            {
+                Some(text) => text,
+                None => return Ok(()),
+            };
+            (display_text, cursor_pos, self.active_buffer())
+        };
+
+        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            if state.buffer.is_empty() {
+                return Ok(());
+            }
+
+            let (anchor_pos, position) = if cursor_pos >= state.buffer.len() {
+                (
+                    state.buffer.len().saturating_sub(1),
+                    crate::view::virtual_text::VirtualTextPosition::AfterChar,
+                )
+            } else {
+                (
+                    cursor_pos,
+                    crate::view::virtual_text::VirtualTextPosition::BeforeChar,
+                )
+            };
+
+            let hint_style = ratatui::style::Style::default()
+                .fg(self.theme.editor_fg)
+                .add_modifier(ratatui::style::Modifier::DIM);
+
+            state.virtual_texts.add_inline_with_id(
+                &mut state.marker_list,
+                anchor_pos,
+                display_text,
+                hint_style,
+                position,
+                INLINE_COMPLETION_VTEXT_PRIORITY,
+                format!("{}{}", INLINE_COMPLETION_VTEXT_PREFIX, request_id),
+                false,
+            );
+        }
+
+        self.inline_completion_item = Some(item);
+        self.inline_completion_buffer = Some(buffer_id);
+
+        Ok(())
+    }
+
     /// Handle LSP go-to-definition response
     pub(crate) fn handle_goto_definition_response(
         &mut self,
@@ -245,7 +330,9 @@ impl Editor {
 
     /// Check if there are any pending LSP requests
     pub fn has_pending_lsp_requests(&self) -> bool {
-        self.pending_completion_request.is_some() || self.pending_goto_definition_request.is_some()
+        self.pending_completion_request.is_some()
+            || self.pending_inline_completion_request.is_some()
+            || self.pending_goto_definition_request.is_some()
     }
 
     /// Cancel any pending LSP requests
@@ -258,6 +345,13 @@ impl Editor {
             self.send_lsp_cancel_request(request_id);
             self.lsp_status.clear();
         }
+        if let Some(request_id) = self.pending_inline_completion_request.take() {
+            tracing::debug!(
+                "Canceling pending LSP inline completion request {}",
+                request_id
+            );
+            self.send_lsp_cancel_request(request_id);
+        }
         if let Some(request_id) = self.pending_goto_definition_request.take() {
             tracing::debug!(
                 "Canceling pending LSP goto-definition request {}",
@@ -266,6 +360,23 @@ impl Editor {
             // Send cancellation to the LSP server
             self.send_lsp_cancel_request(request_id);
             self.lsp_status.clear();
+        }
+    }
+
+    /// Clear the current inline completion (ghost text) from the active buffer.
+    pub(crate) fn clear_inline_completion(&mut self) {
+        let buffer_id = self.inline_completion_buffer.take();
+        if let Some(buffer_id) = buffer_id {
+            self.remove_inline_completion_vtext(buffer_id);
+        }
+        self.inline_completion_item = None;
+    }
+
+    fn remove_inline_completion_vtext(&mut self, buffer_id: BufferId) {
+        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            state
+                .virtual_texts
+                .remove_by_prefix(&mut state.marker_list, INLINE_COMPLETION_VTEXT_PREFIX);
         }
     }
 
@@ -403,6 +514,213 @@ impl Editor {
         Ok(())
     }
 
+    /// Request LSP inline completion (ghost text) at current cursor position
+    pub(crate) fn request_inline_completion(
+        &mut self,
+        trigger_kind: lsp_types::InlineCompletionTriggerKind,
+    ) -> AnyhowResult<()> {
+        if self.has_active_selection() || self.active_state().cursors.count() > 1 {
+            return Ok(());
+        }
+
+        let path = match self.active_state().buffer.file_path() {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+
+        let language = match detect_language(path, &self.config.languages) {
+            Some(lang) => lang,
+            None => return Ok(()),
+        };
+
+        let inline_supported = self
+            .lsp
+            .as_ref()
+            .map(|lsp| lsp.inline_completion_supported(&language))
+            .unwrap_or(false);
+        if !inline_supported {
+            return Ok(());
+        }
+
+        let state = self.active_state();
+        let cursor_pos = state.cursors.primary().position;
+        let (line, character) = state.buffer.position_to_lsp_position(cursor_pos);
+        let buffer_id = self.active_buffer();
+        let request_id = self.next_lsp_request_id;
+
+        let sent = self
+            .with_lsp_for_buffer(buffer_id, |handle, uri, _language| {
+                let result = handle.inline_completion(
+                    request_id,
+                    uri.clone(),
+                    line as u32,
+                    character as u32,
+                    trigger_kind,
+                );
+                if result.is_ok() {
+                    tracing::info!(
+                        "Requested inline completion at {}:{}:{}",
+                        uri.as_str(),
+                        line,
+                        character
+                    );
+                }
+                result.is_ok()
+            })
+            .unwrap_or(false);
+
+        if sent {
+            self.next_lsp_request_id += 1;
+            self.pending_inline_completion_request = Some(request_id);
+        }
+
+        Ok(())
+    }
+
+    fn inline_completion_display_text(
+        state: &mut crate::state::EditorState,
+        item: &lsp_types::InlineCompletionItem,
+        cursor_pos: usize,
+    ) -> Option<String> {
+        let (insert_text, _cursor_offset) = if matches!(
+            item.insert_text_format,
+            Some(lsp_types::InsertTextFormat::SNIPPET)
+        ) || is_snippet(&item.insert_text)
+        {
+            let expanded = expand_snippet(&item.insert_text);
+            (expanded.text, Some(expanded.cursor_offset))
+        } else {
+            (item.insert_text.clone(), None)
+        };
+
+        let mut display_text = insert_text;
+
+        if let Some(range) = &item.range {
+            let start_pos = state
+                .buffer
+                .lsp_position_to_byte(range.start.line as usize, range.start.character as usize);
+            if start_pos <= cursor_pos {
+                let prefix = state.get_text_range(start_pos, cursor_pos);
+                if !prefix.is_empty() && display_text.starts_with(&prefix) {
+                    display_text = display_text[prefix.len()..].to_string();
+                }
+            }
+        }
+
+        if display_text.is_empty() {
+            return None;
+        }
+
+        let mut first_line = display_text.split('\n').next().unwrap_or("").to_string();
+        if first_line.ends_with('\r') {
+            first_line.pop();
+        }
+        if first_line.is_empty() {
+            None
+        } else {
+            Some(first_line)
+        }
+    }
+
+    /// Accept the current inline completion, inserting it into the buffer.
+    /// Returns Ok(true) if a completion was accepted.
+    pub(crate) fn accept_inline_completion(&mut self) -> AnyhowResult<bool> {
+        let Some(item) = self.inline_completion_item.take() else {
+            return Ok(false);
+        };
+
+        let buffer_id = self
+            .inline_completion_buffer
+            .take()
+            .unwrap_or_else(|| self.active_buffer());
+
+        self.remove_inline_completion_vtext(buffer_id);
+
+        let (cursor_id, start_pos, end_pos, deleted_text) = {
+            let state = self
+                .buffers
+                .get_mut(&buffer_id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Buffer not found"))?;
+            let cursor_id = state.cursors.primary_id();
+            let cursor_pos = state.cursors.primary().position;
+            let (start_pos, end_pos) = if let Some(range) = &item.range {
+                let start_pos = state.buffer.lsp_position_to_byte(
+                    range.start.line as usize,
+                    range.start.character as usize,
+                );
+                let end_pos = state
+                    .buffer
+                    .lsp_position_to_byte(range.end.line as usize, range.end.character as usize);
+                (start_pos, end_pos)
+            } else {
+                (cursor_pos, cursor_pos)
+            };
+            let deleted_text = if start_pos < end_pos {
+                state.get_text_range(start_pos, end_pos)
+            } else {
+                String::new()
+            };
+            (cursor_id, start_pos, end_pos, deleted_text)
+        };
+
+        let (insert_text, cursor_offset) = if matches!(
+            item.insert_text_format,
+            Some(lsp_types::InsertTextFormat::SNIPPET)
+        ) || is_snippet(&item.insert_text)
+        {
+            let expanded = expand_snippet(&item.insert_text);
+            (expanded.text, Some(expanded.cursor_offset))
+        } else {
+            (item.insert_text.clone(), None)
+        };
+
+        let mut events = Vec::new();
+        if start_pos < end_pos {
+            events.push(Event::Delete {
+                range: start_pos..end_pos,
+                deleted_text,
+                cursor_id,
+            });
+        }
+        if !insert_text.is_empty() {
+            events.push(Event::Insert {
+                position: start_pos,
+                text: insert_text.clone(),
+                cursor_id,
+            });
+        }
+
+        if !events.is_empty() {
+            self.apply_events_to_buffer_as_bulk_edit(
+                buffer_id,
+                events,
+                "Inline completion".to_string(),
+            )?;
+        }
+
+        if let Some(offset) = cursor_offset {
+            let new_cursor_pos = start_pos + offset;
+            if let Some(state) = self.buffers.get(&buffer_id) {
+                let current_pos = state.cursors.primary().position;
+                if current_pos != new_cursor_pos {
+                    let move_event = Event::MoveCursor {
+                        cursor_id,
+                        old_position: current_pos,
+                        new_position: new_cursor_pos,
+                        old_anchor: None,
+                        new_anchor: None,
+                        old_sticky_column: 0,
+                        new_sticky_column: 0,
+                    };
+                    self.apply_event_to_active_buffer(&move_event);
+                    self.active_event_log_mut().append(move_event);
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Check if the inserted character should trigger completion
     /// and if so, request completion automatically.
     ///
@@ -449,6 +767,8 @@ impl Editor {
                 quick_suggestions_enabled
             );
             let _ = self.request_completion();
+            let _ =
+                self.request_inline_completion(lsp_types::InlineCompletionTriggerKind::Automatic);
         }
     }
 
@@ -730,8 +1050,10 @@ impl Editor {
         use crate::view::virtual_text::VirtualTextPosition;
         use ratatui::style::{Color, Style};
 
-        // Clear existing inlay hints
-        state.virtual_texts.clear(&mut state.marker_list);
+        // Clear existing inlay hints only
+        state
+            .virtual_texts
+            .remove_by_prefix(&mut state.marker_list, INLAY_HINT_VTEXT_PREFIX);
 
         if hints.is_empty() {
             return;
@@ -740,7 +1062,7 @@ impl Editor {
         // Style for inlay hints - dimmed to not distract from actual code
         let hint_style = Style::default().fg(Color::Rgb(128, 128, 128));
 
-        for hint in hints {
+        for (idx, hint) in hints.iter().enumerate() {
             // Convert LSP position to byte offset
             let byte_offset = state.buffer.lsp_position_to_byte(
                 hint.position.line as usize,
@@ -777,13 +1099,14 @@ impl Editor {
             // Use the hint text as-is - spacing is handled during rendering
             let display_text = text;
 
-            state.virtual_texts.add(
+            state.virtual_texts.add_with_id(
                 &mut state.marker_list,
                 byte_offset,
                 display_text,
                 hint_style,
                 position,
                 0, // Default priority
+                format!("{}{}", INLAY_HINT_VTEXT_PREFIX, idx),
             );
         }
 
@@ -2183,10 +2506,42 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::Editor;
+    use super::INLINE_COMPLETION_VTEXT_PREFIX;
+    use crate::config::Config;
+    use crate::config_io::DirectoryContext;
     use crate::model::buffer::Buffer;
     use crate::state::EditorState;
+    use crate::view::color_support::ColorCapability;
     use crate::view::virtual_text::VirtualTextPosition;
     use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position};
+    use lsp_types::{InlineCompletionItem, InsertTextFormat, Range};
+    use tempfile::TempDir;
+
+    /// Create a test Editor with a buffer containing the provided text.
+    fn test_editor_with_buffer(text: &str) -> (Editor, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_context = DirectoryContext::for_testing(temp_dir.path());
+        let mut editor = Editor::new(
+            Config::default(),
+            80,
+            24,
+            dir_context,
+            ColorCapability::TrueColor,
+        )
+        .unwrap();
+
+        let buffer_id = editor.active_buffer();
+        if let Some(state) = editor.buffers.get_mut(&buffer_id) {
+            state.buffer = Buffer::from_str_test(text);
+            if !state.buffer.is_empty() {
+                state.marker_list.adjust_for_insert(0, state.buffer.len());
+            }
+            state.cursors.primary_mut().position = state.buffer.len();
+            state.cursors.primary_mut().anchor = None;
+        }
+
+        (editor, temp_dir)
+    }
 
     fn make_hint(line: u32, character: u32, label: &str, kind: Option<InlayHintKind>) -> InlayHint {
         InlayHint {
@@ -2255,5 +2610,75 @@ mod tests {
         Editor::apply_inlay_hints_to_state(&mut state, &hints);
 
         assert!(state.virtual_texts.is_empty());
+    }
+
+    #[test]
+    fn test_inline_completion_strips_prefix_and_has_no_padding() {
+        let (mut editor, _temp) = test_editor_with_buffer("console.");
+
+        editor.pending_inline_completion_request = Some(1);
+
+        let item = InlineCompletionItem {
+            insert_text: ".log()".to_string(),
+            filter_text: None,
+            range: Some(Range {
+                start: Position {
+                    line: 0,
+                    character: 7,
+                },
+                end: Position {
+                    line: 0,
+                    character: 8,
+                },
+            }),
+            command: None,
+            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+        };
+
+        editor
+            .handle_inline_completion_response(1, vec![item])
+            .unwrap();
+
+        let state = editor.active_state();
+        let vtexts = state
+            .virtual_texts
+            .query_range(&state.marker_list, 0, state.buffer.len());
+        let inline = vtexts
+            .iter()
+            .find(|(_, vt)| {
+                vt.string_id
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with(INLINE_COMPLETION_VTEXT_PREFIX))
+            })
+            .expect("expected inline completion virtual text");
+
+        assert_eq!(inline.1.text, "log()");
+        assert!(!inline.1.pad_inline);
+        assert_eq!(inline.1.position, VirtualTextPosition::AfterChar);
+    }
+
+    #[test]
+    fn test_accept_inline_completion_inserts_text() {
+        let (mut editor, _temp) = test_editor_with_buffer("hello");
+
+        let buffer_id = editor.active_buffer();
+        editor.inline_completion_item = Some(InlineCompletionItem {
+            insert_text: " world".to_string(),
+            filter_text: None,
+            range: None,
+            command: None,
+            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+        });
+        editor.inline_completion_buffer = Some(buffer_id);
+
+        let accepted = editor.accept_inline_completion().unwrap();
+        assert!(accepted);
+
+        let text = editor
+            .active_state()
+            .buffer
+            .to_string()
+            .expect("buffer text");
+        assert_eq!(text, "hello world");
     }
 }

@@ -207,9 +207,14 @@ impl Editor {
             | Action::None => {
                 // Don't cancel for LSP actions or no-op
             }
+            Action::InsertTab => {
+                // Allow inline completion acceptance on Tab without clearing ghost text first
+                self.cancel_pending_lsp_requests();
+            }
             _ => {
                 // Cancel any pending LSP requests
                 self.cancel_pending_lsp_requests();
+                self.clear_inline_completion();
             }
         }
 
@@ -476,7 +481,10 @@ impl Editor {
                 );
             }
             Action::LspCompletion => {
+                self.clear_inline_completion();
                 self.request_completion()?;
+                let _ =
+                    self.request_inline_completion(lsp_types::InlineCompletionTriggerKind::Invoked);
             }
             Action::LspGotoDefinition => {
                 self.request_goto_definition()?;
@@ -1131,6 +1139,12 @@ impl Editor {
                 } else {
                     self.handle_insert_char_editor(c)?;
                 }
+            }
+            Action::InsertTab => {
+                if self.accept_inline_completion()? {
+                    return Ok(());
+                }
+                self.apply_action_as_events(Action::InsertTab)?;
             }
             // Prompt clipboard actions
             Action::PromptCopy => {
@@ -2605,6 +2619,7 @@ impl Editor {
 
         // Cancel any pending LSP requests since the text is changing
         self.cancel_pending_lsp_requests();
+        self.clear_inline_completion();
 
         if let Some(events) = self.action_to_events(Action::InsertChar(c)) {
             if events.len() > 1 {
