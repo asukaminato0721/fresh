@@ -162,11 +162,14 @@ fn collect_theme_files(
         } else if path.extension().is_some_and(|ext| ext == "json") {
             // Found a theme file
             let name = path.file_stem().unwrap().to_string_lossy().to_string();
+            // Build path with forward slashes for cross-platform include_str!
             let rel_path = path
                 .strip_prefix("themes")
                 .unwrap()
-                .to_string_lossy()
-                .to_string();
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
             themes.push((name, pack.to_string(), rel_path));
         }
     }
