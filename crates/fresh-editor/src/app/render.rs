@@ -2368,11 +2368,17 @@ impl Editor {
     /// If there's already an active search, this continues with the same search term.
     /// Otherwise, it starts a new search with the current selection or word under cursor.
     pub(super) fn find_selection_next(&mut self) {
-        // If there's already a search active, just continue to next match
-        if self.search_state.is_some() {
-            self.find_next();
-            return;
+        // If there's already a search active AND cursor is at a match position,
+        // just continue to next match. Otherwise, clear and start fresh.
+        if let Some(ref search_state) = self.search_state {
+            let cursor_pos = self.active_state().cursors.primary().position;
+            if search_state.matches.contains(&cursor_pos) {
+                self.find_next();
+                return;
+            }
+            // Cursor moved away from a match - clear search state
         }
+        self.search_state = None;
 
         // No active search - start a new one with selection or word under cursor
         let (search_text, selection_start) = self.get_selection_or_word_for_search_with_pos();
@@ -2422,11 +2428,17 @@ impl Editor {
     /// If there's already an active search, this continues with the same search term.
     /// Otherwise, it starts a new search with the current selection or word under cursor.
     pub(super) fn find_selection_previous(&mut self) {
-        // If there's already a search active, just continue to previous match
-        if self.search_state.is_some() {
-            self.find_previous();
-            return;
+        // If there's already a search active AND cursor is at a match position,
+        // just continue to previous match. Otherwise, clear and start fresh.
+        if let Some(ref search_state) = self.search_state {
+            let cursor_pos = self.active_state().cursors.primary().position;
+            if search_state.matches.contains(&cursor_pos) {
+                self.find_previous();
+                return;
+            }
+            // Cursor moved away from a match - clear search state
         }
+        self.search_state = None;
 
         // No active search - start a new one with selection or word under cursor
         let (search_text, selection_start) = self.get_selection_or_word_for_search_with_pos();

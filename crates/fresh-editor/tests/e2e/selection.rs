@@ -913,13 +913,13 @@ fn test_select_word_with_dot() {
 }
 
 /// Test expand selection (Ctrl+Shift+Right) when cursor is on a non-word character
-/// Should select from cursor position through the next word (like Emacs)
+/// From punctuation, Ctrl+Right consumes all punctuation and stops at word boundary
 #[test]
 fn test_expand_selection_on_non_word_char() {
     use crossterm::event::{KeyCode, KeyModifiers};
     let mut harness = EditorTestHarness::new(80, 24).unwrap();
 
-    // Test case from user: cursor on first * in "**-word"
+    // Test case: cursor on first * in "**-word"
     harness.type_text("**-word").unwrap();
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
 
@@ -931,7 +931,7 @@ fn test_expand_selection_on_non_word_char() {
     let cursor = harness.editor().active_state().cursors.primary();
     let range = cursor.selection_range();
 
-    // Should select from cursor (position 0) through next word, which is "**-word"
+    // Should select punctuation only: "**-" (stops at word boundary)
     assert!(
         range.is_some(),
         "Should have a selection after Ctrl+Shift+Right"
@@ -943,8 +943,8 @@ fn test_expand_selection_on_non_word_char() {
             .active_state_mut()
             .get_text_range(range.start, range.end);
         assert_eq!(
-            selected_text, "**-word",
-            "Should select from cursor through end of next word"
+            selected_text, "**-",
+            "Should select punctuation only (stops at word boundary)"
         );
     }
 }

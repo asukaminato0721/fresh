@@ -1691,6 +1691,71 @@ fn test_find_selection_keeps_search_term() {
     );
 }
 
+/// Test that manually moving cursor invalidates the search state
+/// so that next Alt+N/Ctrl+F3 starts fresh from the new position
+#[test]
+fn test_find_selection_invalidates_on_cursor_move() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+
+    // Create a file with two different words that each appear twice
+    // "hello world hello world"
+    //  ^0    ^6     ^12   ^18
+    std::fs::write(&file_path, "hello world hello world").unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Cursor starts at "hello" (position 0)
+    assert_eq!(harness.cursor_position(), 0);
+
+    // Press Ctrl+F3 to find next occurrence of "hello"
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should move to second "hello" at position 12
+    let second_hello_pos = "hello world ".len();
+    assert_eq!(
+        harness.cursor_position(),
+        second_hello_pos,
+        "First Ctrl+F3 should move to second 'hello'"
+    );
+
+    // Now manually move cursor to "world" at position 18 using End then Home to go to second line
+    // Actually, let's use arrow keys to move to position 18 (start of second "world")
+    // From position 12, we need to move 6 positions right
+    for _ in 0..6 {
+        harness
+            .send_key(KeyCode::Right, KeyModifiers::NONE)
+            .unwrap();
+    }
+    harness.render().unwrap();
+
+    let second_world_pos = "hello world hello ".len();
+    assert_eq!(
+        harness.cursor_position(),
+        second_world_pos,
+        "Arrow keys should move to second 'world'"
+    );
+
+    // Press Ctrl+F3 again - should NOW search for "world", not "hello"
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // "world" appears at positions 6 and 18. We're at 18, so next should wrap to 6.
+    let first_world_pos = "hello ".len();
+    assert_eq!(
+        harness.cursor_position(),
+        first_world_pos,
+        "Ctrl+F3 after moving cursor should search for 'world', not 'hello'"
+    );
+}
+
 /// Test search in a large file (issue #657)
 ///
 /// This test reproduces the bug where searching in large files fails with
