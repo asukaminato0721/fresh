@@ -53,3 +53,8 @@ crates/fresh-editor/npm-package/CHANGELOG.md
 bindings/
 crates/fresh-editor/target
 
+# VitePress
+docs/.vitepress/cache
+docs/.vitepress/dist
+node_modules
+bun.lockb
