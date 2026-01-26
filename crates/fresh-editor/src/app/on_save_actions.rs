@@ -35,18 +35,39 @@ impl Editor {
             None => return Ok(false),
         };
 
+        let mut ran_any_action = false;
+
+        // Run whitespace cleanup actions first (before formatter)
+        if self.config.editor.trim_trailing_whitespace_on_save {
+            if self.trim_trailing_whitespace()? {
+                ran_any_action = true;
+            }
+        }
+
+        if self.config.editor.ensure_final_newline_on_save {
+            if self.ensure_final_newline()? {
+                ran_any_action = true;
+            }
+        }
+
+        // If whitespace cleanup made changes, re-save
+        if ran_any_action {
+            if let Err(e) = self.active_state_mut().buffer.save() {
+                return Err(format!("Failed to re-save after whitespace cleanup: {}", e));
+            }
+            self.active_event_log_mut().mark_saved();
+        }
+
         // Detect language for this file
         let language = match detect_language(&path, &self.config.languages) {
             Some(lang) => lang,
-            None => return Ok(false),
+            None => return Ok(ran_any_action),
         };
 
         let lang_config = match self.config.languages.get(&language) {
             Some(lc) => lc.clone(),
-            None => return Ok(false),
+            None => return Ok(ran_any_action),
         };
-
-        let mut ran_any_action = false;
 
         // Run formatter if format_on_save is enabled
         if lang_config.format_on_save {
@@ -449,6 +470,52 @@ impl Editor {
         self.apply_event_to_active_buffer(&batch);
 
         Ok(())
+    }
+
+    /// Trim trailing whitespace from all lines in the active buffer.
+    /// Returns Ok(true) if any changes were made, Ok(false) if buffer unchanged.
+    pub fn trim_trailing_whitespace(&mut self) -> Result<bool, String> {
+        let content = self.active_state().buffer.to_string().unwrap_or_default();
+
+        // Process each line and trim trailing whitespace
+        let trimmed: String = content
+            .lines()
+            .map(|line| line.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Preserve original trailing newline if present
+        let trimmed = if content.ends_with('\n') && !trimmed.ends_with('\n') {
+            format!("{}\n", trimmed)
+        } else {
+            trimmed
+        };
+
+        if trimmed == content {
+            return Ok(false);
+        }
+
+        self.replace_buffer_with_output(&trimmed)?;
+        Ok(true)
+    }
+
+    /// Ensure the buffer ends with a newline.
+    /// Returns Ok(true) if a newline was added, Ok(false) if already ends with newline.
+    pub fn ensure_final_newline(&mut self) -> Result<bool, String> {
+        let content = self.active_state().buffer.to_string().unwrap_or_default();
+
+        // Empty buffers don't need a newline
+        if content.is_empty() {
+            return Ok(false);
+        }
+
+        if content.ends_with('\n') {
+            return Ok(false);
+        }
+
+        let with_newline = format!("{}\n", content);
+        self.replace_buffer_with_output(&with_newline)?;
+        Ok(true)
     }
 }
 

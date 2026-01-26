@@ -506,3 +506,142 @@ fn test_formatter_not_found_shows_message() {
     // Should show a message about missing formatter
     harness.assert_screen_contains("Formatter");
 }
+
+/// Test trim_trailing_whitespace_on_save removes trailing spaces
+#[test]
+fn test_trim_trailing_whitespace_on_save() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file_path = project_dir.join("test.rs");
+    // File with trailing whitespace on multiple lines
+    std::fs::write(&file_path, "line 1   \nline 2\t\t\nline 3  \n").unwrap();
+
+    let mut config = Config::default();
+    config.editor.trim_trailing_whitespace_on_save = true;
+
+    let mut harness =
+        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Save the file (triggers whitespace cleanup)
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Trailing whitespace should be removed
+    harness.assert_buffer_content("line 1\nline 2\nline 3\n");
+
+    // File on disk should also have no trailing whitespace
+    let disk_content = std::fs::read_to_string(&file_path).unwrap();
+    assert_eq!(disk_content, "line 1\nline 2\nline 3\n");
+}
+
+/// Test ensure_final_newline_on_save adds newline at end
+#[test]
+fn test_ensure_final_newline_on_save() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file_path = project_dir.join("test.rs");
+    // File without trailing newline
+    std::fs::write(&file_path, "line 1\nline 2").unwrap();
+
+    let mut config = Config::default();
+    config.editor.ensure_final_newline_on_save = true;
+
+    let mut harness =
+        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Save the file (triggers final newline addition)
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Should have final newline
+    harness.assert_buffer_content("line 1\nline 2\n");
+
+    // File on disk should also have final newline
+    let disk_content = std::fs::read_to_string(&file_path).unwrap();
+    assert_eq!(disk_content, "line 1\nline 2\n");
+}
+
+/// Test both whitespace cleanup options together
+#[test]
+fn test_whitespace_cleanup_combined() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file_path = project_dir.join("test.rs");
+    // File with trailing whitespace AND no final newline
+    std::fs::write(&file_path, "line 1   \nline 2\t\nline 3").unwrap();
+
+    let mut config = Config::default();
+    config.editor.trim_trailing_whitespace_on_save = true;
+    config.editor.ensure_final_newline_on_save = true;
+
+    let mut harness =
+        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Save the file
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Should have both cleanups applied
+    harness.assert_buffer_content("line 1\nline 2\nline 3\n");
+
+    // File on disk should also be cleaned up
+    let disk_content = std::fs::read_to_string(&file_path).unwrap();
+    assert_eq!(disk_content, "line 1\nline 2\nline 3\n");
+}
+
+/// Test whitespace cleanup does nothing when file is already clean
+#[test]
+fn test_whitespace_cleanup_no_change_needed() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file_path = project_dir.join("test.rs");
+    // File already clean
+    std::fs::write(&file_path, "line 1\nline 2\n").unwrap();
+
+    let mut config = Config::default();
+    config.editor.trim_trailing_whitespace_on_save = true;
+    config.editor.ensure_final_newline_on_save = true;
+
+    let mut harness =
+        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Modify buffer slightly to make it saveable
+    harness.type_text("x").unwrap();
+    harness.send_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    // Save the file
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Content should remain the same
+    harness.assert_buffer_content("line 1\nline 2\n");
+}

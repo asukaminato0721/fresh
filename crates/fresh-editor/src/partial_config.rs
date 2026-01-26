@@ -155,6 +155,8 @@ pub struct PartialEditorConfig {
     pub auto_revert_poll_interval_ms: Option<u64>,
     pub file_tree_poll_interval_ms: Option<u64>,
     pub default_line_ending: Option<LineEndingOption>,
+    pub trim_trailing_whitespace_on_save: Option<bool>,
+    pub ensure_final_newline_on_save: Option<bool>,
     pub cursor_style: Option<CursorStyle>,
     pub keyboard_disambiguate_escape_codes: Option<bool>,
     pub keyboard_report_event_types: Option<bool>,
@@ -208,6 +210,10 @@ impl Merge for PartialEditorConfig {
             .merge_from(&other.file_tree_poll_interval_ms);
         self.default_line_ending
             .merge_from(&other.default_line_ending);
+        self.trim_trailing_whitespace_on_save
+            .merge_from(&other.trim_trailing_whitespace_on_save);
+        self.ensure_final_newline_on_save
+            .merge_from(&other.ensure_final_newline_on_save);
         self.cursor_style.merge_from(&other.cursor_style);
         self.keyboard_disambiguate_escape_codes
             .merge_from(&other.keyboard_disambiguate_escape_codes);
@@ -407,6 +413,8 @@ impl From<&crate::config::EditorConfig> for PartialEditorConfig {
             auto_revert_poll_interval_ms: Some(cfg.auto_revert_poll_interval_ms),
             file_tree_poll_interval_ms: Some(cfg.file_tree_poll_interval_ms),
             default_line_ending: Some(cfg.default_line_ending.clone()),
+            trim_trailing_whitespace_on_save: Some(cfg.trim_trailing_whitespace_on_save),
+            ensure_final_newline_on_save: Some(cfg.ensure_final_newline_on_save),
             cursor_style: Some(cfg.cursor_style),
             keyboard_disambiguate_escape_codes: Some(cfg.keyboard_disambiguate_escape_codes),
             keyboard_report_event_types: Some(cfg.keyboard_report_event_types),
@@ -481,6 +489,12 @@ impl PartialEditorConfig {
             default_line_ending: self
                 .default_line_ending
                 .unwrap_or(defaults.default_line_ending.clone()),
+            trim_trailing_whitespace_on_save: self
+                .trim_trailing_whitespace_on_save
+                .unwrap_or(defaults.trim_trailing_whitespace_on_save),
+            ensure_final_newline_on_save: self
+                .ensure_final_newline_on_save
+                .unwrap_or(defaults.ensure_final_newline_on_save),
             cursor_style: self.cursor_style.unwrap_or(defaults.cursor_style),
             keyboard_disambiguate_escape_codes: self
                 .keyboard_disambiguate_escape_codes
