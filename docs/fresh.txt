@@ -1,0 +1,1 @@
+../crates/fresh-editor/docs/fresh.txt
