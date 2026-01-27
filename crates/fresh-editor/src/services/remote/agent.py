@@ -189,8 +189,11 @@ def cmd_mkdir(id, p):
 
 
 def cmd_mv(id, p):
-    """Move/rename a file or directory."""
-    os.rename(validate_path(p["from"]), validate_path(p["to"]))
+    """Move/rename a file or directory.
+
+    Uses shutil.move() to handle cross-device moves (e.g., /tmp to /etc).
+    """
+    shutil.move(validate_path(p["from"]), validate_path(p["to"]))
     send(id, r={})
 
 
