@@ -10,6 +10,9 @@ mod protocol;
 mod spawner;
 
 pub use channel::AgentChannel;
+/// Re-export for integration tests - spawns a local agent without SSH
+#[doc(hidden)]
+pub use connection::spawn_local_agent;
 pub use connection::{ConnectionParams, SshConnection};
 pub use filesystem::RemoteFileSystem;
 pub use protocol::{

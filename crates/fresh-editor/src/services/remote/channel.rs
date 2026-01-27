@@ -223,6 +223,41 @@ impl AgentChannel {
         self.runtime_handle.block_on(self.request(method, params))
     }
 
+    /// Send a request and collect all streaming data along with the final result
+    pub async fn request_with_data(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<(Vec<serde_json::Value>, serde_json::Value), ChannelError> {
+        let (mut data_rx, result_rx) = self.request_streaming(method, params).await?;
+
+        // Collect all streaming data
+        let mut data = Vec::new();
+        while let Some(chunk) = data_rx.recv().await {
+            data.push(chunk);
+        }
+
+        // Wait for final result
+        let result = result_rx
+            .await
+            .map_err(|_| ChannelError::ChannelClosed)?
+            .map_err(ChannelError::Remote)?;
+
+        Ok((data, result))
+    }
+
+    /// Send a request with streaming data, synchronously (blocking)
+    ///
+    /// This can be called from outside the Tokio runtime context.
+    pub fn request_with_data_blocking(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<(Vec<serde_json::Value>, serde_json::Value), ChannelError> {
+        self.runtime_handle
+            .block_on(self.request_with_data(method, params))
+    }
+
     /// Cancel a request
     pub async fn cancel(&self, request_id: u64) -> Result<(), ChannelError> {
         use crate::services::remote::protocol::cancel_params;

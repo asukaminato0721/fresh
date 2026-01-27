@@ -133,41 +133,42 @@ impl RemoteFileSystem {
 impl FileSystem for RemoteFileSystem {
     fn read_file(&self, path: &Path) -> io::Result<Vec<u8>> {
         let path_str = path.to_string_lossy();
-        let result = self
+        let (data_chunks, _result) = self
             .channel
-            .request_blocking("read", read_params(&path_str, None, None))
+            .request_with_data_blocking("read", read_params(&path_str, None, None))
             .map_err(Self::to_io_error)?;
 
-        // Collect all data chunks
-        // For blocking request, we get the final result which should have aggregated data
-        // But actually with streaming, we need to handle this differently
-        // For now, assume small files return all data in result
-        if let Some(data) = result.get("data") {
-            if let Some(b64) = data.as_str() {
-                return decode_base64(b64)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+        // Collect all streaming data chunks
+        let mut content = Vec::new();
+        for chunk in data_chunks {
+            if let Some(b64) = chunk.get("data").and_then(|v| v.as_str()) {
+                let decoded = decode_base64(b64)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                content.extend(decoded);
             }
         }
 
-        // If no data field, might be empty file
-        Ok(Vec::new())
+        Ok(content)
     }
 
     fn read_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
         let path_str = path.to_string_lossy();
-        let result = self
+        let (data_chunks, _result) = self
             .channel
-            .request_blocking("read", read_params(&path_str, Some(offset), Some(len)))
+            .request_with_data_blocking("read", read_params(&path_str, Some(offset), Some(len)))
             .map_err(Self::to_io_error)?;
 
-        if let Some(data) = result.get("data") {
-            if let Some(b64) = data.as_str() {
-                return decode_base64(b64)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+        // Collect all streaming data chunks
+        let mut content = Vec::new();
+        for chunk in data_chunks {
+            if let Some(b64) = chunk.get("data").and_then(|v| v.as_str()) {
+                let decoded = decode_base64(b64)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                content.extend(decoded);
             }
         }
 
-        Ok(Vec::new())
+        Ok(content)
     }
 
     fn write_file(&self, path: &Path, data: &[u8]) -> io::Result<()> {
