@@ -128,8 +128,10 @@ struct SetupState {
     /// Stdin streaming state (if --stdin flag or "-" file was used)
     /// Contains temp file path and background thread handle
     stdin_stream: Option<StdinStreamState>,
-    /// Remote connection info if editing remote files
-    remote_info: Option<RemoteLocation>,
+    /// Filesystem implementation (local or remote)
+    filesystem: std::sync::Arc<dyn FileSystem + Send + Sync>,
+    /// Remote session resources - must be kept alive for remote editing
+    _remote_session: Option<RemoteSession>,
     /// Key translator for input calibration
     key_translator: KeyTranslator,
     #[cfg(target_os = "linux")]
@@ -505,21 +507,35 @@ fn parse_location(input: &str) -> ParsedLocation {
     ParsedLocation::Local(parse_file_location(input))
 }
 
+/// Holds resources needed for remote editing (kept alive for duration of session)
+struct RemoteSession {
+    /// The SSH connection - dropping this closes the connection
+    _connection: remote::SshConnection,
+    /// Tokio runtime for async operations
+    _runtime: tokio::runtime::Runtime,
+}
+
+/// Result of creating filesystem - includes optional remote session to keep alive
+struct FilesystemResult {
+    filesystem: std::sync::Arc<dyn FileSystem + Send + Sync>,
+    /// Remote session resources - must be kept alive for remote editing
+    remote_session: Option<RemoteSession>,
+}
+
 /// Create filesystem for local or remote editing
-fn create_filesystem(
-    remote_info: &Option<RemoteLocation>,
-) -> AnyhowResult<std::sync::Arc<dyn FileSystem + Send + Sync>> {
+fn create_filesystem(remote_info: &Option<RemoteLocation>) -> AnyhowResult<FilesystemResult> {
     if let Some(remote) = remote_info {
         connect_remote(remote)
     } else {
-        Ok(std::sync::Arc::new(StdFileSystem))
+        Ok(FilesystemResult {
+            filesystem: std::sync::Arc::new(StdFileSystem),
+            remote_session: None,
+        })
     }
 }
 
 /// Establish SSH connection to remote host and return RemoteFileSystem
-fn connect_remote(
-    remote: &RemoteLocation,
-) -> AnyhowResult<std::sync::Arc<dyn FileSystem + Send + Sync>> {
+fn connect_remote(remote: &RemoteLocation) -> AnyhowResult<FilesystemResult> {
     // Create a Tokio runtime for the SSH connection
     let rt = tokio::runtime::Runtime::new()
         .context("Failed to create Tokio runtime for remote connection")?;
@@ -542,16 +558,17 @@ fn connect_remote(
     let connection_string = connection.connection_string();
     let channel = connection.channel();
 
-    // Note: we need to keep the connection alive
-    // TODO: proper connection lifecycle management
-    std::mem::forget(connection);
-
     tracing::info!("Connected to remote host: {}", connection_string);
 
-    Ok(std::sync::Arc::new(remote::RemoteFileSystem::new(
-        channel,
-        connection_string,
-    )))
+    let filesystem = std::sync::Arc::new(remote::RemoteFileSystem::new(channel, connection_string));
+
+    Ok(FilesystemResult {
+        filesystem,
+        remote_session: Some(RemoteSession {
+            _connection: connection,
+            _runtime: rt,
+        }),
+    })
 }
 
 fn initialize_app(args: &Args) -> AnyhowResult<SetupState> {
@@ -670,13 +687,23 @@ fn initialize_app(args: &Args) -> AnyhowResult<SetupState> {
         })
         .collect();
 
+    // Create filesystem early - needed for remote directory detection
+    // For remote editing, this establishes the SSH connection
+    let FilesystemResult {
+        filesystem,
+        remote_session,
+    } = create_filesystem(&remote_info)?;
+
     let mut working_dir = None;
     let mut show_file_explorer = false;
 
     // Only set working_dir if exactly one parameter is passed and it's a directory
     if file_locations.len() == 1 {
         if let Some(first_loc) = file_locations.first() {
-            if first_loc.path.is_dir() {
+            // Use the filesystem to check if path is a directory
+            // This works for both local and remote paths
+            let is_directory = filesystem.is_dir(&first_loc.path).unwrap_or(false);
+            if is_directory {
                 working_dir = Some(first_loc.path.clone());
                 show_file_explorer = true;
             }
@@ -684,10 +711,15 @@ fn initialize_app(args: &Args) -> AnyhowResult<SetupState> {
     }
 
     // Load config using the layered config system
-    let effective_working_dir = working_dir
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    // For remote editing, use current local dir for config (remote doesn't have our config)
+    let effective_working_dir = if remote_info.is_some() {
+        std::env::current_dir().unwrap_or_default()
+    } else {
+        working_dir
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    };
 
     let dir_context = fresh::config_io::DirectoryContext::from_system()?;
 
@@ -780,7 +812,8 @@ fn initialize_app(args: &Args) -> AnyhowResult<SetupState> {
         key_translator,
         gpm_client,
         terminal_modes,
-        remote_info,
+        filesystem,
+        _remote_session: remote_session,
     })
 }
 
@@ -1497,7 +1530,8 @@ fn main() -> AnyhowResult<()> {
         #[cfg(not(target_os = "linux"))]
         gpm_client,
         mut terminal_modes,
-        remote_info,
+        filesystem,
+        _remote_session,
     } = initialize_app(&args).context("Failed to initialize application")?;
 
     let mut current_working_dir = initial_working_dir;
@@ -1518,8 +1552,8 @@ fn main() -> AnyhowResult<()> {
         // Detect terminal color capability
         let color_capability = fresh::view::color_support::ColorCapability::detect();
 
-        // Create filesystem implementation for all IO operations
-        let filesystem = create_filesystem(&remote_info)?;
+        // Use the filesystem created during initialization (supports both local and remote)
+        let fs = filesystem.clone();
 
         let mut editor = Editor::with_working_dir(
             config.clone(),
@@ -1529,7 +1563,7 @@ fn main() -> AnyhowResult<()> {
             dir_context.clone(),
             !args.no_plugins,
             color_capability,
-            filesystem,
+            fs,
         )
         .context("Failed to create editor instance")?;
 
