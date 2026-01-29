@@ -13,7 +13,14 @@ pub struct FileExplorerDecorationCache {
 
 impl FileExplorerDecorationCache {
     /// Rebuild the cache from a list of decorations.
-    pub fn rebuild<I>(decorations: I, root: &Path) -> Self
+    ///
+    /// `symlink_mappings` maps symlink paths to their canonical targets.
+    /// This allows decorations on canonical paths to also appear under symlink aliases.
+    pub fn rebuild<I>(
+        decorations: I,
+        root: &Path,
+        symlink_mappings: &HashMap<PathBuf, PathBuf>,
+    ) -> Self
     where
         I: IntoIterator<Item = FileExplorerDecoration>,
     {
@@ -22,7 +29,25 @@ impl FileExplorerDecorationCache {
             if !decoration.path.starts_with(root) {
                 continue;
             }
-            insert_best(&mut direct, decoration);
+            insert_best(&mut direct, decoration.clone());
+
+            // Also insert under symlink aliases
+            // If decoration.path = /real_dir/file.txt and symlink_mappings has
+            // /link_dir -> /real_dir, insert under /link_dir/file.txt too
+            for (symlink_path, canonical_target) in symlink_mappings {
+                if let Ok(suffix) = decoration.path.strip_prefix(canonical_target) {
+                    let aliased_path = symlink_path.join(suffix);
+                    insert_best(
+                        &mut direct,
+                        FileExplorerDecoration {
+                            path: aliased_path,
+                            symbol: decoration.symbol.clone(),
+                            color: decoration.color,
+                            priority: decoration.priority,
+                        },
+                    );
+                }
+            }
         }
 
         let mut bubbled = HashMap::new();
@@ -47,21 +72,13 @@ impl FileExplorerDecorationCache {
     }
 
     /// Lookup a decoration for an exact path.
-    /// Also tries the canonicalized path to handle symlinks.
     pub fn direct_for_path(&self, path: &Path) -> Option<&FileExplorerDecoration> {
-        self.direct.get(path).or_else(|| {
-            // Try canonicalized path for symlink support
-            path.canonicalize().ok().and_then(|p| self.direct.get(&p))
-        })
+        self.direct.get(path)
     }
 
     /// Lookup a bubbled decoration for a path (direct or descendant).
-    /// Also tries the canonicalized path to handle symlinks.
     pub fn bubbled_for_path(&self, path: &Path) -> Option<&FileExplorerDecoration> {
-        self.bubbled.get(path).or_else(|| {
-            // Try canonicalized path for symlink support
-            path.canonicalize().ok().and_then(|p| self.bubbled.get(&p))
-        })
+        self.bubbled.get(path)
     }
 }
 

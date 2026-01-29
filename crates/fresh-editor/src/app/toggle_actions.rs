@@ -245,6 +245,9 @@ impl Editor {
         let old_theme = self.config.theme.clone();
         self.config = Config::load_with_layers(&self.dir_context, &self.working_dir);
 
+        // Refresh cached raw user config for plugins
+        self.user_config_raw = Config::read_user_config_raw(&self.working_dir);
+
         // Apply theme change if needed
         if old_theme != self.config.theme {
             if let Some(theme) = self.theme_registry.get_cloned(&self.config.theme) {

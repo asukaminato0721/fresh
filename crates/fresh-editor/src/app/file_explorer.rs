@@ -280,21 +280,35 @@ impl Editor {
                 .map(|n| n.is_expanded())
                 .unwrap_or(false);
 
+            // Track if we need to rebuild decoration cache (for symlink directories)
+            let mut needs_decoration_rebuild = false;
+
             match result {
                 Ok(()) => {
                     if final_expanded {
-                        let dir_path = explorer
+                        let node_info = explorer
                             .tree()
                             .get_node(selected_id)
-                            .map(|n| n.entry.path.clone());
+                            .map(|n| (n.entry.path.clone(), n.entry.is_symlink()));
 
-                        if let Some(dir_path) = dir_path {
+                        if let Some((dir_path, is_symlink)) = node_info {
                             if let Err(e) = explorer.load_gitignore_for_dir(&dir_path) {
                                 tracing::warn!(
                                     "Failed to load .gitignore from {:?}: {}",
                                     dir_path,
                                     e
                                 );
+                            }
+
+                            // If a symlink directory was just expanded, we need to rebuild
+                            // the decoration cache so decorations under the canonical target
+                            // also appear under the symlink path
+                            if is_symlink {
+                                tracing::debug!(
+                                    "Symlink directory expanded, will rebuild decoration cache: {:?}",
+                                    dir_path
+                                );
+                                needs_decoration_rebuild = true;
                             }
                         }
                     }
@@ -313,6 +327,11 @@ impl Editor {
                         t!("explorer.error", error = e.to_string()).to_string(),
                     );
                 }
+            }
+
+            // Rebuild decoration cache outside the explorer borrow
+            if needs_decoration_rebuild {
+                self.rebuild_file_explorer_decoration_cache();
             }
         }
     }
@@ -767,15 +786,24 @@ impl Editor {
         self.rebuild_file_explorer_decoration_cache();
     }
 
-    fn rebuild_file_explorer_decoration_cache(&mut self) {
+    pub(super) fn rebuild_file_explorer_decoration_cache(&mut self) {
         let decorations = self
             .file_explorer_decorations
             .values()
             .flat_map(|entries| entries.iter().cloned());
+
+        // Collect symlink mappings from the file explorer
+        let symlink_mappings = self
+            .file_explorer
+            .as_ref()
+            .map(|fe| fe.collect_symlink_mappings())
+            .unwrap_or_default();
+
         self.file_explorer_decoration_cache =
             crate::view::file_tree::FileExplorerDecorationCache::rebuild(
                 decorations,
                 &self.working_dir,
+                &symlink_mappings,
             );
     }
 }

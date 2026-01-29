@@ -7,6 +7,7 @@
 //! - Activating/toggling settings
 //! - Incrementing/decrementing numeric values
 
+use crate::config::Config;
 use crate::config_io::{ConfigLayer, ConfigResolver};
 use crate::input::keybindings::KeybindingResolver;
 use anyhow::Result as AnyhowResult;
@@ -93,6 +94,9 @@ impl Editor {
 
         // Apply the new config
         self.config = new_config.clone();
+
+        // Refresh cached raw user config for plugins
+        self.user_config_raw = Config::read_user_config_raw(&self.working_dir);
 
         // Apply runtime changes
         if old_theme != self.config.theme {

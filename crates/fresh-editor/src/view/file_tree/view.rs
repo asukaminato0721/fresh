@@ -2,6 +2,8 @@ use super::ignore::IgnorePatterns;
 use super::node::NodeId;
 use super::tree::FileTree;
 use crate::model::filesystem::DirEntry;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// View state for file tree navigation and filtering
 #[derive(Debug)]
@@ -365,6 +367,31 @@ impl FileTreeView {
         } else {
             false
         }
+    }
+
+    /// Collect symlink mappings from expanded symlink directories.
+    ///
+    /// Returns a HashMap where keys are symlink paths and values are their canonical targets.
+    /// This is used to create decoration aliases so files under symlinked directories
+    /// can show their git status correctly.
+    pub fn collect_symlink_mappings(&self) -> HashMap<PathBuf, PathBuf> {
+        let mut mappings = HashMap::new();
+
+        for node_id in self.tree.get_visible_nodes() {
+            if let Some(node) = self.tree.get_node(node_id) {
+                // Only process expanded symlink directories
+                if node.entry.is_symlink() && node.is_dir() && node.is_expanded() {
+                    // Canonicalize the symlink to get the target
+                    if let Ok(canonical) = node.entry.path.canonicalize() {
+                        if canonical != node.entry.path {
+                            mappings.insert(node.entry.path.clone(), canonical);
+                        }
+                    }
+                }
+            }
+        }
+
+        mappings
     }
 }
 

@@ -192,6 +192,9 @@ pub struct Editor {
     /// Configuration
     config: Config,
 
+    /// Cached raw user config (for plugins, avoids re-reading file on every frame)
+    user_config_raw: serde_json::Value,
+
     /// Directory context for editor state paths
     dir_context: DirectoryContext,
 
@@ -1042,11 +1045,15 @@ impl Editor {
             None
         };
 
+        // Cache raw user config at startup (to avoid re-reading file every frame)
+        let user_config_raw = Config::read_user_config_raw(&working_dir);
+
         let mut editor = Editor {
             buffers,
             event_logs,
             next_buffer_id: 1,
             config,
+            user_config_raw,
             dir_context: dir_context.clone(),
             grammar_registry,
             pending_grammars: Vec::new(),
@@ -4217,9 +4224,9 @@ impl Editor {
             // Update config (serialize the runtime config for plugins)
             snapshot.config = serde_json::to_value(&self.config).unwrap_or(serde_json::Value::Null);
 
-            // Update user config (raw file contents, not merged with defaults)
+            // Update user config (cached raw file contents, not merged with defaults)
             // This allows plugins to distinguish between user-set and default values
-            snapshot.user_config = Config::read_user_config_raw(&self.working_dir);
+            snapshot.user_config = self.user_config_raw.clone();
 
             // Update editor mode (for vi mode and other modal editing)
             snapshot.editor_mode = self.editor_mode.clone();
