@@ -612,6 +612,131 @@ fn test_inplace_write_crash_recovery() {
     );
 }
 
+/// Test that the recovery mechanism can actually restore a file after a crash.
+///
+/// This test:
+/// 1. Simulates a crash during in-place write streaming
+/// 2. Verifies recovery files exist
+/// 3. Performs the recovery by copying temp file to destination
+/// 4. Verifies the file content is correct after recovery
+#[test]
+#[cfg(unix)]
+fn test_inplace_write_recovery_restores_file() {
+    use std::fs;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("recovery_test.txt");
+
+    // Create a large file with recognizable content
+    let mut original_content = String::new();
+    for i in 0..500 {
+        original_content.push_str(&format!(
+            "Line {:04}: This content should be recoverable after crash\n",
+            i
+        ));
+    }
+    let original_len = original_content.len();
+    fs::write(&file_path, &original_content).unwrap();
+
+    // Create filesystem that crashes during streaming
+    let crash_fs = Arc::new(CrashDuringStreamFileSystem::new(
+        Arc::new(StdFileSystem),
+        file_path.clone(),
+    ));
+
+    // Open with large file mode
+    let threshold = 1024;
+    let mut buffer = TextBuffer::load_from_file(&file_path, threshold, crash_fs).unwrap();
+
+    assert!(buffer.is_large_file(), "Should be in large file mode");
+
+    // Make an edit that we'll recover
+    let edit_prefix = b"RECOVERED: ";
+    buffer.insert_bytes(0, edit_prefix.to_vec());
+
+    // Save should fail due to simulated crash
+    let save_result = buffer.save();
+    assert!(
+        save_result.is_err(),
+        "Save should fail due to simulated crash"
+    );
+
+    // At this point, the destination file may be corrupted (truncated/partial),
+    // but the temp file should have the complete content.
+
+    // Find the recovery entry
+    let recovery_dir = fresh::services::recovery::RecoveryStorage::get_recovery_dir().unwrap();
+    let hash = fresh::services::recovery::path_hash(&file_path);
+    let meta_path = recovery_dir.join(format!("{}.inplace.json", hash));
+
+    assert!(meta_path.exists(), "Recovery metadata should exist");
+
+    // Read the recovery metadata
+    let meta_content = fs::read_to_string(&meta_path).unwrap();
+    let recovery: fresh::services::recovery::InplaceWriteRecovery =
+        serde_json::from_str(&meta_content).unwrap();
+
+    // Verify temp file has complete content
+    assert!(
+        recovery.temp_path.exists(),
+        "Temp file should exist for recovery"
+    );
+    let temp_content = fs::read(&recovery.temp_path).unwrap();
+    let expected_len = original_len + edit_prefix.len();
+    assert_eq!(
+        temp_content.len(),
+        expected_len,
+        "Temp file should have complete content"
+    );
+
+    // === PERFORM THE RECOVERY ===
+    // This simulates what the editor's startup recovery would do:
+    // Copy the temp file content to the destination
+
+    fs::write(&file_path, &temp_content).unwrap();
+
+    // Optionally restore permissions (skip in test since we own the file)
+    // In real recovery, we'd use chown/chmod if we have permission
+
+    // Verify the recovered file content is correct
+    let recovered_content = fs::read_to_string(&file_path).unwrap();
+
+    assert_eq!(
+        recovered_content.len(),
+        expected_len,
+        "Recovered file should have correct size"
+    );
+
+    assert!(
+        recovered_content.starts_with("RECOVERED: Line 0000"),
+        "Recovered file should start with our edit"
+    );
+
+    assert!(
+        recovered_content.contains("Line 0250"),
+        "Recovered file should contain middle content"
+    );
+
+    assert!(
+        recovered_content.contains("Line 0499"),
+        "Recovered file should contain end content"
+    );
+
+    // Clean up recovery files (simulating what recovery does after success)
+    let _ = fs::remove_file(&recovery.temp_path);
+    let _ = fs::remove_file(&meta_path);
+
+    // Verify no recovery files remain
+    assert!(
+        !recovery.temp_path.exists(),
+        "Temp file should be cleaned up after recovery"
+    );
+    assert!(
+        !meta_path.exists(),
+        "Metadata should be cleaned up after recovery"
+    );
+}
+
 /// Test that successful in-place write cleans up recovery files
 #[test]
 #[cfg(unix)]
