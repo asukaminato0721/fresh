@@ -1590,6 +1590,7 @@ impl Editor {
             }
             Action::LspCompletion => {
                 self.request_completion();
+                let _ = self.request_inline_completion_invoked();
             }
             Action::DabbrevExpand => {
                 self.dabbrev_expand();
