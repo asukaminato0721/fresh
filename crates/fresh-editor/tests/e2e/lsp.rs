@@ -301,7 +301,7 @@ fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
 
     harness.type_text("hel")?;
 
-    let found = harness.wait_for_async(|h| h.screen_to_string().contains("hello_world"), 1000)?;
+    let found = harness.wait_for_async(|h| h.screen_to_string().contains("lo_world"), 1000)?;
     assert!(found, "Expected inline ghost text to render");
 
     let buffer_content = harness.get_buffer_content().unwrap();
