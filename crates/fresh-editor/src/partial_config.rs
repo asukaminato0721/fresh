@@ -166,6 +166,7 @@ pub struct PartialEditorConfig {
     pub keyboard_report_all_keys_as_escape_codes: Option<bool>,
     pub quick_suggestions: Option<bool>,
     pub quick_suggestions_delay_ms: Option<u64>,
+    pub enable_ghost_text: Option<bool>,
     pub suggest_on_trigger_characters: Option<bool>,
     pub accept_suggestion_on_enter: Option<AcceptSuggestionOnEnter>,
     pub show_menu_bar: Option<bool>,
@@ -231,6 +232,7 @@ impl Merge for PartialEditorConfig {
         self.quick_suggestions.merge_from(&other.quick_suggestions);
         self.quick_suggestions_delay_ms
             .merge_from(&other.quick_suggestions_delay_ms);
+        self.enable_ghost_text.merge_from(&other.enable_ghost_text);
         self.suggest_on_trigger_characters
             .merge_from(&other.suggest_on_trigger_characters);
         self.accept_suggestion_on_enter
@@ -431,6 +433,7 @@ impl From<&crate::config::EditorConfig> for PartialEditorConfig {
             ),
             quick_suggestions: Some(cfg.quick_suggestions),
             quick_suggestions_delay_ms: Some(cfg.quick_suggestions_delay_ms),
+            enable_ghost_text: Some(cfg.enable_ghost_text),
             suggest_on_trigger_characters: Some(cfg.suggest_on_trigger_characters),
             accept_suggestion_on_enter: Some(cfg.accept_suggestion_on_enter),
             show_menu_bar: Some(cfg.show_menu_bar),
@@ -523,6 +526,7 @@ impl PartialEditorConfig {
             quick_suggestions_delay_ms: self
                 .quick_suggestions_delay_ms
                 .unwrap_or(defaults.quick_suggestions_delay_ms),
+            enable_ghost_text: self.enable_ghost_text.unwrap_or(defaults.enable_ghost_text),
             suggest_on_trigger_characters: self
                 .suggest_on_trigger_characters
                 .unwrap_or(defaults.suggest_on_trigger_characters),

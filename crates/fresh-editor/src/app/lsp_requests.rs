@@ -26,8 +26,119 @@ use super::{uri_to_path, Editor, SemanticTokenRangeRequest};
 const SEMANTIC_TOKENS_FULL_DEBOUNCE_MS: u64 = 500;
 const SEMANTIC_TOKENS_RANGE_DEBOUNCE_MS: u64 = 50;
 const SEMANTIC_TOKENS_RANGE_PADDING_LINES: usize = 10;
+const GHOST_TEXT_ID: &str = "ghost-text";
 
 impl Editor {
+    /// Clear any active ghost text (inline completion) from the buffer.
+    pub(crate) fn clear_ghost_text(&mut self) {
+        if let Some(buffer_id) = self.ghost_text_buffer_id.take() {
+            if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                state
+                    .virtual_texts
+                    .remove_by_id(&mut state.marker_list, GHOST_TEXT_ID);
+            }
+        }
+    }
+
+    /// Request inline completion (ghost text) with a specific trigger kind.
+    pub(crate) fn request_inline_completion_automatic(&mut self) -> AnyhowResult<()> {
+        self.request_inline_completion_with_trigger(
+            lsp_types::InlineCompletionTriggerKind::Automatic,
+        )
+    }
+
+    /// Request inline completion (ghost text) explicitly invoked by the user.
+    pub(crate) fn request_inline_completion_invoked(&mut self) -> AnyhowResult<()> {
+        self.request_inline_completion_with_trigger(lsp_types::InlineCompletionTriggerKind::Invoked)
+    }
+
+    fn request_inline_completion_with_trigger(
+        &mut self,
+        trigger_kind: lsp_types::InlineCompletionTriggerKind,
+    ) -> AnyhowResult<()> {
+        if !self.config.editor.enable_ghost_text {
+            self.clear_ghost_text();
+            return Ok(());
+        }
+
+        self.clear_ghost_text();
+
+        let (buffer_id, line, character, language) = {
+            let state = self.active_state();
+            if state.cursors.count() != 1 || !state.cursors.primary().collapsed() {
+                self.clear_ghost_text();
+                return Ok(());
+            }
+
+            let path = match state.buffer.file_path() {
+                Some(p) => p,
+                None => return Ok(()),
+            };
+
+            let language = match detect_language(path, &self.config.languages) {
+                Some(lang) => lang,
+                None => return Ok(()),
+            };
+
+            let cursor_pos = state.cursors.primary().position;
+            let (line, character) = state.buffer.position_to_lsp_position(cursor_pos);
+            (self.active_buffer(), line, character, language)
+        };
+
+        let inline_supported = self
+            .lsp
+            .as_ref()
+            .map(|lsp| lsp.inline_completion_supported(&language))
+            .unwrap_or(false);
+
+        if !inline_supported {
+            self.clear_ghost_text();
+            return Ok(());
+        }
+
+        let request_id = self.next_lsp_request_id;
+
+        if let Some(pending_id) = self.pending_inline_completion_request.take() {
+            self.send_lsp_cancel_request(pending_id);
+        }
+
+        let sent = self
+            .with_lsp_for_buffer(buffer_id, |handle, uri, _language| {
+                let trigger_label =
+                    if trigger_kind == lsp_types::InlineCompletionTriggerKind::Invoked {
+                        "Invoked"
+                    } else {
+                        "Automatic"
+                    };
+                let result = handle.inline_completion(
+                    request_id,
+                    uri.clone(),
+                    line as u32,
+                    character as u32,
+                    trigger_kind,
+                    None,
+                );
+                if result.is_ok() {
+                    tracing::info!(
+                        "Requested inline completion at {}:{}:{} ({})",
+                        uri.as_str(),
+                        line,
+                        character,
+                        trigger_label
+                    );
+                }
+                result.is_ok()
+            })
+            .unwrap_or(false);
+
+        if sent {
+            self.next_lsp_request_id += 1;
+            self.pending_inline_completion_request = Some(request_id);
+        }
+
+        Ok(())
+    }
+
     /// Handle LSP completion response
     pub(crate) fn handle_completion_response(
         &mut self,
@@ -169,6 +280,151 @@ impl Editor {
         Ok(())
     }
 
+    /// Handle LSP inline completion response (textDocument/inlineCompletion)
+    pub(crate) fn handle_inline_completion_response(
+        &mut self,
+        request_id: u64,
+        items: Vec<lsp_types::InlineCompletionItem>,
+    ) {
+        use crate::primitives::snippet::expand_snippet;
+        use crate::primitives::word_navigation::find_completion_word_start;
+        use crate::view::virtual_text::VirtualTextPosition;
+        use ratatui::style::{Modifier, Style};
+
+        if self.pending_inline_completion_request != Some(request_id) {
+            tracing::debug!(
+                "Ignoring inline completion response for outdated request {}",
+                request_id
+            );
+            return;
+        }
+
+        self.pending_inline_completion_request = None;
+
+        if !self.config.editor.enable_ghost_text {
+            self.clear_ghost_text();
+            return;
+        }
+
+        let (buffer_id, cursor_pos, cursor_count, cursor_collapsed, buffer_len, suggestion_item) = {
+            let state = self.active_state();
+            let cursor = state.cursors.primary();
+            (
+                self.active_buffer(),
+                cursor.position,
+                state.cursors.count(),
+                cursor.collapsed(),
+                state.buffer.len(),
+                items.into_iter().next(),
+            )
+        };
+
+        if cursor_count != 1 || !cursor_collapsed {
+            self.clear_ghost_text();
+            return;
+        }
+
+        let Some(item) = suggestion_item else {
+            self.clear_ghost_text();
+            return;
+        };
+
+        let lsp_types::InlineCompletionItem {
+            insert_text,
+            insert_text_format,
+            range,
+            ..
+        } = item;
+
+        let mut suggestion = insert_text;
+        if insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET) {
+            suggestion = expand_snippet(&suggestion).text;
+        }
+
+        let suggestion = suggestion.lines().next().unwrap_or("").to_string();
+        if suggestion.is_empty() {
+            self.clear_ghost_text();
+            return;
+        }
+
+        let prefix = {
+            let state = self.active_state_mut();
+            if let Some(range) = range {
+                let start = state.buffer.line_col_to_position(
+                    range.start.line as usize,
+                    range.start.character as usize,
+                );
+                let end = state
+                    .buffer
+                    .line_col_to_position(range.end.line as usize, range.end.character as usize);
+                if cursor_pos >= start && cursor_pos <= end && start < cursor_pos {
+                    state.get_text_range(start, cursor_pos)
+                } else {
+                    let word_start = find_completion_word_start(&state.buffer, cursor_pos);
+                    if word_start < cursor_pos {
+                        state.get_text_range(word_start, cursor_pos)
+                    } else {
+                        String::new()
+                    }
+                }
+            } else {
+                let word_start = find_completion_word_start(&state.buffer, cursor_pos);
+                if word_start < cursor_pos {
+                    state.get_text_range(word_start, cursor_pos)
+                } else {
+                    String::new()
+                }
+            }
+        };
+
+        let prefix_lower = prefix.to_lowercase();
+        let suggestion_lower = suggestion.to_lowercase();
+        let prefix_char_count = prefix.chars().count();
+
+        let suffix = if prefix.is_empty() {
+            suggestion
+        } else if suggestion.starts_with(&prefix) || suggestion_lower.starts_with(&prefix_lower) {
+            let byte_idx = suggestion
+                .char_indices()
+                .nth(prefix_char_count)
+                .map(|(idx, _)| idx)
+                .unwrap_or(suggestion.len());
+            suggestion[byte_idx..].to_string()
+        } else {
+            String::new()
+        };
+
+        if suffix.is_empty() || buffer_len == 0 {
+            self.clear_ghost_text();
+            return;
+        }
+
+        let (anchor_pos, position) = if cursor_pos >= buffer_len {
+            (buffer_len.saturating_sub(1), VirtualTextPosition::AfterChar)
+        } else {
+            (cursor_pos, VirtualTextPosition::BeforeChar)
+        };
+
+        let style = Style::default()
+            .fg(self.theme.line_number_fg)
+            .add_modifier(Modifier::DIM);
+
+        self.clear_ghost_text();
+        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            state.virtual_texts.add_with_id_and_padding(
+                &mut state.marker_list,
+                anchor_pos,
+                suffix,
+                style,
+                position,
+                100,
+                GHOST_TEXT_ID.to_string(),
+                false,
+            );
+            self.ghost_text_buffer_id = Some(buffer_id);
+        }
+    }
+
     /// Handle LSP go-to-definition response
     pub(crate) fn handle_goto_definition_response(
         &mut self,
@@ -277,7 +533,9 @@ impl Editor {
 
     /// Check if there are any pending LSP requests
     pub fn has_pending_lsp_requests(&self) -> bool {
-        self.pending_completion_request.is_some() || self.pending_goto_definition_request.is_some()
+        self.pending_completion_request.is_some()
+            || self.pending_inline_completion_request.is_some()
+            || self.pending_goto_definition_request.is_some()
     }
 
     /// Cancel any pending LSP requests
@@ -290,6 +548,13 @@ impl Editor {
             self.send_lsp_cancel_request(request_id);
             self.lsp_status.clear();
         }
+        if let Some(request_id) = self.pending_inline_completion_request.take() {
+            tracing::debug!(
+                "Canceling pending LSP inline completion request {}",
+                request_id
+            );
+            self.send_lsp_cancel_request(request_id);
+        }
         if let Some(request_id) = self.pending_goto_definition_request.take() {
             tracing::debug!(
                 "Canceling pending LSP goto-definition request {}",
@@ -299,6 +564,8 @@ impl Editor {
             self.send_lsp_cancel_request(request_id);
             self.lsp_status.clear();
         }
+
+        self.clear_ghost_text();
     }
 
     /// Send a cancel request to the LSP server for a specific request ID
@@ -467,6 +734,7 @@ impl Editor {
             // Cancel any pending scheduled trigger
             self.scheduled_completion_trigger = None;
             let _ = self.request_completion();
+            let _ = self.request_inline_completion_automatic();
             return;
         }
 
@@ -766,8 +1034,11 @@ impl Editor {
         use crate::view::virtual_text::VirtualTextPosition;
         use ratatui::style::{Color, Style};
 
-        // Clear existing inlay hints
-        state.virtual_texts.clear(&mut state.marker_list);
+        // Clear existing inlay hints (preserve other virtual text like ghost text)
+        const INLAY_HINT_PREFIX: &str = "lsp-inlay:";
+        state
+            .virtual_texts
+            .remove_by_prefix(&mut state.marker_list, INLAY_HINT_PREFIX);
 
         if hints.is_empty() {
             return;
@@ -776,7 +1047,7 @@ impl Editor {
         // Style for inlay hints - dimmed to not distract from actual code
         let hint_style = Style::default().fg(Color::Rgb(128, 128, 128));
 
-        for hint in hints {
+        for (idx, hint) in hints.iter().enumerate() {
             // Convert LSP position to byte offset
             let byte_offset = state.buffer.lsp_position_to_byte(
                 hint.position.line as usize,
@@ -813,13 +1084,19 @@ impl Editor {
             // Use the hint text as-is - spacing is handled during rendering
             let display_text = text;
 
-            state.virtual_texts.add(
+            let string_id = format!(
+                "{}{}:{}:{}",
+                INLAY_HINT_PREFIX, hint.position.line, hint.position.character, idx
+            );
+
+            state.virtual_texts.add_with_id(
                 &mut state.marker_list,
                 byte_offset,
                 display_text,
                 hint_style,
                 position,
                 0, // Default priority
+                string_id,
             );
         }
 

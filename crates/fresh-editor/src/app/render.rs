@@ -1352,6 +1352,9 @@ impl Editor {
         self.active_event_log_mut().append(event.clone());
         self.apply_event_to_active_buffer(&event);
 
+        // Clear any inline ghost text
+        self.clear_ghost_text();
+
         // Clear hover symbol highlight if present
         if let Some(handle) = self.hover_symbol_overlay.take() {
             let remove_overlay_event = crate::model::event::Event::RemoveOverlay { handle };
@@ -1417,6 +1420,8 @@ impl Editor {
         let event = Event::ClearPopups;
         self.active_event_log_mut().append(event.clone());
         self.apply_event_to_active_buffer(&event);
+
+        self.clear_ghost_text();
     }
 
     // === LSP Confirmation Popup ===

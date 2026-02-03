@@ -13,7 +13,7 @@
 use crate::services::terminal::TerminalId;
 use crate::view::file_tree::{FileTreeView, NodeId};
 use lsp_types::{
-    CodeActionOrCommand, CompletionItem, Diagnostic, InlayHint, Location,
+    CodeActionOrCommand, CompletionItem, Diagnostic, InlayHint, InlineCompletionItem, Location,
     SemanticTokensFullDeltaResult, SemanticTokensLegend, SemanticTokensRangeResult,
     SemanticTokensResult, SignatureHelp,
 };
@@ -42,6 +42,8 @@ pub enum AsyncMessage {
         language: String,
         /// Completion trigger characters from server capabilities
         completion_trigger_characters: Vec<String>,
+        /// Whether the server supports inline completion (ghost text)
+        inline_completion_support: bool,
         /// Legend describing semantic token types supported by the server
         semantic_tokens_legend: Option<SemanticTokensLegend>,
         /// Whether the server supports full document semantic tokens
@@ -64,6 +66,12 @@ pub enum AsyncMessage {
     LspCompletion {
         request_id: u64,
         items: Vec<CompletionItem>,
+    },
+
+    /// LSP inline completion response (textDocument/inlineCompletion)
+    LspInlineCompletion {
+        request_id: u64,
+        items: Vec<InlineCompletionItem>,
     },
 
     /// LSP go-to-definition response
@@ -352,6 +360,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "rust".to_string(),
                 completion_trigger_characters: vec![".".to_string()],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -386,6 +395,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "rust".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -396,6 +406,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "typescript".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -428,6 +439,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "rust".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -438,6 +450,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "typescript".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -540,6 +553,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "rust".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -561,6 +575,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "rust".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -587,6 +602,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "rust".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -597,6 +613,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "typescript".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
@@ -607,6 +624,7 @@ mod tests {
             .send(AsyncMessage::LspInitialized {
                 language: "python".to_string(),
                 completion_trigger_characters: vec![],
+                inline_completion_support: false,
                 semantic_tokens_legend: None,
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,

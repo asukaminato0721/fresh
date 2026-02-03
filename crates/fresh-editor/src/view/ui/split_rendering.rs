@@ -3419,9 +3419,13 @@ impl SplitRenderer {
                             {
                                 // Flush accumulated text before inserting virtual text
                                 span_acc.flush(&mut line_spans, &mut line_view_map);
-                                // Add extra space if at end of line (before newline)
-                                let extra_space = if ch == '\n' { " " } else { "" };
-                                let text_with_space = format!("{}{} ", extra_space, vtext.text);
+                                let text_with_space = if vtext.pad_with_space {
+                                    // Add extra space if at end of line (before newline)
+                                    let extra_space = if ch == '\n' { " " } else { "" };
+                                    format!("{}{} ", extra_space, vtext.text)
+                                } else {
+                                    vtext.text.clone()
+                                };
                                 push_span_with_map(
                                     &mut line_spans,
                                     &mut line_view_map,
@@ -3499,7 +3503,11 @@ impl SplitRenderer {
                                 .iter()
                                 .filter(|v| v.position == VirtualTextPosition::AfterChar)
                             {
-                                let text_with_space = format!(" {}", vtext.text);
+                                let text_with_space = if vtext.pad_with_space {
+                                    format!(" {}", vtext.text)
+                                } else {
+                                    vtext.text.clone()
+                                };
                                 push_span_with_map(
                                     &mut line_spans,
                                     &mut line_view_map,

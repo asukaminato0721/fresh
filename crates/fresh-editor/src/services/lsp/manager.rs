@@ -70,6 +70,9 @@ pub struct LspManager {
     /// Completion trigger characters per language (from server capabilities)
     completion_trigger_characters: HashMap<String, Vec<String>>,
 
+    /// Whether a language supports inline completion (ghost text)
+    inline_completion_support: HashMap<String, bool>,
+
     /// Semantic token legends per language (from server capabilities)
     semantic_token_legends: HashMap<String, SemanticTokensLegend>,
 
@@ -99,6 +102,7 @@ impl LspManager {
             allowed_languages: HashSet::new(),
             disabled_languages: HashSet::new(),
             completion_trigger_characters: HashMap::new(),
+            inline_completion_support: HashMap::new(),
             semantic_token_legends: HashMap::new(),
             semantic_tokens_full_support: HashMap::new(),
             semantic_tokens_full_delta_support: HashMap::new(),
@@ -133,9 +137,23 @@ impl LspManager {
             .insert(language.to_string(), chars);
     }
 
+    /// Store inline completion support for a language
+    pub fn set_inline_completion_support(&mut self, language: &str, supported: bool) {
+        self.inline_completion_support
+            .insert(language.to_string(), supported);
+    }
+
     /// Get completion trigger characters for a language
     pub fn get_completion_trigger_characters(&self, language: &str) -> Option<&Vec<String>> {
         self.completion_trigger_characters.get(language)
+    }
+
+    /// Check if a language supports inline completion
+    pub fn inline_completion_supported(&self, language: &str) -> bool {
+        *self
+            .inline_completion_support
+            .get(language)
+            .unwrap_or(&false)
     }
 
     /// Store semantic token capability information for a language

@@ -84,6 +84,9 @@ pub struct VirtualText {
     pub style: Style,
     /// Where to render relative to the marker position
     pub position: VirtualTextPosition,
+    /// Whether to pad with spaces when rendering inline text
+    /// (default: true for inlay hints and other annotations)
+    pub pad_with_space: bool,
     /// Priority for ordering multiple items at same position (higher = later)
     pub priority: i32,
     /// Optional string identifier for this virtual text (for plugin use)
@@ -151,6 +154,7 @@ impl VirtualTextManager {
                 text,
                 style,
                 position: vtext_position,
+                pad_with_space: true,
                 priority,
                 string_id: None,
                 namespace: None,
@@ -186,6 +190,7 @@ impl VirtualTextManager {
                 text,
                 style,
                 position: vtext_position,
+                pad_with_space: true,
                 priority,
                 string_id: Some(string_id),
                 namespace: None,
@@ -235,9 +240,48 @@ impl VirtualTextManager {
                 text,
                 style,
                 position: placement,
+                pad_with_space: true,
                 priority,
                 string_id: None,
                 namespace: Some(namespace),
+            },
+        );
+
+        id
+    }
+
+    /// Add a virtual text entry with a string identifier and custom padding behavior
+    ///
+    /// This is useful for inline features like ghost text that should not add
+    /// extra spacing around the inserted text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_with_id_and_padding(
+        &mut self,
+        marker_list: &mut MarkerList,
+        position: usize,
+        text: String,
+        style: Style,
+        vtext_position: VirtualTextPosition,
+        priority: i32,
+        string_id: String,
+        pad_with_space: bool,
+    ) -> VirtualTextId {
+        let marker_id = marker_list.create(position, false);
+
+        let id = VirtualTextId(self.next_id);
+        self.next_id += 1;
+
+        self.texts.insert(
+            id,
+            VirtualText {
+                marker_id,
+                text,
+                style,
+                position: vtext_position,
+                pad_with_space,
+                priority,
+                string_id: Some(string_id),
+                namespace: None,
             },
         );
 

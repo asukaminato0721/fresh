@@ -200,8 +200,9 @@ impl LspClientState {
 /// Create common LSP client capabilities with workDoneProgress support
 fn create_client_capabilities() -> ClientCapabilities {
     use lsp_types::{
-        GeneralClientCapabilities, RenameClientCapabilities, TextDocumentClientCapabilities,
-        WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
+        GeneralClientCapabilities, InlineCompletionClientCapabilities, RenameClientCapabilities,
+        TextDocumentClientCapabilities, WorkspaceClientCapabilities,
+        WorkspaceEditClientCapabilities,
     };
 
     ClientCapabilities {
@@ -223,6 +224,9 @@ fn create_client_capabilities() -> ClientCapabilities {
                 prepare_support: Some(true),
                 honors_change_annotations: Some(true),
                 ..Default::default()
+            }),
+            inline_completion: Some(InlineCompletionClientCapabilities {
+                dynamic_registration: Some(true),
             }),
             semantic_tokens: Some(SemanticTokensClientCapabilities {
                 dynamic_registration: Some(true),
@@ -358,6 +362,16 @@ enum LspCommand {
         uri: Uri,
         line: u32,
         character: u32,
+    },
+
+    /// Request inline completion at position (textDocument/inlineCompletion)
+    InlineCompletion {
+        request_id: u64,
+        uri: Uri,
+        line: u32,
+        character: u32,
+        trigger_kind: lsp_types::InlineCompletionTriggerKind,
+        selected_completion_info: Option<lsp_types::SelectedCompletionInfo>,
     },
 
     /// Request go-to-definition
@@ -744,6 +758,12 @@ impl LspState {
             .and_then(|cp| cp.trigger_characters.clone())
             .unwrap_or_default();
 
+        let inline_completion_support = match result.capabilities.inline_completion_provider {
+            Some(lsp_types::OneOf::Left(true)) => true,
+            Some(lsp_types::OneOf::Right(_)) => true,
+            _ => false,
+        };
+
         let (
             semantic_tokens_legend,
             semantic_tokens_full,
@@ -755,6 +775,7 @@ impl LspState {
         let _ = self.async_tx.send(AsyncMessage::LspInitialized {
             language: self.language.clone(),
             completion_trigger_characters,
+            inline_completion_support,
             semantic_tokens_legend,
             semantic_tokens_full,
             semantic_tokens_full_delta,
@@ -940,6 +961,76 @@ impl LspState {
                 let _ = self.async_tx.send(AsyncMessage::LspCompletion {
                     request_id,
                     items: vec![],
+                });
+                Err(e)
+            }
+        }
+    }
+
+    /// Handle inline completion request (textDocument/inlineCompletion)
+    #[allow(clippy::type_complexity)]
+    async fn handle_inline_completion(
+        &mut self,
+        request_id: u64,
+        uri: Uri,
+        line: u32,
+        character: u32,
+        trigger_kind: lsp_types::InlineCompletionTriggerKind,
+        selected_completion_info: Option<lsp_types::SelectedCompletionInfo>,
+        pending: &Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+    ) -> Result<(), String> {
+        use lsp_types::{
+            InlineCompletionContext, InlineCompletionParams, InlineCompletionResponse, Position,
+            TextDocumentIdentifier, TextDocumentPositionParams, WorkDoneProgressParams,
+        };
+
+        tracing::trace!(
+            "LSP: inline completion request at {}:{}:{}",
+            uri.as_str(),
+            line,
+            character
+        );
+
+        let params = InlineCompletionParams {
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position { line, character },
+            },
+            context: InlineCompletionContext {
+                trigger_kind,
+                selected_completion_info,
+            },
+        };
+
+        match self
+            .send_request_sequential_tracked::<_, Value>(
+                "textDocument/inlineCompletion",
+                Some(params),
+                pending,
+                Some(request_id),
+            )
+            .await
+        {
+            Ok(result) => {
+                let items = match serde_json::from_value::<Option<InlineCompletionResponse>>(result)
+                    .unwrap_or(None)
+                {
+                    Some(InlineCompletionResponse::Array(items)) => items,
+                    Some(InlineCompletionResponse::List(list)) => list.items,
+                    None => Vec::new(),
+                };
+
+                let _ = self
+                    .async_tx
+                    .send(AsyncMessage::LspInlineCompletion { request_id, items });
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Inline completion request failed: {}", e);
+                let _ = self.async_tx.send(AsyncMessage::LspInlineCompletion {
+                    request_id,
+                    items: Vec::new(),
                 });
                 Err(e)
             }
@@ -2265,6 +2356,42 @@ impl LspTask {
                                 });
                             }
                         }
+                        LspCommand::InlineCompletion {
+                            request_id,
+                            uri,
+                            line,
+                            character,
+                            trigger_kind,
+                            selected_completion_info,
+                        } => {
+                            if state.initialized {
+                                tracing::info!(
+                                    "Processing InlineCompletion request for {}",
+                                    uri.as_str()
+                                );
+                                let _ = state
+                                    .handle_inline_completion(
+                                        request_id,
+                                        uri,
+                                        line,
+                                        character,
+                                        trigger_kind,
+                                        selected_completion_info,
+                                        &pending,
+                                    )
+                                    .await;
+                            } else {
+                                tracing::trace!(
+                                    "LSP not initialized, sending empty inline completion"
+                                );
+                                let _ = state
+                                    .async_tx
+                                    .send(AsyncMessage::LspInlineCompletion {
+                                        request_id,
+                                        items: vec![],
+                                    });
+                            }
+                        }
                         LspCommand::GotoDefinition {
                             request_id,
                             uri,
@@ -3285,6 +3412,28 @@ impl LspHandle {
                 character,
             })
             .map_err(|_| "Failed to send completion command".to_string())
+    }
+
+    /// Request inline completion at position
+    pub fn inline_completion(
+        &self,
+        request_id: u64,
+        uri: Uri,
+        line: u32,
+        character: u32,
+        trigger_kind: lsp_types::InlineCompletionTriggerKind,
+        selected_completion_info: Option<lsp_types::SelectedCompletionInfo>,
+    ) -> Result<(), String> {
+        self.command_tx
+            .try_send(LspCommand::InlineCompletion {
+                request_id,
+                uri,
+                line,
+                character,
+                trigger_kind,
+                selected_completion_info,
+            })
+            .map_err(|_| "Failed to send inline completion command".to_string())
     }
 
     /// Request go-to-definition

@@ -378,9 +378,15 @@ pub struct Editor {
     /// Pending LSP completion request ID (if any)
     pending_completion_request: Option<u64>,
 
+    /// Pending LSP inline completion request ID (if any)
+    pending_inline_completion_request: Option<u64>,
+
     /// Original LSP completion items (for type-to-filter)
     /// Stored when completion popup is shown, used for re-filtering as user types
     completion_items: Option<Vec<lsp_types::CompletionItem>>,
+
+    /// Buffer currently showing inline ghost text for completion
+    ghost_text_buffer_id: Option<BufferId>,
 
     /// Scheduled completion trigger time (for debounced quick suggestions)
     /// When Some, completion will be triggered when this instant is reached
@@ -1143,7 +1149,9 @@ impl Editor {
             in_navigation: false,
             next_lsp_request_id: 0,
             pending_completion_request: None,
+            pending_inline_completion_request: None,
             completion_items: None,
+            ghost_text_buffer_id: None,
             scheduled_completion_trigger: None,
             pending_goto_definition_request: None,
             pending_hover_request: None,
@@ -1768,6 +1776,7 @@ impl Editor {
             tracing::debug!("Failed to trigger debounced completion: {}", e);
             return false;
         }
+        let _ = self.request_inline_completion_automatic();
 
         true
     }
@@ -3739,6 +3748,7 @@ impl Editor {
                 AsyncMessage::LspInitialized {
                     language,
                     completion_trigger_characters,
+                    inline_completion_support,
                     semantic_tokens_legend,
                     semantic_tokens_full,
                     semantic_tokens_full_delta,
@@ -3758,6 +3768,7 @@ impl Editor {
                             &language,
                             completion_trigger_characters,
                         );
+                        lsp.set_inline_completion_support(&language, inline_completion_support);
                         lsp.set_semantic_tokens_capabilities(
                             &language,
                             semantic_tokens_legend,
@@ -3842,6 +3853,9 @@ impl Editor {
                     if let Err(e) = self.handle_completion_response(request_id, items) {
                         tracing::error!("Error handling completion response: {}", e);
                     }
+                }
+                AsyncMessage::LspInlineCompletion { request_id, items } => {
+                    self.handle_inline_completion_response(request_id, items);
                 }
                 AsyncMessage::LspGotoDefinition {
                     request_id,

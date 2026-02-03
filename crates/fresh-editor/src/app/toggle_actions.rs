@@ -167,7 +167,9 @@ impl Editor {
         } else {
             // Clear inlay hints from all buffers
             for state in self.buffers.values_mut() {
-                state.virtual_texts.clear(&mut state.marker_list);
+                state
+                    .virtual_texts
+                    .remove_by_prefix(&mut state.marker_list, "lsp-inlay:");
             }
             self.set_status_message(t!("toggle.inlay_hints_disabled").to_string());
         }
