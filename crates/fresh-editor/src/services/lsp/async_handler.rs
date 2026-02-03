@@ -638,7 +638,6 @@ fn extract_capability_summary(caps: &ServerCapabilities) -> ServerCapabilitySumm
             lsp_types::HoverProviderCapability::Options(_) => true,
         }),
         completion: caps.completion_provider.is_some(),
-        inline_completion: caps.inline_completion_provider.is_some(),
         completion_resolve: caps
             .completion_provider
             .as_ref()
@@ -649,6 +648,11 @@ fn extract_capability_summary(caps: &ServerCapabilities) -> ServerCapabilitySumm
             .as_ref()
             .and_then(|cp| cp.trigger_characters.clone())
             .unwrap_or_default(),
+        inline_completion: match caps.inline_completion_provider.as_ref() {
+            Some(lsp_types::OneOf::Left(true)) => true,
+            Some(lsp_types::OneOf::Right(_)) => true,
+            _ => false,
+        },
         definition: bool_or_options(&caps.definition_provider, |p| match p {
             lsp_types::OneOf::Left(v) => *v,
             lsp_types::OneOf::Right(_) => true,
@@ -762,7 +766,7 @@ enum LspCommand {
         character: u32,
     },
 
-    /// Request inline completion at position
+    /// Request inline completion at position (textDocument/inlineCompletion)
     InlineCompletion {
         request_id: u64,
         uri: Uri,
@@ -3451,7 +3455,7 @@ impl LspTask {
                                 character,
                                 trigger_kind,
                                 selected_completion_info,
-                                &p
+                                &p,
                             )
                             .await);
                     } else {
@@ -4924,7 +4928,7 @@ impl LspHandle {
             .map_err(|_| "Failed to send completion command".to_string())
     }
 
-    /// Request inline completion at position
+    /// Request inline completion at position.
     pub fn inline_completion(
         &self,
         request_id: u64,

@@ -706,11 +706,23 @@ impl LspManager {
 
     /// Check if any eligible completion server supports inline completion.
     pub fn inline_completion_supported(&self, language: &str) -> bool {
-        self.get_handles(language).iter().any(|sh| {
-            sh.feature_filter.allows(LspFeature::Completion)
-                && sh.capabilities.initialized
-                && sh.capabilities.inline_completion
-        })
+        self.inline_completion_support(language) == Some(true)
+    }
+
+    /// Get inline completion support if capability data is known for this language.
+    pub fn inline_completion_support(&self, language: &str) -> Option<bool> {
+        let mut saw_initialized_completion_server = false;
+        for sh in self.get_handles(language) {
+            if !sh.feature_filter.allows(LspFeature::Completion) || !sh.capabilities.initialized {
+                continue;
+            }
+            saw_initialized_completion_server = true;
+            if sh.capabilities.inline_completion {
+                return Some(true);
+            }
+        }
+
+        saw_initialized_completion_server.then_some(false)
     }
 
     /// Get the first mutable handle for a language that supports inline completion.

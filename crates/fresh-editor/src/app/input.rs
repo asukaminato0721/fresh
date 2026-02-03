@@ -921,6 +921,7 @@ impl Editor {
             _ => {
                 // Cancel any pending LSP requests
                 self.active_window_mut().cancel_pending_lsp_requests();
+                self.clear_ghost_text();
             }
         }
 
