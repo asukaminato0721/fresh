@@ -1109,6 +1109,7 @@ impl Editor {
             // Cancel any pending scheduled trigger
             self.active_window_mut().scheduled_completion_trigger = None;
             self.request_completion();
+            let _ = self.request_inline_completion_automatic();
             return;
         }
 
@@ -1644,8 +1645,11 @@ impl Editor {
         use crate::view::virtual_text::VirtualTextPosition;
         use ratatui::style::{Color, Style};
 
-        // Clear existing inlay hints
-        state.virtual_texts.clear(&mut state.marker_list);
+        // Clear existing inlay hints, preserving unrelated virtual text such as ghost text.
+        const INLAY_HINT_PREFIX: &str = "lsp-inlay:";
+        state
+            .virtual_texts
+            .remove_by_prefix(&mut state.marker_list, INLAY_HINT_PREFIX);
 
         if hints.is_empty() {
             return;
@@ -1659,7 +1663,7 @@ impl Editor {
         let hint_style = Style::default().fg(Color::Rgb(128, 128, 128));
         let hint_fg_theme_key = Some("editor.line_number_fg".to_string());
 
-        for hint in hints {
+        for (idx, hint) in hints.iter().enumerate() {
             // Convert LSP position to byte offset
             let byte_offset = state.buffer.lsp_position_to_byte(
                 hint.position.line as usize,
@@ -1719,7 +1723,12 @@ impl Editor {
             // Use the hint text as-is - spacing is handled during rendering
             let display_text = text;
 
-            state.virtual_texts.add_with_theme_keys(
+            let string_id = format!(
+                "{}{}:{}:{}",
+                INLAY_HINT_PREFIX, hint.position.line, hint.position.character, idx
+            );
+
+            state.virtual_texts.add_with_id_and_theme_keys(
                 &mut state.marker_list,
                 byte_offset,
                 display_text,
@@ -1728,6 +1737,7 @@ impl Editor {
                 None,
                 position,
                 0, // Default priority
+                string_id,
             );
         }
 
