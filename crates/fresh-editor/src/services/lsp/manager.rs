@@ -156,6 +156,11 @@ impl LspManager {
             .unwrap_or(&false)
     }
 
+    /// Get inline completion support if known for a language
+    pub fn inline_completion_support(&self, language: &str) -> Option<bool> {
+        self.inline_completion_support.get(language).copied()
+    }
+
     /// Store semantic token capability information for a language
     pub fn set_semantic_tokens_capabilities(
         &mut self,

@@ -88,10 +88,9 @@ impl Editor {
         let inline_supported = self
             .lsp
             .as_ref()
-            .map(|lsp| lsp.inline_completion_supported(&language))
-            .unwrap_or(false);
+            .and_then(|lsp| lsp.inline_completion_support(&language));
 
-        if !inline_supported {
+        if inline_supported == Some(false) {
             self.clear_ghost_text();
             return Ok(());
         }
