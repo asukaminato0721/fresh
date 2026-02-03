@@ -1273,6 +1273,7 @@ impl Editor {
 
         // Trigger the completion request
         self.request_completion();
+        let _ = self.request_inline_completion_automatic();
 
         true
     }
