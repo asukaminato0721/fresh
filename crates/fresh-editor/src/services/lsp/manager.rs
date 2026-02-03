@@ -198,6 +198,7 @@ pub struct ServerCapabilitySummary {
     pub completion: bool,
     pub completion_resolve: bool,
     pub completion_trigger_characters: Vec<String>,
+    pub inline_completion: bool,
     pub definition: bool,
     pub references: bool,
     pub document_formatting: bool,
@@ -683,6 +684,30 @@ impl LspManager {
                     .completion_trigger_characters
                     .contains(&ch_str)
         })
+    }
+
+    /// Check if any eligible completion server supports inline completion.
+    pub fn inline_completion_supported(&self, language: &str) -> bool {
+        self.get_handles(language).iter().any(|sh| {
+            sh.feature_filter.allows(LspFeature::Completion)
+                && sh.capabilities.initialized
+                && sh.capabilities.inline_completion
+        })
+    }
+
+    /// Get the first mutable handle for a language that supports inline completion.
+    pub fn handle_for_inline_completion_mut(
+        &mut self,
+        language: &str,
+    ) -> Option<&mut ServerHandle> {
+        self.handles
+            .iter_mut()
+            .filter(|sh| sh.handle.scope().accepts(language))
+            .find(|sh| {
+                sh.feature_filter.allows(LspFeature::Completion)
+                    && sh.capabilities.initialized
+                    && sh.capabilities.inline_completion
+            })
     }
 
     /// Try to spawn an LSP server, checking auto_start configuration
