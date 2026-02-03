@@ -1834,6 +1834,7 @@ impl Editor {
             }
             Action::LspCompletion => {
                 self.request_completion();
+                let _ = self.request_inline_completion_invoked();
             }
             Action::DabbrevExpand => {
                 if self.refuse_if_editing_disabled() {
