@@ -169,10 +169,9 @@ impl Editor {
 
         let inline_supported = self
             .lsp()
-            .map(|lsp| lsp.inline_completion_supported(&language))
-            .unwrap_or(false);
+            .and_then(|lsp| lsp.inline_completion_support(&language));
 
-        if !inline_supported {
+        if inline_supported == Some(false) {
             self.clear_ghost_text();
             return Ok(());
         }
@@ -387,11 +386,12 @@ impl Editor {
 
         let (buffer_id, cursor_pos, cursor_count, cursor_collapsed, buffer_len, suggestion_item) = {
             let state = self.active_state();
+            let cursor_count = self.active_cursors().count();
             let cursor = self.active_cursors().primary();
             (
                 self.active_buffer(),
                 cursor.position,
-                self.active_cursors().count(),
+                cursor_count,
                 cursor.collapsed(),
                 state.buffer.len(),
                 items.into_iter().next(),
@@ -1109,7 +1109,9 @@ impl Editor {
             // Cancel any pending scheduled trigger
             self.active_window_mut().scheduled_completion_trigger = None;
             self.request_completion();
-            let _ = self.request_inline_completion_automatic();
+            if let Err(err) = self.request_inline_completion_automatic() {
+                tracing::debug!("Failed to request inline completion: {err}");
+            }
             return;
         }
 

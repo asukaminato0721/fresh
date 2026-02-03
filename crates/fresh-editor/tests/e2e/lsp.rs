@@ -260,28 +260,30 @@ fn test_lsp_completion_popup() -> anyhow::Result<()> {
     ignore = "FakeLspServer uses a Bash script which is not available on Windows"
 )]
 fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
-    use crate::common::fake_lsp::FakeLspServer;
-
-    let _fake_server = FakeLspServer::spawn()?;
-
     let temp_dir = tempfile::tempdir()?;
+    let _fake_server = FakeLspServer::spawn(temp_dir.path())?;
+
     let test_file = temp_dir.path().join("test.rs");
     std::fs::write(&test_file, "")?;
 
     let mut config = fresh::config::Config::default();
     config.editor.enable_ghost_text = true;
+    config.editor.completion_popup_auto_show = true;
     config.editor.quick_suggestions = true;
     config.editor.quick_suggestions_delay_ms = 0;
     config.lsp.insert(
         "rust".to_string(),
-        fresh::services::lsp::LspServerConfig {
-            command: FakeLspServer::script_path().to_string_lossy().to_string(),
+        fresh::types::LspLanguageConfig::Multi(vec![fresh::services::lsp::LspServerConfig {
+            command: FakeLspServer::script_path(temp_dir.path())
+                .to_string_lossy()
+                .to_string(),
             args: vec![],
             enabled: true,
             auto_start: true,
             process_limits: fresh::services::process_limits::ProcessLimits::default(),
             initialization_options: None,
-        },
+            ..Default::default()
+        }]),
     );
 
     let mut harness = EditorTestHarness::with_config_and_working_dir(
@@ -294,18 +296,17 @@ fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
     harness.open_file(&test_file)?;
     harness.render()?;
 
-    for _ in 0..5 {
-        harness.process_async_and_render()?;
-        harness.sleep(std::time::Duration::from_millis(50));
-    }
-
     harness.type_text("hel")?;
+    harness.wait_until(|h| {
+        let screen = h.screen_to_string();
+        screen.contains("hel") && screen.contains("lo_world")
+    })?;
 
-    let found = harness.wait_for_async(|h| h.screen_to_string().contains("hello_world"), 1000)?;
-    assert!(found, "Expected inline ghost text to render");
-
-    let buffer_content = harness.get_buffer_content().unwrap();
-    assert_eq!(buffer_content, "hel");
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE)?;
+    harness.wait_until(|h| {
+        let screen = h.screen_to_string();
+        screen.contains("hel") && !screen.contains("lo_world")
+    })?;
 
     Ok(())
 }
