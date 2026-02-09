@@ -1,5 +1,55 @@
 # Release Notes
 
+## 0.2.0
+
+### Features
+
+* Experimental **Session Persistence**: Detach from and reattach to editor sessions with full state preservation. Start with `fresh -a <name>` or `fresh -a` (directory-based), detach via File menu or command palette. Sessions persist across terminal disconnections. Use `fresh --cmd session list/kill/attach` and `fresh --cmd session open-file NAME FILES` to manage sessions from the command line. Allows using Fresh across other applications, e.g. yazi edit action triggers a file open in Fresh.
+
+* **Keybinding Editor**: Full-featured editor for customizing keybindings. Search by text or record key, filter by context/source, add/edit/delete bindings with conflict detection and autocomplete. Try menus: Edit..Keybinding Editor, or command palette. Changes are saved in config.json
+
+### Improvements
+
+* **Line Editing**: Move lines up/down and duplicate lines, matching modern editor behavior. Multi-cursor support (@Asuka-Minato).
+
+* **Triple-Click Selection**: Triple-click selects entire line (#597).
+
+* **Vietnamese Localization**: Full Vietnamese (Tiếng Việt) language support.
+
+* **Typst Language Support**: Syntax highlighting and tinymist LSP configuration for `.typ` files (#944).
+
+* **LSP Improvements**:
+  - Per-buffer LSP toggle command to enable/disable LSP for individual files
+  - Default LSP configs for bash, lua, ruby, php, yaml, toml (#946)
+
+### Bug Fixes
+
+* **LSP Document Sync**: Fixed document corruption when LSP servers received didChange after didOpen, and when bulk edits (selection replacement, multi-cursor) bypassed LSP notifications.
+
+* **LSP Completion Popup**: Fixed popup swallowing non-word characters, arrow keys, and other keys. Popup now dismisses correctly allowing keystrokes to pass through (#931)
+
+* **LSP Diagnostics**: Fixed diagnostic gutter markers not appearing on implicit trailing lines with zero-width ranges (clangd-style diagnostics).
+
+* **Line Wrapping**: End/Home keys now navigate by visual line when wrapping is enabled, matching VS Code/Notepad behavior (#979).
+
+* **Syntax Highlighting**: Fixed highlighting lost when saving files without extension (shebang detection) outside working directory (#978).
+
+* **Buffer Settings**: User-configured tab size, indentation, and line numbers now preserved across auto-revert.
+
+* **Terminal Scrollback**: Any character key exits scrollback mode instead of just 'q' (#863).
+
+* **32-bit ARM Build**: Fixed setrlimit type mismatch on ARMv7l platforms (#957).
+
+### Configuration
+
+* Added C++20 module extensions (.cppm, .ixx) for C++ syntax highlighting (#955).
+
+### Documentation
+
+* Added FreeBSD installation note (@lwhsu).
+
+---
+
 ## 0.1.99
 
 ### Features
