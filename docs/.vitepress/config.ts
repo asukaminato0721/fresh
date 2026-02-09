@@ -41,6 +41,8 @@ export default defineConfig({
           { text: "Themes", link: "/features/themes" },
           { text: "Encoding", link: "/features/encoding" },
           { text: "Remote Editing (SSH)", link: "/features/ssh" },
+          { text: "Session Persistence", link: "/features/session-persistence" },
+          { text: "Keybinding Editor", link: "/features/keybinding-editor" },
         ],
       },
       {
