@@ -1,3 +1,4 @@
+pub mod altgr_shift;
 pub mod ansi_cursor;
 pub mod auto_indent;
 pub mod auto_revert;

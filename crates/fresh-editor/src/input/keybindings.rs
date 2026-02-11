@@ -37,9 +37,13 @@ fn is_text_input_modifier(modifiers: KeyModifiers) -> bool {
         return true;
     }
 
-    // Windows: AltGr is reported as Ctrl+Alt by crossterm
+    // Windows: AltGr is reported as Ctrl+Alt by crossterm.
+    // AltGr+Shift is needed for some layouts (e.g. Italian: AltGr+Shift+è = '{').
+    // See: https://github.com/sinelaw/fresh/issues/993
     #[cfg(windows)]
-    if modifiers == (KeyModifiers::CONTROL | KeyModifiers::ALT) {
+    if modifiers == (KeyModifiers::CONTROL | KeyModifiers::ALT)
+        || modifiers == (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT)
+    {
         return true;
     }
 
