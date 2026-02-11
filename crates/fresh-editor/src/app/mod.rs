@@ -5155,37 +5155,39 @@ impl Editor {
                 };
 
                 // Create a split with the new buffer
-                let created_split_id =
-                    match self.split_manager.split_active_positioned(split_dir, buffer_id, ratio, before) {
-                        Ok(new_split_id) => {
-                            // Create independent view state for the new split with the buffer in tabs
-                            let mut view_state = SplitViewState::with_buffer(
-                                self.terminal_width,
-                                self.terminal_height,
-                                buffer_id,
-                            );
-                            view_state.viewport.line_wrap_enabled =
-                                line_wrap.unwrap_or(self.config.editor.line_wrap);
-                            self.split_view_states.insert(new_split_id, view_state);
+                let created_split_id = match self
+                    .split_manager
+                    .split_active_positioned(split_dir, buffer_id, ratio, before)
+                {
+                    Ok(new_split_id) => {
+                        // Create independent view state for the new split with the buffer in tabs
+                        let mut view_state = SplitViewState::with_buffer(
+                            self.terminal_width,
+                            self.terminal_height,
+                            buffer_id,
+                        );
+                        view_state.viewport.line_wrap_enabled =
+                            line_wrap.unwrap_or(self.config.editor.line_wrap);
+                        self.split_view_states.insert(new_split_id, view_state);
 
-                            // Focus the new split (the diagnostics panel)
-                            self.split_manager.set_active_split(new_split_id);
-                            // NOTE: split tree was updated by split_active, active_buffer derives from it
+                        // Focus the new split (the diagnostics panel)
+                        self.split_manager.set_active_split(new_split_id);
+                        // NOTE: split tree was updated by split_active, active_buffer derives from it
 
-                            tracing::info!(
-                                "Created {:?} split with virtual buffer {:?}",
-                                split_dir,
-                                buffer_id
-                            );
-                            Some(new_split_id)
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to create split: {}", e);
-                            // Fall back to just switching to the buffer
-                            self.set_active_buffer(buffer_id);
-                            None
-                        }
-                    };
+                        tracing::info!(
+                            "Created {:?} split with virtual buffer {:?}",
+                            split_dir,
+                            buffer_id
+                        );
+                        Some(new_split_id)
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create split: {}", e);
+                        // Fall back to just switching to the buffer
+                        self.set_active_buffer(buffer_id);
+                        None
+                    }
+                };
 
                 // Send response with buffer ID and split ID via callback resolution
                 // NOTE: Using VirtualBufferResult type for type-safe JSON serialization
@@ -5590,10 +5592,10 @@ impl Editor {
                 let terminal_root = self.dir_context.terminal_dir_for(&working_dir);
                 let _ = self.filesystem.create_dir_all(&terminal_root);
                 let predicted_terminal_id = self.terminal_manager.next_terminal_id();
-                let log_path = terminal_root
-                    .join(format!("fresh-terminal-{}.log", predicted_terminal_id.0));
-                let backing_path = terminal_root
-                    .join(format!("fresh-terminal-{}.txt", predicted_terminal_id.0));
+                let log_path =
+                    terminal_root.join(format!("fresh-terminal-{}.log", predicted_terminal_id.0));
+                let backing_path =
+                    terminal_root.join(format!("fresh-terminal-{}.txt", predicted_terminal_id.0));
                 self.terminal_backing_files
                     .insert(predicted_terminal_id, backing_path);
                 let backing_path_for_spawn = self
@@ -5615,8 +5617,8 @@ impl Editor {
                         // Fix up backing path if predicted ID differs
                         if terminal_id != predicted_terminal_id {
                             self.terminal_backing_files.remove(&predicted_terminal_id);
-                            let backing_path = terminal_root
-                                .join(format!("fresh-terminal-{}.txt", terminal_id.0));
+                            let backing_path =
+                                terminal_root.join(format!("fresh-terminal-{}.txt", terminal_id.0));
                             self.terminal_backing_files
                                 .insert(terminal_id, backing_path);
                         }
@@ -5631,9 +5633,7 @@ impl Editor {
                         // (no new split created — useful when the plugin manages layout).
                         let created_split_id = if let Some(dir_str) = direction.as_deref() {
                             let split_dir = match dir_str {
-                                "horizontal" => {
-                                    crate::model::event::SplitDirection::Horizontal
-                                }
+                                "horizontal" => crate::model::event::SplitDirection::Horizontal,
                                 _ => crate::model::event::SplitDirection::Vertical,
                             };
 
@@ -5664,10 +5664,7 @@ impl Editor {
                                     Some(new_split_id)
                                 }
                                 Err(e) => {
-                                    tracing::error!(
-                                        "Failed to create split for terminal: {}",
-                                        e
-                                    );
+                                    tracing::error!("Failed to create split for terminal: {}", e);
                                     self.set_active_buffer(buffer_id);
                                     None
                                 }
@@ -5738,10 +5735,7 @@ impl Editor {
                 } else {
                     // Terminal exists but no buffer — just close the terminal directly
                     self.terminal_manager.close(terminal_id);
-                    tracing::info!(
-                        "Plugin closed terminal {:?} (no buffer found)",
-                        terminal_id
-                    );
+                    tracing::info!("Plugin closed terminal {:?} (no buffer found)", terminal_id);
                 }
             }
         }

@@ -1506,7 +1506,6 @@ pub enum PluginCommand {
     ReloadGrammars,
 
     // ==================== Terminal Commands ====================
-
     /// Create a new terminal in a split (async, returns TerminalResult)
     /// This spawns a PTY-backed terminal that plugins can write to and read from.
     CreateTerminal {

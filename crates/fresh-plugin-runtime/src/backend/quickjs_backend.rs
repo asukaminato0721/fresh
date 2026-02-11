@@ -2632,7 +2632,11 @@ impl JsEditorApi {
     // === Terminal ===
 
     /// Create a new terminal in a split (async, returns TerminalResult)
-    #[plugin_api(async_promise, js_name = "createTerminal", ts_return = "TerminalResult")]
+    #[plugin_api(
+        async_promise,
+        js_name = "createTerminal",
+        ts_return = "TerminalResult"
+    )]
     #[qjs(rename = "_createTerminalStart")]
     pub fn create_terminal_start(
         &self,
@@ -2649,22 +2653,22 @@ impl JsEditorApi {
             id
         };
 
-        let opts = opts.0.unwrap_or_else(|| fresh_core::api::CreateTerminalOptions {
-            cwd: None,
-            direction: None,
-            ratio: None,
-            focus: None,
-        });
-
-        let _ = self
-            .command_sender
-            .send(PluginCommand::CreateTerminal {
-                cwd: opts.cwd,
-                direction: opts.direction,
-                ratio: opts.ratio,
-                focus: opts.focus,
-                request_id: id,
+        let opts = opts
+            .0
+            .unwrap_or_else(|| fresh_core::api::CreateTerminalOptions {
+                cwd: None,
+                direction: None,
+                ratio: None,
+                focus: None,
             });
+
+        let _ = self.command_sender.send(PluginCommand::CreateTerminal {
+            cwd: opts.cwd,
+            direction: opts.direction,
+            ratio: opts.ratio,
+            focus: opts.focus,
+            request_id: id,
+        });
         Ok(id)
     }
 

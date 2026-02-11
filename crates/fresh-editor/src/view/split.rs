@@ -1176,10 +1176,7 @@ mod tests {
         assert_eq!(manager.find_split_by_label("terminal"), None);
 
         // The second split has no label
-        assert_ne!(
-            manager.find_split_by_label("sidebar"),
-            Some(second_split)
-        );
+        assert_ne!(manager.find_split_by_label("sidebar"), Some(second_split));
     }
 
     #[test]
