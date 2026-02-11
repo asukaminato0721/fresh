@@ -5551,6 +5551,175 @@ impl Editor {
             | PluginCommand::ListPlugins { .. } => {
                 tracing::warn!("Plugin management commands require the 'plugins' feature");
             }
+
+            // ==================== Terminal Commands ====================
+            PluginCommand::CreateTerminal {
+                cwd,
+                direction,
+                ratio,
+                focus,
+                request_id,
+            } => {
+                let (cols, rows) = self.get_terminal_dimensions();
+
+                // Set up async bridge for terminal manager if not already done
+                if let Some(ref bridge) = self.async_bridge {
+                    self.terminal_manager.set_async_bridge(bridge.clone());
+                }
+
+                // Determine working directory
+                let working_dir = cwd
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| self.working_dir.clone());
+
+                // Prepare persistent storage paths
+                let terminal_root = self.dir_context.terminal_dir_for(&working_dir);
+                let _ = self.filesystem.create_dir_all(&terminal_root);
+                let predicted_terminal_id = self.terminal_manager.next_terminal_id();
+                let log_path = terminal_root
+                    .join(format!("fresh-terminal-{}.log", predicted_terminal_id.0));
+                let backing_path = terminal_root
+                    .join(format!("fresh-terminal-{}.txt", predicted_terminal_id.0));
+                self.terminal_backing_files
+                    .insert(predicted_terminal_id, backing_path);
+                let backing_path_for_spawn = self
+                    .terminal_backing_files
+                    .get(&predicted_terminal_id)
+                    .cloned();
+
+                match self.terminal_manager.spawn(
+                    cols,
+                    rows,
+                    Some(working_dir),
+                    Some(log_path.clone()),
+                    backing_path_for_spawn,
+                ) {
+                    Ok(terminal_id) => {
+                        // Track log file path
+                        self.terminal_log_files
+                            .insert(terminal_id, log_path.clone());
+                        // Fix up backing path if predicted ID differs
+                        if terminal_id != predicted_terminal_id {
+                            self.terminal_backing_files.remove(&predicted_terminal_id);
+                            let backing_path = terminal_root
+                                .join(format!("fresh-terminal-{}.txt", terminal_id.0));
+                            self.terminal_backing_files
+                                .insert(terminal_id, backing_path);
+                        }
+
+                        // Create buffer attached to the active split
+                        let active_split = self.split_manager.active_split();
+                        let buffer_id =
+                            self.create_terminal_buffer_attached(terminal_id, active_split);
+
+                        // Determine split direction
+                        let split_dir = match direction.as_deref() {
+                            Some("horizontal") => {
+                                crate::model::event::SplitDirection::Horizontal
+                            }
+                            _ => crate::model::event::SplitDirection::Vertical,
+                        };
+
+                        // Create a split for the terminal
+                        let split_ratio = ratio.unwrap_or(0.5);
+                        let created_split_id = match self
+                            .split_manager
+                            .split_active(split_dir, buffer_id, split_ratio)
+                        {
+                            Ok(new_split_id) => {
+                                let mut view_state = SplitViewState::with_buffer(
+                                    self.terminal_width,
+                                    self.terminal_height,
+                                    buffer_id,
+                                );
+                                view_state.viewport.line_wrap_enabled = false;
+                                self.split_view_states.insert(new_split_id, view_state);
+
+                                if focus.unwrap_or(true) {
+                                    self.split_manager.set_active_split(new_split_id);
+                                }
+
+                                tracing::info!(
+                                    "Created {:?} split for terminal {:?} with buffer {:?}",
+                                    split_dir,
+                                    terminal_id,
+                                    buffer_id
+                                );
+                                Some(new_split_id)
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to create split for terminal: {}", e);
+                                self.set_active_buffer(buffer_id);
+                                None
+                            }
+                        };
+
+                        // Resize terminal to match actual split content area
+                        self.resize_visible_terminals();
+
+                        // Resolve the callback with TerminalResult
+                        let result = fresh_core::api::TerminalResult {
+                            buffer_id: buffer_id.0 as u64,
+                            terminal_id: terminal_id.0 as u64,
+                            split_id: created_split_id.map(|s| s.0 as u64),
+                        };
+                        self.plugin_manager.resolve_callback(
+                            fresh_core::api::JsCallbackId::from(request_id),
+                            serde_json::to_string(&result).unwrap_or_default(),
+                        );
+
+                        tracing::info!(
+                            "Plugin created terminal {:?} with buffer {:?}",
+                            terminal_id,
+                            buffer_id
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create terminal for plugin: {}", e);
+                        self.plugin_manager.reject_callback(
+                            fresh_core::api::JsCallbackId::from(request_id),
+                            format!("Failed to create terminal: {}", e),
+                        );
+                    }
+                }
+            }
+
+            PluginCommand::SendTerminalInput { terminal_id, data } => {
+                if let Some(handle) = self.terminal_manager.get(terminal_id) {
+                    handle.write(data.as_bytes());
+                    tracing::trace!(
+                        "Plugin sent {} bytes to terminal {:?}",
+                        data.len(),
+                        terminal_id
+                    );
+                } else {
+                    tracing::warn!(
+                        "Plugin tried to send input to non-existent terminal {:?}",
+                        terminal_id
+                    );
+                }
+            }
+
+            PluginCommand::CloseTerminal { terminal_id } => {
+                // Find and close the buffer associated with this terminal
+                let buffer_to_close = self
+                    .terminal_buffers
+                    .iter()
+                    .find(|(_, &tid)| tid == terminal_id)
+                    .map(|(&bid, _)| bid);
+
+                if let Some(buffer_id) = buffer_to_close {
+                    let _ = self.close_buffer(buffer_id);
+                    tracing::info!("Plugin closed terminal {:?}", terminal_id);
+                } else {
+                    // Terminal exists but no buffer — just close the terminal directly
+                    self.terminal_manager.close(terminal_id);
+                    tracing::info!(
+                        "Plugin closed terminal {:?} (no buffer found)",
+                        terminal_id
+                    );
+                }
+            }
         }
         Ok(())
     }

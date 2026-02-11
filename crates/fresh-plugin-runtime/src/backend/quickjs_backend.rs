@@ -2585,6 +2585,64 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    // === Terminal ===
+
+    /// Create a new terminal in a split (async, returns TerminalResult)
+    #[plugin_api(async_promise, js_name = "createTerminal", ts_return = "TerminalResult")]
+    #[qjs(rename = "_createTerminalStart")]
+    pub fn create_terminal_start(
+        &self,
+        _ctx: rquickjs::Ctx<'_>,
+        opts: rquickjs::function::Opt<fresh_core::api::CreateTerminalOptions>,
+    ) -> rquickjs::Result<u64> {
+        let id = {
+            let mut id_ref = self.next_request_id.borrow_mut();
+            let id = *id_ref;
+            *id_ref += 1;
+            self.callback_contexts
+                .borrow_mut()
+                .insert(id, self.plugin_name.clone());
+            id
+        };
+
+        let opts = opts.0.unwrap_or_else(|| fresh_core::api::CreateTerminalOptions {
+            cwd: None,
+            direction: None,
+            ratio: None,
+            focus: None,
+        });
+
+        let _ = self
+            .command_sender
+            .send(PluginCommand::CreateTerminal {
+                cwd: opts.cwd,
+                direction: opts.direction,
+                ratio: opts.ratio,
+                focus: opts.focus,
+                request_id: id,
+            });
+        Ok(id)
+    }
+
+    /// Send input data to a terminal
+    pub fn send_terminal_input(&self, terminal_id: u64, data: String) -> bool {
+        self.command_sender
+            .send(PluginCommand::SendTerminalInput {
+                terminal_id: fresh_core::TerminalId(terminal_id as usize),
+                data,
+            })
+            .is_ok()
+    }
+
+    /// Close a terminal
+    pub fn close_terminal(&self, terminal_id: u64) -> bool {
+        self.command_sender
+            .send(PluginCommand::CloseTerminal {
+                terminal_id: fresh_core::TerminalId(terminal_id as usize),
+            })
+            .is_ok()
+    }
+
     // === Misc ===
 
     /// Force refresh of line display
@@ -3125,6 +3183,7 @@ impl QuickJsBackend {
                 editor.prompt = _wrapAsync("_promptStart", "prompt");
                 editor.getLineStartPosition = _wrapAsync("_getLineStartPositionStart", "getLineStartPosition");
                 editor.getLineEndPosition = _wrapAsync("_getLineEndPositionStart", "getLineEndPosition");
+                editor.createTerminal = _wrapAsync("_createTerminalStart", "createTerminal");
 
                 // Wrapper for deleteTheme - wraps sync function in Promise
                 editor.deleteTheme = function(name) {

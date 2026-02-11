@@ -121,7 +121,7 @@ impl Editor {
     }
 
     /// Create a buffer for a terminal session
-    fn create_terminal_buffer_attached(
+    pub(crate) fn create_terminal_buffer_attached(
         &mut self,
         terminal_id: TerminalId,
         split_id: crate::model::event::SplitId,
@@ -383,7 +383,7 @@ impl Editor {
     }
 
     /// Get terminal dimensions based on split size
-    fn get_terminal_dimensions(&self) -> (u16, u16) {
+    pub(crate) fn get_terminal_dimensions(&self) -> (u16, u16) {
         // Use the visible area of the current split
         // Subtract 1 for status bar, tab bar, etc.
         let cols = self.terminal_width.saturating_sub(2).max(40);
