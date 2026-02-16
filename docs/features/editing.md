@@ -112,8 +112,9 @@ Run shell commands on your buffer or selection:
 
 | Shortcut | Action |
 |----------|--------|
+| `Ctrl+Home` | Move to document start |
+| `Ctrl+End` | Move to document end |
 | `Ctrl+G` | Go to line number |
-| `Ctrl+]` | Go to matching bracket |
 | `F8` | Jump to next error/diagnostic |
 | `Shift+F8` | Jump to previous error/diagnostic |
 | `Alt+←` | Navigate back in history |

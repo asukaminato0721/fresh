@@ -87,8 +87,21 @@ fresh --init language  # Create a language pack
 ```
 
 For detailed guides, see:
-- [Plugin Development](./development/)
-- [Language Packs](./development/language-packs.md)
+- [Plugin Development](./development/) - Getting started with plugin development
+- [Language Packs](./development/language-packs.md) - Creating syntax highlighting and LSP support
+- [Common Patterns](./development/patterns.md) - Reusable plugin patterns and recipes
+- [Utilities Library](./development/utilities.md) - Built-in utility functions for plugins
+- [Internationalization](./development/i18n.md) - Adding translations to plugins
+
+### API Reference
+
+- [Core Concepts & Types](./api/) - Buffers, splits, virtual buffers, overlays, modes
+- [Status & Logging](./api/status-logging.md) - Status bar and debug logging
+- [Buffer Operations](./api/buffer.md) - Reading and modifying buffer content
+- [Overlays & Virtual Text](./api/overlays.md) - Visual decorations on buffer text
+- [Filesystem & Paths](./api/filesystem.md) - File and directory operations
+- [Events & Hooks](./api/events.md) - Subscribing to editor events
+- [Virtual Buffers](./api/virtual-buffers.md) - Creating plugin-managed buffers
 
 ## Bundles
 

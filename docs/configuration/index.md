@@ -1,5 +1,9 @@
 # Configuration
 
+- [Overview](./) - Layered configuration system
+- [Keyboard](./keyboard.md) - Keyboard shortcuts and keybinding configuration
+
+---
 
 Fresh uses layered configuration.
 

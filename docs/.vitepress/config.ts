@@ -108,14 +108,6 @@ export default defineConfig({
           { text: "WASM Compatibility", link: "/wasm" },
           { text: "QuickJS Migration", link: "/quickjs" },
           {
-            text: "Design Docs",
-            collapsed: true,
-            items: [
-              { text: "Finder Abstraction", link: "/design/finder-abstraction" },
-              { text: "Search Next Occurrence", link: "/design/search-next-occurrence" },
-            ],
-          },
-          {
             text: "Internal",
             collapsed: true,
             items: [
@@ -185,6 +177,14 @@ export default defineConfig({
                 ],
               },
               {
+                text: "Design Docs",
+                collapsed: true,
+                items: [
+                  { text: "Finder Abstraction", link: "/internal/finder-abstraction" },
+                  { text: "Search Next Occurrence", link: "/internal/search-next-occurrence" },
+                ],
+              },
+              {
                 text: "Core/System",
                 collapsed: true,
                 items: [
@@ -194,7 +194,6 @@ export default defineConfig({
                   { text: "TimeSource Design", link: "/internal/timesource-design" },
                   { text: "Unicode Width", link: "/internal/unicode-width" },
                   { text: "Readme", link: "/internal/README" },
-
                 ],
               },
             ],
