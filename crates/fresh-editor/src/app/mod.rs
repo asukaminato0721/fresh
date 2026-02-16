@@ -226,6 +226,12 @@ struct SemanticTokenFullRequest {
     kind: SemanticTokensFullRequestKind,
 }
 
+#[derive(Clone, Debug)]
+struct FoldingRangeRequest {
+    buffer_id: BufferId,
+    version: u64,
+}
+
 /// The main editor struct - manages multiple buffers, clipboard, and rendering
 pub struct Editor {
     /// All open buffers
@@ -464,6 +470,15 @@ pub struct Editor {
     /// Pending LSP inlay hints request ID (if any)
     pending_inlay_hints_request: Option<u64>,
 
+    /// Pending LSP folding range requests keyed by request ID
+    pending_folding_range_requests: HashMap<u64, FoldingRangeRequest>,
+
+    /// Track folding range requests per buffer to prevent duplicate inflight requests
+    folding_ranges_in_flight: HashMap<BufferId, (u64, u64)>,
+
+    /// Next time a folding range refresh is allowed for a buffer
+    folding_ranges_debounce: HashMap<BufferId, Instant>,
+
     /// Pending semantic token requests keyed by LSP request ID
     pending_semantic_token_requests: HashMap<u64, SemanticTokenFullRequest>,
 
@@ -579,6 +594,10 @@ pub struct Editor {
     /// Stored LSP diagnostics per URI
     /// Maps file URI string to Vec of diagnostics for that file
     stored_diagnostics: HashMap<String, Vec<lsp_types::Diagnostic>>,
+
+    /// Stored LSP folding ranges per URI
+    /// Maps file URI string to Vec of folding ranges for that file
+    stored_folding_ranges: HashMap<String, Vec<lsp_types::FoldingRange>>,
 
     /// Event broadcaster for control events (observable by external systems)
     event_broadcaster: crate::model::control_event::EventBroadcaster,
@@ -1232,6 +1251,9 @@ impl Editor {
             pending_signature_help_request: None,
             pending_code_actions_request: None,
             pending_inlay_hints_request: None,
+            pending_folding_range_requests: HashMap::new(),
+            folding_ranges_in_flight: HashMap::new(),
+            folding_ranges_debounce: HashMap::new(),
             pending_semantic_token_requests: HashMap::new(),
             semantic_tokens_in_flight: HashMap::new(),
             pending_semantic_token_range_requests: HashMap::new(),
@@ -1283,6 +1305,7 @@ impl Editor {
             lsp_log_messages: Vec::new(),
             diagnostic_result_ids: HashMap::new(),
             stored_diagnostics: HashMap::new(),
+            stored_folding_ranges: HashMap::new(),
             event_broadcaster: crate::model::control_event::EventBroadcaster::default(),
             bookmarks: HashMap::new(),
             search_case_sensitive: true,
@@ -2147,6 +2170,7 @@ impl Editor {
             Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => {
                 self.invalidate_layouts_for_buffer(self.active_buffer());
                 self.schedule_semantic_tokens_full_refresh(self.active_buffer());
+                self.schedule_folding_ranges_refresh(self.active_buffer());
             }
             Event::Batch { events, .. } => {
                 let has_edits = events
@@ -2155,6 +2179,7 @@ impl Editor {
                 if has_edits {
                     self.invalidate_layouts_for_buffer(self.active_buffer());
                     self.schedule_semantic_tokens_full_refresh(self.active_buffer());
+                    self.schedule_folding_ranges_refresh(self.active_buffer());
                 }
             }
             _ => {}
@@ -3957,6 +3982,7 @@ impl Editor {
                     semantic_tokens_full,
                     semantic_tokens_full_delta,
                     semantic_tokens_range,
+                    folding_ranges_supported,
                 } => {
                     tracing::info!("LSP server initialized for language: {}", language);
                     tracing::debug!(
@@ -3979,11 +4005,13 @@ impl Editor {
                             semantic_tokens_full_delta,
                             semantic_tokens_range,
                         );
+                        lsp.set_folding_ranges_supported(&language, folding_ranges_supported);
                     }
 
                     // Send didOpen for all open buffers of this language
                     self.resend_did_open_for_language(&language);
                     self.request_semantic_tokens_for_language(&language);
+                    self.request_folding_ranges_for_language(&language);
                 }
                 AsyncMessage::LspError {
                     language,
@@ -4113,6 +4141,13 @@ impl Editor {
                     hints,
                 } => {
                     self.handle_lsp_inlay_hints(request_id, uri, hints);
+                }
+                AsyncMessage::LspFoldingRanges {
+                    request_id,
+                    uri,
+                    ranges,
+                } => {
+                    self.handle_lsp_folding_ranges(request_id, uri, ranges);
                 }
                 AsyncMessage::LspSemanticTokens {
                     request_id,
@@ -4613,6 +4648,9 @@ impl Editor {
 
             // Update LSP diagnostics
             snapshot.diagnostics = self.stored_diagnostics.clone();
+
+            // Update LSP folding ranges
+            snapshot.folding_ranges = self.stored_folding_ranges.clone();
 
             // Update config (serialize the runtime config for plugins)
             snapshot.config = serde_json::to_value(&self.config).unwrap_or(serde_json::Value::Null);

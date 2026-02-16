@@ -26,6 +26,7 @@ use super::{uri_to_path, Editor, SemanticTokenRangeRequest};
 const SEMANTIC_TOKENS_FULL_DEBOUNCE_MS: u64 = 500;
 const SEMANTIC_TOKENS_RANGE_DEBOUNCE_MS: u64 = 50;
 const SEMANTIC_TOKENS_RANGE_PADDING_LINES: usize = 10;
+const FOLDING_RANGES_DEBOUNCE_MS: u64 = 300;
 
 impl Editor {
     /// Handle LSP completion response
@@ -1995,6 +1996,89 @@ impl Editor {
         if sent {
             self.next_lsp_request_id += 1;
             self.pending_inlay_hints_request = Some(request_id);
+        }
+    }
+
+    /// Schedule a folding range refresh for a buffer (debounced).
+    pub(crate) fn schedule_folding_ranges_refresh(&mut self, buffer_id: BufferId) {
+        let next_time = Instant::now() + Duration::from_millis(FOLDING_RANGES_DEBOUNCE_MS);
+        self.folding_ranges_debounce.insert(buffer_id, next_time);
+    }
+
+    /// Issue a debounced folding range request if the timer has elapsed.
+    pub(crate) fn maybe_request_folding_ranges_debounced(&mut self, buffer_id: BufferId) {
+        let Some(ready_at) = self.folding_ranges_debounce.get(&buffer_id).copied() else {
+            return;
+        };
+        if Instant::now() < ready_at {
+            return;
+        }
+
+        self.folding_ranges_debounce.remove(&buffer_id);
+        self.request_folding_ranges_for_buffer(buffer_id);
+    }
+
+    /// Request folding ranges for a buffer if supported and needed.
+    pub(crate) fn request_folding_ranges_for_buffer(&mut self, buffer_id: BufferId) {
+        if self.folding_ranges_in_flight.contains_key(&buffer_id) {
+            return;
+        }
+
+        let Some(metadata) = self.buffer_metadata.get(&buffer_id) else {
+            return;
+        };
+        if !metadata.lsp_enabled {
+            return;
+        }
+        let Some(uri) = metadata.file_uri().cloned() else {
+            return;
+        };
+
+        let Some(language) = self.buffers.get(&buffer_id).map(|s| s.language.clone()) else {
+            return;
+        };
+
+        let Some(lsp) = self.lsp.as_mut() else {
+            return;
+        };
+
+        if !lsp.folding_ranges_supported(&language) {
+            return;
+        }
+
+        // Ensure there is a running server
+        use crate::services::lsp::manager::LspSpawnResult;
+        if lsp.try_spawn(&language) != LspSpawnResult::Spawned {
+            return;
+        }
+
+        let Some(handle) = lsp.get_handle_mut(&language) else {
+            return;
+        };
+
+        let request_id = self.next_lsp_request_id;
+        self.next_lsp_request_id += 1;
+        let buffer_version = self
+            .buffers
+            .get(&buffer_id)
+            .map(|s| s.buffer.version())
+            .unwrap_or(0);
+
+        match handle.folding_ranges(request_id, uri) {
+            Ok(()) => {
+                self.pending_folding_range_requests.insert(
+                    request_id,
+                    super::FoldingRangeRequest {
+                        buffer_id,
+                        version: buffer_version,
+                    },
+                );
+                self.folding_ranges_in_flight
+                    .insert(buffer_id, (request_id, buffer_version));
+            }
+            Err(e) => {
+                tracing::debug!("Failed to request folding ranges: {}", e);
+            }
         }
     }
 

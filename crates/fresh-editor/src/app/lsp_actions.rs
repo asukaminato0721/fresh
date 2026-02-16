@@ -5,6 +5,7 @@
 
 use super::Editor;
 use crate::input::commands::Suggestion;
+use crate::model::event::BufferId;
 use crate::view::prompt::{Prompt, PromptType};
 use rust_i18n::t;
 
@@ -198,6 +199,82 @@ impl Editor {
         }
     }
 
+    /// Toggle folding at the current cursor line, if a foldable range exists.
+    pub fn toggle_fold_at_cursor(&mut self) {
+        let buffer_id = self.active_buffer();
+        let line = self
+            .active_state()
+            .buffer
+            .get_line_number(self.active_cursors().primary().position);
+        self.toggle_fold_at_line(buffer_id, line);
+    }
+
+    /// Toggle folding for the given line in the specified buffer.
+    pub fn toggle_fold_at_line(&mut self, buffer_id: BufferId, line: usize) {
+        let Some(state) = self.buffers.get_mut(&buffer_id) else {
+            return;
+        };
+
+        if state.folding_ranges.is_empty() {
+            return;
+        }
+
+        let mut selected_range: Option<&lsp_types::FoldingRange> = None;
+        let mut selected_span = usize::MAX;
+
+        for range in &state.folding_ranges {
+            let start_line = range.start_line as usize;
+            let end_line = range.end_line as usize;
+            if end_line <= start_line {
+                continue;
+            }
+            if start_line != line {
+                continue;
+            }
+            let span = end_line.saturating_sub(start_line);
+            if span < selected_span {
+                selected_span = span;
+                selected_range = Some(range);
+            }
+        }
+
+        let Some(range) = selected_range else {
+            return;
+        };
+
+        if state
+            .folds
+            .remove_by_header_line(&state.buffer, &mut state.marker_list, line)
+        {
+            return;
+        }
+
+        let start_line = line.saturating_add(1);
+        let end_line = range.end_line as usize;
+        if start_line > end_line {
+            return;
+        }
+
+        let Some(start_byte) = state.buffer.line_start_offset(start_line) else {
+            return;
+        };
+
+        let end_byte = state
+            .buffer
+            .line_start_offset(end_line.saturating_add(1))
+            .unwrap_or_else(|| state.buffer.len());
+
+        let placeholder = range
+            .collapsed_text
+            .as_ref()
+            .filter(|text| !text.trim().is_empty())
+            .cloned();
+
+        state
+            .folds
+            .add(&mut state.marker_list, start_byte, end_byte, placeholder);
+    }
+
     /// Disable LSP for a specific buffer and clear all LSP-related data
     fn disable_lsp_for_buffer(&mut self, buffer_id: crate::model::event::BufferId) {
         // Send didClose to the LSP server so it removes the document from its
@@ -257,11 +334,19 @@ impl Editor {
         if let Some(uri_str) = uri {
             self.stored_diagnostics.remove(&uri_str);
             self.diagnostic_result_ids.remove(&uri_str);
+            self.stored_folding_ranges.remove(&uri_str);
         }
+
+        self.folding_ranges_in_flight.remove(&buffer_id);
+        self.folding_ranges_debounce.remove(&buffer_id);
+        self.pending_folding_range_requests
+            .retain(|_, req| req.buffer_id != buffer_id);
 
         // Clear LSP-related overlays (inlay hints) for this buffer
         if let Some(state) = self.buffers.get_mut(&buffer_id) {
             state.virtual_texts.clear(&mut state.marker_list);
+            state.folding_ranges.clear();
+            state.folds.clear(&mut state.marker_list);
         }
     }
 
@@ -355,5 +440,8 @@ impl Editor {
                 tracing::warn!("LSP inlay_hints request failed: {}", e);
             }
         }
+
+        // Schedule folding range refresh
+        self.schedule_folding_ranges_refresh(buffer_id);
     }
 }

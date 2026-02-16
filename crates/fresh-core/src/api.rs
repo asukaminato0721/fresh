@@ -737,6 +737,10 @@ pub struct EditorStateSnapshot {
     /// Maps file URI string to Vec of diagnostics for that file
     #[ts(type = "any")]
     pub diagnostics: HashMap<String, Vec<lsp_types::Diagnostic>>,
+    /// LSP folding ranges per file URI
+    /// Maps file URI string to Vec of folding ranges for that file
+    #[ts(type = "any")]
+    pub folding_ranges: HashMap<String, Vec<lsp_types::FoldingRange>>,
     /// Runtime config as serde_json::Value (merged user config + defaults)
     /// This is the runtime config, not just the user's config file
     #[ts(type = "any")]
@@ -778,6 +782,7 @@ impl EditorStateSnapshot {
             clipboard: String::new(),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             diagnostics: HashMap::new(),
+            folding_ranges: HashMap::new(),
             config: serde_json::Value::Null,
             user_config: serde_json::Value::Null,
             editor_mode: None,

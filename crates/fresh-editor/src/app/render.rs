@@ -49,6 +49,7 @@ impl Editor {
         for (buffer_id, (start_line, end_line)) in semantic_ranges {
             self.maybe_request_semantic_tokens_range(buffer_id, start_line, end_line);
             self.maybe_request_semantic_tokens_full_debounced(buffer_id);
+            self.maybe_request_folding_ranges_debounced(buffer_id);
         }
 
         for (split_id, view_state) in &self.split_view_states {

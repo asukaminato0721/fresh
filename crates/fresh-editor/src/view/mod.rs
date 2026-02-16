@@ -23,6 +23,8 @@ pub mod controls;
 #[cfg(any(feature = "runtime", feature = "wasm"))]
 pub mod dimming;
 #[cfg(any(feature = "runtime", feature = "wasm"))]
+pub mod folding;
+#[cfg(any(feature = "runtime", feature = "wasm"))]
 pub mod margin;
 #[cfg(any(feature = "runtime", feature = "wasm"))]
 pub mod overlay;

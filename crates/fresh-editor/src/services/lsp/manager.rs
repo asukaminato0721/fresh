@@ -81,6 +81,9 @@ pub struct LspManager {
 
     /// Whether a language supports range semantic tokens
     semantic_tokens_range_support: HashMap<String, bool>,
+
+    /// Whether a language supports folding ranges
+    folding_ranges_support: HashMap<String, bool>,
 }
 
 impl LspManager {
@@ -103,6 +106,7 @@ impl LspManager {
             semantic_tokens_full_support: HashMap::new(),
             semantic_tokens_full_delta_support: HashMap::new(),
             semantic_tokens_range_support: HashMap::new(),
+            folding_ranges_support: HashMap::new(),
         }
     }
 
@@ -188,6 +192,17 @@ impl LspManager {
             .semantic_tokens_range_support
             .get(language)
             .unwrap_or(&false)
+    }
+
+    /// Store folding range capability information for a language
+    pub fn set_folding_ranges_supported(&mut self, language: &str, supported: bool) {
+        self.folding_ranges_support
+            .insert(language.to_string(), supported);
+    }
+
+    /// Check if the language supports folding ranges
+    pub fn folding_ranges_supported(&self, language: &str) -> bool {
+        *self.folding_ranges_support.get(language).unwrap_or(&false)
     }
 
     /// Check if a character is a completion trigger for any running language server

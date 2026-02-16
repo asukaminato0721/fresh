@@ -17,6 +17,7 @@ use crate::primitives::reference_highlighter::ReferenceHighlighter;
 use crate::primitives::text_property::TextPropertyManager;
 use crate::view::bracket_highlight_overlay::BracketHighlightOverlay;
 use crate::view::conceal::ConcealManager;
+use crate::view::folding::FoldManager;
 use crate::view::margin::{MarginAnnotation, MarginContent, MarginManager, MarginPosition};
 use crate::view::overlay::{Overlay, OverlayFace, OverlayManager, UnderlineStyle};
 use crate::view::popup::{
@@ -26,6 +27,7 @@ use crate::view::reference_highlight_overlay::ReferenceHighlightOverlay;
 use crate::view::soft_break::SoftBreakManager;
 use crate::view::virtual_text::VirtualTextManager;
 use anyhow::Result;
+use lsp_types::FoldingRange;
 use ratatui::style::{Color, Style};
 use std::cell::RefCell;
 use std::ops::Range;
@@ -106,6 +108,9 @@ pub struct EditorState {
     /// Soft break points for marker-based line wrapping during rendering
     pub soft_breaks: SoftBreakManager,
 
+    /// Collapsed folding ranges (marker-based)
+    pub folds: FoldManager,
+
     /// Popups for floating windows (completion, documentation, etc.)
     pub popups: PopupManager,
 
@@ -154,6 +159,9 @@ pub struct EditorState {
     /// Cached LSP semantic tokens (converted to buffer byte ranges)
     pub semantic_tokens: Option<SemanticTokenStore>,
 
+    /// Last-known LSP folding ranges for this buffer
+    pub folding_ranges: Vec<FoldingRange>,
+
     /// The detected language for this buffer (e.g., "rust", "python", "text")
     pub language: String,
 }
@@ -178,6 +186,7 @@ impl EditorState {
             virtual_texts: VirtualTextManager::new(),
             conceals: ConcealManager::new(),
             soft_breaks: SoftBreakManager::new(),
+            folds: FoldManager::new(),
             popups: PopupManager::new(),
             margins: MarginManager::new(),
             primary_cursor_line_number: LineNumber::Absolute(0), // Start at line 0
@@ -192,6 +201,7 @@ impl EditorState {
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
+            folding_ranges: Vec::new(),
             language: "text".to_string(), // Default to plain text
         }
     }
@@ -265,6 +275,7 @@ impl EditorState {
             virtual_texts: VirtualTextManager::new(),
             conceals: ConcealManager::new(),
             soft_breaks: SoftBreakManager::new(),
+            folds: FoldManager::new(),
             popups: PopupManager::new(),
             margins: MarginManager::new(),
             primary_cursor_line_number: LineNumber::Absolute(0),
@@ -279,6 +290,7 @@ impl EditorState {
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
+            folding_ranges: Vec::new(),
             language: language_name,
         })
     }
@@ -327,6 +339,7 @@ impl EditorState {
             virtual_texts: VirtualTextManager::new(),
             conceals: ConcealManager::new(),
             soft_breaks: SoftBreakManager::new(),
+            folds: FoldManager::new(),
             popups: PopupManager::new(),
             margins: MarginManager::new(),
             primary_cursor_line_number: LineNumber::Absolute(0),
@@ -341,6 +354,7 @@ impl EditorState {
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
+            folding_ranges: Vec::new(),
             language: language_name,
         })
     }
@@ -374,6 +388,7 @@ impl EditorState {
             virtual_texts: VirtualTextManager::new(),
             conceals: ConcealManager::new(),
             soft_breaks: SoftBreakManager::new(),
+            folds: FoldManager::new(),
             popups: PopupManager::new(),
             margins: MarginManager::new(),
             primary_cursor_line_number: LineNumber::Absolute(0),
@@ -388,6 +403,7 @@ impl EditorState {
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
+            folding_ranges: Vec::new(),
             language: language_name,
         }
     }

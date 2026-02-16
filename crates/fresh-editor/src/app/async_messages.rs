@@ -15,8 +15,9 @@ use crate::services::async_bridge::{
 use crate::state::{SemanticTokenSpan, SemanticTokenStore};
 use crate::view::file_tree::{FileTreeView, NodeId};
 use lsp_types::{
-    Diagnostic, InlayHint, SemanticToken, SemanticTokensEdit, SemanticTokensFullDeltaResult,
-    SemanticTokensLegend, SemanticTokensRangeResult, SemanticTokensResult,
+    Diagnostic, FoldingRange, InlayHint, SemanticToken, SemanticTokensEdit,
+    SemanticTokensFullDeltaResult, SemanticTokensLegend, SemanticTokensRangeResult,
+    SemanticTokensResult,
 };
 use rust_i18n::t;
 use serde_json::Value;
@@ -178,6 +179,55 @@ impl Editor {
             }
         } else {
             tracing::warn!("No buffer found for inlay hints URI: {}", uri);
+        }
+    }
+
+    /// Handle LSP folding ranges response
+    pub(super) fn handle_lsp_folding_ranges(
+        &mut self,
+        request_id: u64,
+        uri: String,
+        ranges: Vec<FoldingRange>,
+    ) {
+        let Some(request) = self.pending_folding_range_requests.remove(&request_id) else {
+            tracing::debug!(
+                "Ignoring folding ranges response without pending request (request_id={})",
+                request_id
+            );
+            return;
+        };
+
+        self.folding_ranges_in_flight.remove(&request.buffer_id);
+
+        // Ignore stale responses (buffer changed since request)
+        if let Some(state) = self.buffers.get(&request.buffer_id) {
+            if state.buffer.version() != request.version {
+                tracing::debug!(
+                    "Ignoring stale folding ranges for {} (request_id={}, version={}, current={})",
+                    uri,
+                    request_id,
+                    request.version,
+                    state.buffer.version()
+                );
+                self.schedule_folding_ranges_refresh(request.buffer_id);
+                return;
+            }
+        } else {
+            return;
+        }
+
+        if ranges.is_empty() {
+            self.stored_folding_ranges.remove(&uri);
+        } else {
+            self.stored_folding_ranges.insert(uri.clone(), ranges);
+        }
+
+        if let Some(state) = self.buffers.get_mut(&request.buffer_id) {
+            state.folding_ranges = self
+                .stored_folding_ranges
+                .get(&uri)
+                .cloned()
+                .unwrap_or_default();
         }
     }
 
@@ -572,6 +622,9 @@ impl Editor {
                 );
             }
         }
+
+        // Folding ranges may improve after project is fully loaded
+        self.request_folding_ranges_for_language(&language);
     }
 
     /// Handle LSP progress notification ($/progress)
@@ -1135,6 +1188,25 @@ impl Editor {
 
         for buffer_id in buffer_ids {
             self.schedule_semantic_tokens_full_refresh(buffer_id);
+        }
+    }
+
+    /// Request folding ranges for all open buffers matching a language.
+    pub(super) fn request_folding_ranges_for_language(&mut self, language: &str) {
+        let buffer_ids: Vec<_> = self
+            .buffers
+            .iter()
+            .filter_map(|(buffer_id, state)| {
+                if state.language == language {
+                    Some(*buffer_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for buffer_id in buffer_ids {
+            self.schedule_folding_ranges_refresh(buffer_id);
         }
     }
 }

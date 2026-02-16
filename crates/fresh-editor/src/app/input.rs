@@ -839,6 +839,9 @@ impl Editor {
             Action::ToggleComment => {
                 self.toggle_comment();
             }
+            Action::ToggleFold => {
+                self.toggle_fold_at_cursor();
+            }
             Action::GoToMatchingBracket => {
                 self.goto_matching_bracket();
             }
@@ -2137,23 +2140,7 @@ impl Editor {
         compose_width: Option<u16>,
     ) -> Option<usize> {
         // Adjust content_rect for compose layout centering
-        let content_rect = if let Some(cw) = compose_width {
-            let clamped = cw.min(content_rect.width).max(1);
-            if clamped < content_rect.width {
-                let pad_total = content_rect.width - clamped;
-                let left_pad = pad_total / 2;
-                ratatui::layout::Rect::new(
-                    content_rect.x + left_pad,
-                    content_rect.y,
-                    clamped,
-                    content_rect.height,
-                )
-            } else {
-                content_rect
-            }
-        } else {
-            content_rect
-        };
+        let content_rect = Self::adjust_content_rect_for_compose(content_rect, compose_width);
 
         // Calculate relative position in content area
         let content_col = col.saturating_sub(content_rect.x);
@@ -2229,6 +2216,29 @@ impl Editor {
             .unwrap_or(fallback_position);
 
         Some(position)
+    }
+
+    fn adjust_content_rect_for_compose(
+        content_rect: ratatui::layout::Rect,
+        compose_width: Option<u16>,
+    ) -> ratatui::layout::Rect {
+        if let Some(cw) = compose_width {
+            let clamped = cw.min(content_rect.width).max(1);
+            if clamped < content_rect.width {
+                let pad_total = content_rect.width - clamped;
+                let left_pad = pad_total / 2;
+                ratatui::layout::Rect::new(
+                    content_rect.x + left_pad,
+                    content_rect.y,
+                    clamped,
+                    content_rect.height,
+                )
+            } else {
+                content_rect
+            }
+        } else {
+            content_rect
+        }
     }
 
     /// Handle click in editor content area
@@ -2316,6 +2326,31 @@ impl Editor {
             ) else {
                 return Ok(());
             };
+
+            // Toggle fold on gutter click if this line is foldable/collapsed
+            let adjusted_rect = Self::adjust_content_rect_for_compose(content_rect, compose_width);
+            let content_col = col.saturating_sub(adjusted_rect.x);
+            let mut toggle_fold_line: Option<usize> = None;
+            if content_col < gutter_width {
+                let line = state.buffer.get_line_number(target_position);
+                let has_fold = state.folding_ranges.iter().any(|range| {
+                    let start_line = range.start_line as usize;
+                    let end_line = range.end_line as usize;
+                    start_line == line && end_line > start_line
+                });
+                let collapsed_headers = state
+                    .folds
+                    .collapsed_headers(&state.buffer, &state.marker_list);
+                if has_fold || collapsed_headers.contains_key(&line) {
+                    toggle_fold_line = Some(line);
+                }
+            }
+
+            if let Some(line) = toggle_fold_line {
+                let _ = state;
+                self.toggle_fold_at_line(buffer_id, line);
+                return Ok(());
+            }
 
             // Check for onClick text property at this position
             // This enables clickable UI elements in virtual buffers

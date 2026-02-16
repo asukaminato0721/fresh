@@ -355,6 +355,7 @@ pub enum Action {
     SmartHome,
     DedentSelection,
     ToggleComment,
+    ToggleFold,
 
     // Bookmarks
     SetBookmark(char),
@@ -759,6 +760,7 @@ impl Action {
             "smart_home" => SmartHome,
             "dedent_selection" => DedentSelection,
             "toggle_comment" => ToggleComment,
+            "toggle_fold" => ToggleFold,
 
             "list_bookmarks" => ListBookmarks,
 
@@ -1835,6 +1837,7 @@ impl KeybindingResolver {
             Action::SmartHome => t!("action.smart_home"),
             Action::DedentSelection => t!("action.dedent_selection"),
             Action::ToggleComment => t!("action.toggle_comment"),
+            Action::ToggleFold => t!("action.toggle_fold"),
             Action::SetBookmark(c) => t!("action.set_bookmark", key = c),
             Action::JumpToBookmark(c) => t!("action.jump_to_bookmark", key = c),
             Action::ClearBookmark(c) => t!("action.clear_bookmark", key = c),

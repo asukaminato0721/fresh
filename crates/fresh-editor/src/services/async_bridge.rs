@@ -13,7 +13,7 @@
 use crate::services::terminal::TerminalId;
 use crate::view::file_tree::{FileTreeView, NodeId};
 use lsp_types::{
-    CodeActionOrCommand, CompletionItem, Diagnostic, InlayHint, Location,
+    CodeActionOrCommand, CompletionItem, Diagnostic, FoldingRange, InlayHint, Location,
     SemanticTokensFullDeltaResult, SemanticTokensLegend, SemanticTokensRangeResult,
     SemanticTokensResult, SignatureHelp,
 };
@@ -50,6 +50,8 @@ pub enum AsyncMessage {
         semantic_tokens_full_delta: bool,
         /// Whether the server supports range semantic tokens
         semantic_tokens_range: bool,
+        /// Whether the server supports folding ranges
+        folding_ranges_supported: bool,
     },
 
     /// LSP server crashed or failed
@@ -126,6 +128,13 @@ pub enum AsyncMessage {
         uri: String,
         /// Inlay hints for the requested range
         hints: Vec<InlayHint>,
+    },
+
+    /// LSP folding ranges response (textDocument/foldingRange)
+    LspFoldingRanges {
+        request_id: u64,
+        uri: String,
+        ranges: Vec<FoldingRange>,
     },
 
     /// LSP semantic tokens response (full, full/delta, or range)
@@ -356,6 +365,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
 
@@ -390,6 +400,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
         sender
@@ -400,6 +411,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
 
@@ -432,6 +444,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
         sender2
@@ -442,6 +455,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
 
@@ -544,6 +558,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
 
@@ -565,6 +580,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
 
@@ -591,6 +607,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
         sender
@@ -601,6 +618,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
         sender
@@ -611,6 +629,7 @@ mod tests {
                 semantic_tokens_full: false,
                 semantic_tokens_full_delta: false,
                 semantic_tokens_range: false,
+                folding_ranges_supported: false,
             })
             .unwrap();
 

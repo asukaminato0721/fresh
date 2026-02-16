@@ -206,6 +206,11 @@ fn create_client_capabilities() -> ClientCapabilities {
         PublishDiagnosticsClientCapabilities, RenameClientCapabilities,
         SignatureHelpClientCapabilities, TagSupport, TextDocumentClientCapabilities,
         TextDocumentSyncClientCapabilities, WorkspaceClientCapabilities,
+        GeneralClientCapabilities, RenameClientCapabilities, TextDocumentClientCapabilities,
+        WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
+        FoldingRangeCapability, FoldingRangeClientCapabilities, FoldingRangeKind,
+        FoldingRangeKindCapability, GeneralClientCapabilities, RenameClientCapabilities,
+        TextDocumentClientCapabilities, WorkspaceClientCapabilities,
         WorkspaceEditClientCapabilities,
     };
 
@@ -264,6 +269,19 @@ fn create_client_capabilities() -> ClientCapabilities {
                 ..Default::default()
             }),
             diagnostic: Some(DiagnosticClientCapabilities {
+            folding_range: Some(FoldingRangeClientCapabilities {
+                dynamic_registration: Some(true),
+                line_folding_only: Some(true),
+                folding_range_kind: Some(FoldingRangeKindCapability {
+                    value_set: Some(vec![
+                        FoldingRangeKind::Comment,
+                        FoldingRangeKind::Imports,
+                        FoldingRangeKind::Region,
+                    ]),
+                }),
+                folding_range: Some(FoldingRangeCapability {
+                    collapsed_text: Some(true),
+                }),
                 ..Default::default()
             }),
             semantic_tokens: Some(SemanticTokensClientCapabilities {
@@ -365,6 +383,14 @@ fn semantic_tokens_full_delta_supported(full: &Option<SemanticTokensFullOptions>
     match full {
         Some(SemanticTokensFullOptions::Delta { delta }) => delta.unwrap_or(false),
         _ => false,
+    }
+}
+
+fn folding_ranges_supported(capabilities: &ServerCapabilities) -> bool {
+    match capabilities.folding_range_provider.as_ref() {
+        Some(lsp_types::FoldingRangeProviderCapability::Simple(v)) => *v,
+        Some(_) => true,
+        None => false,
     }
 }
 
@@ -475,6 +501,9 @@ enum LspCommand {
         end_line: u32,
         end_char: u32,
     },
+
+    /// Request folding ranges for a document
+    FoldingRange { request_id: u64, uri: Uri },
 
     /// Request semantic tokens for the entire document
     SemanticTokensFull { request_id: u64, uri: Uri },
@@ -628,6 +657,10 @@ impl LspState {
                     let _ = self
                         .handle_semantic_tokens_range(request_id, uri, range, pending)
                         .await;
+                }
+                LspCommand::FoldingRange { request_id, uri } => {
+                    tracing::info!("Replaying folding range request for {}", uri.as_str());
+                    let _ = self.handle_folding_ranges(request_id, uri, pending).await;
                 }
                 _ => {}
             }
@@ -805,6 +838,7 @@ impl LspState {
             semantic_tokens_full_delta,
             semantic_tokens_range,
         ) = extract_semantic_token_capability(&result.capabilities);
+        let folding_ranges_supported = folding_ranges_supported(&result.capabilities);
 
         // Notify main loop
         let _ = self.async_tx.send(AsyncMessage::LspInitialized {
@@ -814,6 +848,7 @@ impl LspState {
             semantic_tokens_full,
             semantic_tokens_full_delta,
             semantic_tokens_range,
+            folding_ranges_supported,
         });
 
         // Send running status
@@ -1732,6 +1767,64 @@ impl LspState {
         }
     }
 
+    /// Handle folding range request
+    #[allow(clippy::type_complexity)]
+    async fn handle_folding_ranges(
+        &mut self,
+        request_id: u64,
+        uri: Uri,
+        pending: &Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+    ) -> Result<(), String> {
+        use lsp_types::{
+            FoldingRangeParams, PartialResultParams, TextDocumentIdentifier, WorkDoneProgressParams,
+        };
+
+        tracing::trace!("LSP: folding range request for {}", uri.as_str());
+
+        let params = FoldingRangeParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        match self
+            .send_request_sequential::<_, Option<Vec<lsp_types::FoldingRange>>>(
+                "textDocument/foldingRange",
+                Some(params),
+                pending,
+            )
+            .await
+        {
+            Ok(ranges) => {
+                let ranges = ranges.unwrap_or_default();
+                let uri_string = uri.as_str().to_string();
+
+                tracing::trace!(
+                    "LSP: received {} folding ranges for {}",
+                    ranges.len(),
+                    uri_string
+                );
+
+                let _ = self.async_tx.send(AsyncMessage::LspFoldingRanges {
+                    request_id,
+                    uri: uri_string,
+                    ranges,
+                });
+
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Folding range request failed: {}", e);
+                let _ = self.async_tx.send(AsyncMessage::LspFoldingRanges {
+                    request_id,
+                    uri: uri.as_str().to_string(),
+                    ranges: Vec::new(),
+                });
+                Err(e)
+            }
+        }
+    }
+
     #[allow(clippy::type_complexity)]
     async fn handle_semantic_tokens_full(
         &mut self,
@@ -2560,6 +2653,26 @@ impl LspTask {
                                     request_id,
                                     uri: uri.as_str().to_string(),
                                     hints: Vec::new(),
+                                });
+                            }
+                        }
+                        LspCommand::FoldingRange { request_id, uri } => {
+                            if state.initialized {
+                                tracing::info!(
+                                    "Processing FoldingRange request for {}",
+                                    uri.as_str()
+                                );
+                                let _ = state
+                                    .handle_folding_ranges(request_id, uri, &pending)
+                                    .await;
+                            } else {
+                                tracing::trace!(
+                                    "LSP not initialized, cannot get folding ranges"
+                                );
+                                let _ = state.async_tx.send(AsyncMessage::LspFoldingRanges {
+                                    request_id,
+                                    uri: uri.as_str().to_string(),
+                                    ranges: Vec::new(),
                                 });
                             }
                         }
@@ -3554,6 +3667,13 @@ impl LspHandle {
                 end_char,
             })
             .map_err(|_| "Failed to send inlay_hints command".to_string())
+    }
+
+    /// Request folding ranges for a document
+    pub fn folding_ranges(&self, request_id: u64, uri: Uri) -> Result<(), String> {
+        self.command_tx
+            .try_send(LspCommand::FoldingRange { request_id, uri })
+            .map_err(|_| "Failed to send folding_range command".to_string())
     }
 
     /// Request semantic tokens for an entire document
