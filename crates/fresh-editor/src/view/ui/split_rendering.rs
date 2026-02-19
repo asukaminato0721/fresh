@@ -2566,7 +2566,6 @@ impl SplitRenderer {
 
         let start_line = buffer.get_line_number(top_byte);
         let mut total = visible_count;
-        let mut end_line = start_line.saturating_add(total);
 
         let mut ranges = folds.resolved_ranges(buffer, marker_list);
         if ranges.is_empty() {
@@ -2574,8 +2573,22 @@ impl SplitRenderer {
         }
         ranges.sort_by_key(|range| range.header_line);
 
+        let mut min_header_line = start_line;
+        if let Some(containing_end) = ranges
+            .iter()
+            .filter(|range| start_line >= range.start_line && start_line <= range.end_line)
+            .map(|range| range.end_line)
+            .max()
+        {
+            let hidden_remaining = containing_end.saturating_sub(start_line).saturating_add(1);
+            total = total.saturating_add(hidden_remaining);
+            min_header_line = containing_end.saturating_add(1);
+        }
+
+        let mut end_line = start_line.saturating_add(total);
+
         for range in ranges {
-            if range.header_line < start_line {
+            if range.header_line < min_header_line {
                 continue;
             }
             if range.header_line > end_line {

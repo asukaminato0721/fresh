@@ -299,6 +299,15 @@ impl Editor {
         buf_state
             .folds
             .add(&mut state.marker_list, start_byte, end_byte, placeholder);
+
+        // If the viewport top is now inside the folded range, move it to the header.
+        let top_line = state.buffer.get_line_number(buf_state.viewport.top_byte);
+        if top_line >= start_line && top_line <= end_line {
+            if let Some(header_byte) = state.buffer.line_start_offset(line) {
+                buf_state.viewport.top_byte = header_byte;
+                buf_state.viewport.top_view_line_offset = 0;
+            }
+        }
     }
 
     /// Disable LSP for a specific buffer and clear all LSP-related data

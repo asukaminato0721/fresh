@@ -274,3 +274,61 @@ fn test_folding_preserves_syntax_highlighting_after_skip() {
         "Syntax highlighting should remain stable after folding."
     );
 }
+
+#[test]
+fn test_folded_viewport_inside_range_fills_lines() {
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+
+    let content: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let fixture = TestFixture::new("fold_viewport_inside.py", &content).unwrap();
+    harness.open_file(&fixture.path).unwrap();
+
+    let header_line = 10usize;
+    let end_line = 120usize;
+    set_fold_range(&mut harness, header_line, end_line);
+    harness.render().unwrap();
+
+    let header_row = (layout::CONTENT_START_ROW + header_line) as u16;
+    harness.mouse_click(0, header_row).unwrap();
+
+    // Simulate a scroll position inside the folded range.
+    {
+        let top_byte = {
+            let buffer = &mut harness.editor_mut().active_state_mut().buffer;
+            buffer
+                .line_start_offset(header_line + 20)
+                .unwrap_or_else(|| buffer.len())
+        };
+        let viewport = harness.editor_mut().active_viewport_mut();
+        viewport.top_byte = top_byte;
+        viewport.top_view_line_offset = 0;
+        viewport.set_skip_ensure_visible();
+    }
+    {
+        let cursor_pos = {
+            let buffer = &mut harness.editor_mut().active_state_mut().buffer;
+            buffer
+                .line_start_offset(end_line + 5)
+                .unwrap_or_else(|| buffer.len())
+        };
+        let cursors = harness.editor_mut().active_cursors_mut();
+        cursors.primary_mut().position = cursor_pos;
+        cursors.primary_mut().anchor = None;
+        cursors.primary_mut().sticky_column = 0;
+    }
+    harness.render().unwrap();
+
+    let (start_row, end_row) = harness.content_area_rows();
+    let top_row_text = harness.get_row_text(start_row as u16);
+    let bottom_row_text = harness.get_row_text(end_row as u16);
+    let expected = format!("line {}", end_line + 1);
+
+    assert!(
+        top_row_text.contains(&expected),
+        "Expected viewport to start after fold. Top row: '{top_row_text}'"
+    );
+    assert!(
+        bottom_row_text.contains("line "),
+        "Expected viewport to be filled with content, not tildes. Bottom row: '{bottom_row_text}'"
+    );
+}
