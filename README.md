@@ -240,30 +240,7 @@ cargo build --release
 
 ## Contributing
 
-Thanks for contributing!
-
-1. **Reproduce Before Fixing**: Always include a test case that reproduces the bug (fails) without the fix, and passes with the fix. This ensures the issue is verified and prevents future regressions.
-
-2. **E2E Tests for New Flows**: Any new user flow or feature must include an end-to-end (e2e) test. E2E tests send keyboard/mouse events and examines the final rendered output, do not examine internal state.
-
-3. **No timeouts or time-sensitive tests**: Use "semantic waiting" (waiting for specific state changes/events) instead of fixed timers to ensure test stability. Wait indefinitely, don't put timeouts inside tests (cargo nextest will timeout externally).
-
-4. **Test isolation**: Tests should run in parallel. Use the internal clipboard mode in tests to isolate them from the host system and prevent flakiness in CI. Same for other external resources (temp files, etc. should all be isolated between tests, under a per-test temporary workdir).
-
-5. **Required Formatting**: All code must be formatted with `cargo fmt` before submission. PRs that fail formatting checks will not be merged.
-
-6. **Cross-Platform Consistency**: Avoid hard-coding newline or CRLF related logic, consider the buffer mode.
-
-7. **LSP**: Ensure LSP interactions follow the correct lifecycle (e.g., `didOpen` must always precede other requests to avoid server-side errors). Use the appropriate existing helpers for this pattern.
-
-8. **Regenerate plugin types and schemas**: After modifying the plugin API or config types:
-   - **TypeScript definitions** (`plugins/lib/fresh.d.ts`): Auto-generated from Rust types with `#[derive(TS)]`. Run: `cargo test -p fresh-plugin-runtime write_fresh_dts_file -- --ignored`
-   - **JSON schemas** (`plugins/config-schema.json`, `plugins/schemas/theme.schema.json`): Auto-generated from Rust types with `#[derive(JsonSchema)]`. Run: `./scripts/gen_schema.sh`
-   - **Package schema** (`plugins/schemas/package.schema.json`): Manually maintained - edit directly when adding new language pack fields
-
-9. **Type check plugins**: Run `crates/fresh-editor/plugins/check-types.sh` (requires `tsc`)
-
-**Tip**: You can use tmux + send-keys + render-pane to script ad-hoc tests on the UI, for example when trying to reproduce an issue.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Privacy
 
