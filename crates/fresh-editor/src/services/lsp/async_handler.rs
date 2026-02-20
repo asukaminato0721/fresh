@@ -201,17 +201,13 @@ impl LspClientState {
 fn create_client_capabilities() -> ClientCapabilities {
     use lsp_types::{
         CodeActionClientCapabilities, CompletionClientCapabilities, DiagnosticClientCapabilities,
-        DiagnosticTag, DynamicRegistrationClientCapabilities, GeneralClientCapabilities,
-        GotoCapability, HoverClientCapabilities, InlayHintClientCapabilities, MarkupKind,
-        PublishDiagnosticsClientCapabilities, RenameClientCapabilities,
-        SignatureHelpClientCapabilities, TagSupport, TextDocumentClientCapabilities,
-        TextDocumentSyncClientCapabilities, WorkspaceClientCapabilities,
-        GeneralClientCapabilities, RenameClientCapabilities, TextDocumentClientCapabilities,
+        DiagnosticTag, DynamicRegistrationClientCapabilities, FoldingRangeCapability,
+        FoldingRangeClientCapabilities, FoldingRangeKind, FoldingRangeKindCapability,
+        GeneralClientCapabilities, GotoCapability, HoverClientCapabilities,
+        InlayHintClientCapabilities, MarkupKind, PublishDiagnosticsClientCapabilities,
+        RenameClientCapabilities, SignatureHelpClientCapabilities, TagSupport,
+        TextDocumentClientCapabilities, TextDocumentSyncClientCapabilities,
         WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
-        FoldingRangeCapability, FoldingRangeClientCapabilities, FoldingRangeKind,
-        FoldingRangeKindCapability, GeneralClientCapabilities, RenameClientCapabilities,
-        TextDocumentClientCapabilities, WorkspaceClientCapabilities,
-        WorkspaceEditClientCapabilities,
     };
 
     ClientCapabilities {
@@ -269,6 +265,8 @@ fn create_client_capabilities() -> ClientCapabilities {
                 ..Default::default()
             }),
             diagnostic: Some(DiagnosticClientCapabilities {
+                ..Default::default()
+            }),
             folding_range: Some(FoldingRangeClientCapabilities {
                 dynamic_registration: Some(true),
                 line_folding_only: Some(true),

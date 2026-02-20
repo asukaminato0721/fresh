@@ -540,7 +540,7 @@ fn parse_method(method: &ImplItemFn) -> Option<ApiMethod> {
             }
 
             Some(ParamInfo {
-                name: to_camel_case(&param_name),
+                name: to_camel_case(param_name),
                 ts_type: rust_to_typescript(ty, &pat_type.attrs),
                 optional: is_opt_type(ty),
                 variadic: is_rest_type(ty),

@@ -2527,7 +2527,10 @@ impl Editor {
         }
 
         // Move cursor to clicked position (respect shift for selection)
-        let new_anchor = if modifiers.contains(KeyModifiers::SHIFT) {
+        // Both modifiers supported since some terminals intercept shift+click.
+        let extend_selection =
+            modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::CONTROL);
+        let new_anchor = if extend_selection {
             Some(old_anchor.unwrap_or(old_position))
         } else if deselect_on_move {
             None

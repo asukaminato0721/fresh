@@ -4064,13 +4064,11 @@ impl SplitRenderer {
             let show_line_number = should_show_line_number(current_view_line);
 
             if show_line_number {
-                if let Some(first_byte) =
-                    current_view_line.char_source_bytes.iter().find_map(|m| *m)
-                {
-                    current_source_line_num = state.buffer.get_line_number(first_byte);
-                    seen_source_line = true;
-                } else if !seen_source_line {
+                if !seen_source_line {
                     current_source_line_num = starting_line_num;
+                    seen_source_line = true;
+                } else {
+                    current_source_line_num = current_source_line_num.saturating_add(1);
                 }
             }
 
@@ -4982,14 +4980,6 @@ impl SplitRenderer {
 
         let compose_layout = Self::calculate_compose_layout(area, &view_mode, compose_width);
         let render_area = compose_layout.render_area;
-
-        // Auto-expand folded ranges that contain any cursor (keep cursors visible)
-        if !folds.is_empty() {
-            let cursor_positions: Vec<usize> = cursors.iter().map(|(_, c)| c.position).collect();
-            for pos in cursor_positions {
-                let _ = folds.remove_if_contains_byte(&mut state.marker_list, pos);
-            }
-        }
 
         // Clone view_transform so we can reuse it if scrolling triggers a rebuild
         let view_transform_for_rebuild = view_transform.clone();

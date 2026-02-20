@@ -2925,14 +2925,12 @@ impl JsEditorApi {
             id
         };
 
-        let opts = opts
-            .0
-            .unwrap_or_else(|| fresh_core::api::CreateTerminalOptions {
-                cwd: None,
-                direction: None,
-                ratio: None,
-                focus: None,
-            });
+        let opts = opts.0.unwrap_or(fresh_core::api::CreateTerminalOptions {
+            cwd: None,
+            direction: None,
+            ratio: None,
+            focus: None,
+        });
 
         let _ = self.command_sender.send(PluginCommand::CreateTerminal {
             cwd: opts.cwd,

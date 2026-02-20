@@ -276,6 +276,56 @@ fn test_folding_preserves_syntax_highlighting_after_skip() {
 }
 
 #[test]
+fn test_cursor_down_up_keeps_fold_collapsed() {
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+
+    let content: String = (0..40).map(|i| format!("line {i}\n")).collect();
+    let fixture = TestFixture::new("fold_cursor_down_up.py", &content).unwrap();
+    harness.open_file(&fixture.path).unwrap();
+
+    let header_line = 2usize;
+    let end_line = 6usize;
+    set_fold_range(&mut harness, header_line, end_line);
+    harness.render().unwrap();
+
+    // Collapse the fold without moving the cursor into it.
+    let buffer_id = harness.editor().active_buffer();
+    harness
+        .editor_mut()
+        .toggle_fold_at_line(buffer_id, header_line);
+    harness.render().unwrap();
+
+    // Move cursor to line before header (line 1).
+    let line1_byte = harness
+        .editor_mut()
+        .active_state_mut()
+        .buffer
+        .line_start_offset(1)
+        .unwrap();
+    harness
+        .editor_mut()
+        .active_cursors_mut()
+        .primary_mut()
+        .position = line1_byte;
+    harness.render().unwrap();
+
+    // Move down across the fold and then back up.
+    harness
+        .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 2)
+        .unwrap();
+    harness
+        .send_key_repeat(KeyCode::Up, KeyModifiers::NONE, 1)
+        .unwrap();
+
+    let row = (layout::CONTENT_START_ROW + header_line) as u16;
+    let row_text = harness.get_row_text(row + 1);
+    assert!(
+        row_text.contains("line 7"),
+        "Fold should remain collapsed after down/up movement. Row text: '{row_text}'"
+    );
+}
+
+#[test]
 fn test_folded_viewport_inside_range_fills_lines() {
     let mut harness = EditorTestHarness::new(80, 24).unwrap();
 
