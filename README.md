@@ -47,7 +47,7 @@ See more feature demos: [Editing](https://getfresh.dev/docs/blog/editing) (searc
 | **Views & Layout** | split panes, line numbers, line wrap, backgrounds, markdown preview |
 | **Language Server (LSP)** | go to definition, references, hover, code actions, rename, diagnostics, autocompletion |
 | **Productivity** | command palette, menu bar, keyboard macros, git log, diagnostics panel |
-| **Extensibility** | TypeScript plugins (sandboxed Deno), color highlighter, TODO highlighter, merge conflicts, path complete, keymaps |
+| **Extensibility** | TypeScript plugins (sandboxed QuickJS), color highlighter, TODO highlighter, merge conflicts, path complete, keymaps |
 | **Internationalization** | Multiple language support (see [`locales/`](locales/)), plugin translation system |
 
 ## Installation

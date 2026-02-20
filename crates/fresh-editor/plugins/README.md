@@ -1,6 +1,6 @@
 # Plugins
 
-This directory contains production-ready plugins for the editor. Plugins are written in **TypeScript** and run in a sandboxed Deno environment. They are automatically loaded when the editor starts.
+This directory contains production-ready plugins for the editor. Plugins are written in **TypeScript** and run in a sandboxed QuickJS environment (transpiled via oxc_transformer). They are automatically loaded when the editor starts.
 
 ## Available Plugins
 

@@ -163,7 +163,7 @@ function loadThemeSections(): ThemeSection[] {
       });
     }
 
-    // Sort fields alphabetically (use simple comparison to avoid ICU issues in Deno)
+    // Sort fields alphabetically (use simple comparison to avoid ICU issues in QuickJS)
     fields.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 
     // Generate i18n keys for section

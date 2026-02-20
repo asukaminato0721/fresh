@@ -2,7 +2,7 @@
 
 ## Overview
 
-Fresh uses QuickJS for its JavaScript plugin runtime, replacing the previous deno_core (V8) backend.
+Fresh uses QuickJS for its JavaScript plugin runtime (with oxc_transformer for TypeScript transpilation).
 
 **Benefits:**
 - Reduced dependencies (~315 → ~183 crates)

@@ -1,7 +1,7 @@
 //! TypeScript to JavaScript transpilation using oxc
 //!
-//! This module provides TypeScript transpilation without deno_ast,
-//! using the oxc toolchain for parsing, transformation, and code generation.
+//! This module provides TypeScript transpilation using oxc_transformer
+//! for parsing, transformation, and code generation.
 
 use anyhow::{anyhow, Result};
 use oxc_allocator::Allocator;

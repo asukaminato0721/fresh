@@ -16,7 +16,7 @@ Use `fresh --init` to scaffold any package type.
 
 ## Introduction
 
-Fresh plugins are written in **TypeScript** and run in a sandboxed Deno environment. Plugins have access to a TypeScript API for extending the editor.
+Fresh plugins are written in **TypeScript** and run in a sandboxed QuickJS environment (transpiled via oxc_transformer). Plugins have access to a TypeScript API for extending the editor.
 
 API reference: **[Plugin API](../api/)**
 
@@ -57,7 +57,7 @@ Let's start by creating a simple "Hello, World!" plugin.
 
 ### Plugin Lifecycle
 
-Plugins are loaded automatically when Fresh starts. There is no explicit activation step. All `.ts` files in the `plugins/` directory are executed in the Deno environment.
+Plugins are loaded automatically when Fresh starts. There is no explicit activation step. All `.ts` files in the `plugins/` directory are transpiled via oxc_transformer and executed in the QuickJS runtime.
 
 ### The `editor` Object
 
