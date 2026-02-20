@@ -200,9 +200,13 @@ impl LspClientState {
 /// Create common LSP client capabilities with workDoneProgress support
 fn create_client_capabilities() -> ClientCapabilities {
     use lsp_types::{
-        DiagnosticTag, GeneralClientCapabilities, PublishDiagnosticsClientCapabilities,
-        RenameClientCapabilities, TagSupport, TextDocumentClientCapabilities,
-        WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
+        CodeActionClientCapabilities, CompletionClientCapabilities, DiagnosticClientCapabilities,
+        DiagnosticTag, DynamicRegistrationClientCapabilities, GeneralClientCapabilities,
+        GotoCapability, HoverClientCapabilities, InlayHintClientCapabilities, MarkupKind,
+        PublishDiagnosticsClientCapabilities, RenameClientCapabilities,
+        SignatureHelpClientCapabilities, TagSupport, TextDocumentClientCapabilities,
+        TextDocumentSyncClientCapabilities, WorkspaceClientCapabilities,
+        WorkspaceEditClientCapabilities,
     };
 
     ClientCapabilities {
@@ -219,6 +223,28 @@ fn create_client_capabilities() -> ClientCapabilities {
             ..Default::default()
         }),
         text_document: Some(TextDocumentClientCapabilities {
+            synchronization: Some(TextDocumentSyncClientCapabilities {
+                did_save: Some(true),
+                ..Default::default()
+            }),
+            completion: Some(CompletionClientCapabilities {
+                ..Default::default()
+            }),
+            hover: Some(HoverClientCapabilities {
+                content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                ..Default::default()
+            }),
+            signature_help: Some(SignatureHelpClientCapabilities {
+                ..Default::default()
+            }),
+            definition: Some(GotoCapability {
+                link_support: Some(true),
+                ..Default::default()
+            }),
+            references: Some(DynamicRegistrationClientCapabilities::default()),
+            code_action: Some(CodeActionClientCapabilities {
+                ..Default::default()
+            }),
             rename: Some(RenameClientCapabilities {
                 dynamic_registration: Some(true),
                 prepare_support: Some(true),
@@ -233,6 +259,12 @@ fn create_client_capabilities() -> ClientCapabilities {
                 version_support: Some(true),
                 code_description_support: Some(true),
                 data_support: Some(true),
+            }),
+            inlay_hint: Some(InlayHintClientCapabilities {
+                ..Default::default()
+            }),
+            diagnostic: Some(DiagnosticClientCapabilities {
+                ..Default::default()
             }),
             semantic_tokens: Some(SemanticTokensClientCapabilities {
                 dynamic_registration: Some(true),
