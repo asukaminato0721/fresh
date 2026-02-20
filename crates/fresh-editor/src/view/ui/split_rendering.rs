@@ -341,6 +341,8 @@ struct DecorationContext {
     line_indicators: BTreeMap<usize, crate::view::margin::LineIndicator>,
     /// Fold indicators indexed by line number
     fold_indicators: BTreeMap<usize, FoldIndicator>,
+    /// Collapsed fold header -> hidden line count
+    collapsed_header_hidden_lines: BTreeMap<usize, usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3884,6 +3886,12 @@ impl SplitRenderer {
 
         let fold_indicators =
             Self::fold_indicators_for_viewport(state, folds, viewport_start, viewport_end);
+        let collapsed_header_hidden_lines = Self::collapsed_header_hidden_lines_for_viewport(
+            state,
+            folds,
+            viewport_start,
+            viewport_end,
+        );
 
         DecorationContext {
             highlight_spans,
@@ -3893,6 +3901,7 @@ impl SplitRenderer {
             diagnostic_lines,
             line_indicators,
             fold_indicators,
+            collapsed_header_hidden_lines,
         }
     }
 
@@ -3935,6 +3944,36 @@ impl SplitRenderer {
         }
 
         indicators
+    }
+
+    fn collapsed_header_hidden_lines_for_viewport(
+        state: &EditorState,
+        folds: &FoldManager,
+        viewport_start: usize,
+        viewport_end: usize,
+    ) -> BTreeMap<usize, usize> {
+        let mut map = BTreeMap::new();
+        if folds.is_empty() {
+            return map;
+        }
+
+        let viewport_start_line = state.buffer.get_line_number(viewport_start);
+        let viewport_end_line = state.buffer.get_line_number(viewport_end);
+
+        for range in folds.resolved_ranges(&state.buffer, &state.marker_list) {
+            if range.header_line < viewport_start_line || range.header_line > viewport_end_line {
+                continue;
+            }
+            let hidden = range
+                .end_line
+                .saturating_sub(range.start_line)
+                .saturating_add(1);
+            if hidden > 0 {
+                map.insert(range.header_line, hidden);
+            }
+        }
+
+        map
     }
 
     // semantic token colors are mapped when overlays are created
@@ -4016,6 +4055,7 @@ impl SplitRenderer {
         // Track the current source line number separately from display lines
         let mut current_source_line_num = starting_line_num;
         let mut seen_source_line = false;
+        let mut pending_line_skip = 0usize;
 
         loop {
             // Get the current ViewLine from the pipeline
@@ -4068,8 +4108,16 @@ impl SplitRenderer {
                     current_source_line_num = starting_line_num;
                     seen_source_line = true;
                 } else {
-                    current_source_line_num = current_source_line_num.saturating_add(1);
+                    current_source_line_num = current_source_line_num
+                        .saturating_add(1)
+                        .saturating_add(pending_line_skip);
                 }
+
+                pending_line_skip = decorations
+                    .collapsed_header_hidden_lines
+                    .get(&current_source_line_num)
+                    .copied()
+                    .unwrap_or(0);
             }
 
             // is_continuation means "don't show line number" for rendering purposes
@@ -5094,9 +5142,19 @@ impl SplitRenderer {
             visible_count,
         );
 
-        let starting_line_num = state
+        let mut starting_line_num = state
             .buffer
             .populate_line_cache(viewport.top_byte, adjusted_visible_count);
+        if !folds.is_empty() {
+            let top_line = state.buffer.get_line_number(viewport.top_byte);
+            if let Some(range) = folds
+                .resolved_ranges(&state.buffer, &state.marker_list)
+                .iter()
+                .find(|range| top_line >= range.start_line && top_line <= range.end_line)
+            {
+                starting_line_num = range.end_line.saturating_add(1);
+            }
+        }
 
         let viewport_start = viewport.top_byte;
         let viewport_end = Self::calculate_viewport_end(
