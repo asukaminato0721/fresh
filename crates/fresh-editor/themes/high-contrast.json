@@ -11,7 +11,14 @@
     "line_number_bg": "Black",
     "diff_add_bg": [0, 80, 0],
     "diff_remove_bg": [100, 0, 0],
-    "diff_modify_bg": [25, 22, 0]
+    "diff_modify_bg": [25, 22, 0],
+    "bracket_match_fg": "White",
+    "bracket_rainbow_1": "Cyan",
+    "bracket_rainbow_2": "Green",
+    "bracket_rainbow_3": "Yellow",
+    "bracket_rainbow_4": "Magenta",
+    "bracket_rainbow_5": "White",
+    "bracket_rainbow_6": "LightBlue"
   },
   "ui": {
     "tab_active_fg": "Black",

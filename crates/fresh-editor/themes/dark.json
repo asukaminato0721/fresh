@@ -11,7 +11,14 @@
     "line_number_bg": [30, 30, 30],
     "diff_add_bg": [35, 60, 35],
     "diff_remove_bg": [70, 35, 35],
-    "diff_modify_bg": [40, 38, 30]
+    "diff_modify_bg": [40, 38, 30],
+    "bracket_match_fg": [212, 212, 212],
+    "bracket_rainbow_1": [86, 156, 214],
+    "bracket_rainbow_2": [206, 145, 120],
+    "bracket_rainbow_3": [220, 220, 170],
+    "bracket_rainbow_4": [78, 201, 176],
+    "bracket_rainbow_5": [156, 220, 254],
+    "bracket_rainbow_6": [79, 193, 255]
   },
   "ui": {
     "tab_active_fg": "Yellow",
