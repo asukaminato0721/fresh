@@ -5,7 +5,7 @@ use rust_i18n::t;
 impl Editor {
     /// Render the editor to the terminal
     pub fn render(&mut self, frame: &mut Frame) {
-        let _span = tracing::trace_span!("render").entered();
+        let _span = tracing::debug_span!("render").entered();
         let size = frame.area();
 
         // Save frame dimensions for recompute_layout (used by macro replay)
@@ -52,14 +52,17 @@ impl Editor {
             self.maybe_request_folding_ranges_debounced(buffer_id);
         }
 
-        for (split_id, view_state) in &self.split_view_states {
-            if let Some(buffer_id) = self.split_manager.get_buffer_id((*split_id).into()) {
-                if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                    let top_byte = view_state.viewport.top_byte;
-                    let height = view_state.viewport.height;
-                    if let Err(e) = state.prepare_for_render(top_byte, height) {
-                        tracing::error!("Failed to prepare buffer for render: {}", e);
-                        // Continue with partial rendering
+        {
+            let _span = tracing::debug_span!("prepare_for_render").entered();
+            for (split_id, view_state) in &self.split_view_states {
+                if let Some(buffer_id) = self.split_manager.get_buffer_id((*split_id).into()) {
+                    if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                        let top_byte = view_state.viewport.top_byte;
+                        let height = view_state.viewport.height;
+                        if let Err(e) = state.prepare_for_render(top_byte, height) {
+                            tracing::error!("Failed to prepare buffer for render: {}", e);
+                            // Continue with partial rendering
+                        }
                     }
                 }
             }
@@ -392,6 +395,7 @@ impl Editor {
 
         let is_maximized = self.split_manager.is_maximized();
 
+        let _content_span = tracing::debug_span!("render_content").entered();
         let (
             split_areas,
             tab_layouts,
@@ -430,6 +434,8 @@ impl Editor {
             self.config.editor.show_vertical_scrollbar,
             self.config.editor.show_horizontal_scrollbar,
         );
+
+        drop(_content_span);
 
         // Detect viewport changes and fire hooks
         // Compare against previous frame's viewport state (stored in self.previous_viewports)

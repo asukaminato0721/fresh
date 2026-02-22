@@ -2797,6 +2797,11 @@ where
         match event {
             CrosstermEvent::Key(key_event) => {
                 if key_event.kind == KeyEventKind::Press {
+                    let _span = tracing::debug_span!(
+                        "handle_key",
+                        code = ?key_event.code,
+                        modifiers = ?key_event.modifiers,
+                    ).entered();
                     // Apply key translation (for input calibration)
                     // Use editor's translator so calibration changes take effect immediately
                     let translated_event = editor.key_translator().translate(key_event);

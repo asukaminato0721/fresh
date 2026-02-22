@@ -1098,13 +1098,16 @@ impl SplitRenderer {
                     })
                     .unwrap_or_default();
 
-                Self::sync_viewport_to_content(
-                    &mut viewport,
-                    &mut state.buffer,
-                    &split_cursors,
-                    layout.content_rect,
-                    &hidden_ranges,
-                );
+                {
+                    let _span = tracing::debug_span!("sync_viewport_to_content").entered();
+                    Self::sync_viewport_to_content(
+                        &mut viewport,
+                        &mut state.buffer,
+                        &split_cursors,
+                        layout.content_rect,
+                        &hidden_ranges,
+                    );
+                }
                 let view_prefs =
                     Self::resolve_view_preferences(state, split_view_states.as_deref(), split_id);
 
@@ -1115,6 +1118,7 @@ impl SplitRenderer {
                     .map(|vs| &mut vs.folds)
                     .unwrap_or(&mut empty_folds);
 
+                let _render_buf_span = tracing::debug_span!("render_buffer_in_split").entered();
                 let split_view_mappings = Self::render_buffer_in_split(
                     frame,
                     state,
@@ -1144,18 +1148,23 @@ impl SplitRenderer {
                     view_prefs.show_line_numbers,
                 );
 
+                drop(_render_buf_span);
+
                 // Store view line mappings for mouse click handling
                 view_line_mappings.insert(split_id, split_view_mappings);
 
                 // For small files, count actual lines for accurate scrollbar
                 // For large files, we'll use a constant thumb size
                 let buffer_len = state.buffer.len();
-                let (total_lines, top_line) = Self::scrollbar_line_counts(
-                    state,
-                    &viewport,
-                    large_file_threshold_bytes,
-                    buffer_len,
-                );
+                let (total_lines, top_line) = {
+                    let _span = tracing::debug_span!("scrollbar_line_counts").entered();
+                    Self::scrollbar_line_counts(
+                        state,
+                        &viewport,
+                        large_file_threshold_bytes,
+                        buffer_len,
+                    )
+                };
 
                 // Render vertical scrollbar for this split and get thumb position
                 let (thumb_start, thumb_end) = if show_vertical_scrollbar {
@@ -5128,19 +5137,22 @@ impl SplitRenderer {
         // Clone view_transform so we can reuse it if scrolling triggers a rebuild
         let view_transform_for_rebuild = view_transform.clone();
 
-        let view_data = Self::build_view_data(
-            state,
-            viewport,
-            view_transform,
-            estimated_line_length,
-            visible_count,
-            line_wrap,
-            render_area.width as usize,
-            gutter_width,
-            &view_mode,
-            folds,
-            theme,
-        );
+        let view_data = {
+            let _span = tracing::debug_span!("build_view_data").entered();
+            Self::build_view_data(
+                state,
+                viewport,
+                view_transform,
+                estimated_line_length,
+                visible_count,
+                line_wrap,
+                render_area.width as usize,
+                gutter_width,
+                &view_mode,
+                folds,
+                theme,
+            )
+        };
 
         // Same-buffer scroll sync: if the sync code flagged this viewport to
         // scroll to the end, apply it now using the view lines we just built.

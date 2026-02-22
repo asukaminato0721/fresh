@@ -1971,6 +1971,7 @@ impl TextBuffer {
     /// NOTE: Currently loads entire buffers on-demand. Future optimization would split
     /// large pieces and load only LOAD_CHUNK_SIZE chunks at a time.
     pub fn get_text_range_mut(&mut self, offset: usize, bytes: usize) -> Result<Vec<u8>> {
+        let _span = tracing::debug_span!("get_text_range_mut", offset, bytes).entered();
         if bytes == 0 {
             return Ok(Vec::new());
         }
@@ -2002,6 +2003,13 @@ impl TextBuffer {
                 if needs_loading {
                     // Check if piece is too large for full loading
                     if piece_view.bytes > LOAD_CHUNK_SIZE {
+                        let _span = tracing::debug_span!(
+                            "chunk_split_and_load",
+                            piece_bytes = piece_view.bytes,
+                            buffer_id,
+                        )
+                        .entered();
+
                         // Split large piece into chunks
                         let piece_start_in_doc = piece_view.doc_offset;
                         let offset_in_piece = current_offset.saturating_sub(piece_start_in_doc);
@@ -2022,13 +2030,17 @@ impl TextBuffer {
                         let split_end_in_doc = split_start_in_doc + chunk_bytes;
 
                         // Split the piece to isolate the chunk
-                        if chunk_start_offset_in_piece > 0 {
-                            self.piece_tree
-                                .split_at_offset(split_start_in_doc, &self.buffers);
-                        }
-                        if split_end_in_doc < piece_start_in_doc + piece_view.bytes {
-                            self.piece_tree
-                                .split_at_offset(split_end_in_doc, &self.buffers);
+                        {
+                            let _span =
+                                tracing::debug_span!("split_piece", chunk_bytes).entered();
+                            if chunk_start_offset_in_piece > 0 {
+                                self.piece_tree
+                                    .split_at_offset(split_start_in_doc, &self.buffers);
+                            }
+                            if split_end_in_doc < piece_start_in_doc + piece_view.bytes {
+                                self.piece_tree
+                                    .split_at_offset(split_end_in_doc, &self.buffers);
+                            }
                         }
 
                         // Create a new buffer for this chunk
@@ -2056,17 +2068,27 @@ impl TextBuffer {
                         );
 
                         // Load the chunk buffer using the FileSystem trait
-                        self.buffers
-                            .get_mut(new_buffer_id)
-                            .context("Chunk buffer not found")?
-                            .load(&*self.fs)
-                            .context("Failed to load chunk")?;
+                        {
+                            let _span =
+                                tracing::debug_span!("load_chunk", chunk_bytes).entered();
+                            self.buffers
+                                .get_mut(new_buffer_id)
+                                .context("Chunk buffer not found")?
+                                .load(&*self.fs)
+                                .context("Failed to load chunk")?;
+                        }
 
                         // Restart iteration with the modified tree
                         restarted_iteration = true;
                         break;
                     } else {
                         // Piece is small enough, load the entire buffer
+                        let _span = tracing::debug_span!(
+                            "load_small_buffer",
+                            piece_bytes = piece_view.bytes,
+                            buffer_id,
+                        )
+                        .entered();
                         self.buffers
                             .get_mut(buffer_id)
                             .context("Buffer not found")?

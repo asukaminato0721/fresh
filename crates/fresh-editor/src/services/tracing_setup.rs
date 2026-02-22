@@ -55,7 +55,9 @@ pub fn build_subscriber(
         .add_directive("swc_ecma_transforms_base=info".parse().unwrap())
         .add_directive("swc_common=info".parse().unwrap());
 
-    let fmt_layer = fmt::layer().with_writer(Arc::new(log_file));
+    let fmt_layer = fmt::layer()
+        .with_writer(Arc::new(log_file))
+        .with_span_events(fmt::format::FmtSpan::CLOSE);
 
     tracing_subscriber::registry()
         .with(fmt_layer)

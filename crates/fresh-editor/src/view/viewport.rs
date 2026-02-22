@@ -943,6 +943,13 @@ impl Viewport {
         cursor: &Cursor,
         hidden_ranges: &[(usize, usize)],
     ) {
+        let _span = tracing::debug_span!(
+            "ensure_visible",
+            cursor_pos = cursor.position,
+            top_byte = self.top_byte,
+        )
+        .entered();
+
         // Check if we should skip sync due to session restore
         // This prevents the restored scroll position from being overwritten
         if self.should_skip_resize_sync() {
@@ -982,12 +989,19 @@ impl Viewport {
         let load_length = (estimated_viewport_bytes * 3).min(remaining_bytes);
 
         // Force-load the data by actually requesting it (not just prepare_viewport)
-        if let Err(e) = buffer.get_text_range_mut(load_start, load_length) {
-            tracing::warn!(
-                "Failed to load data around cursor at {}: {}",
-                cursor.position,
-                e
-            );
+        {
+            let _span = tracing::debug_span!(
+                "ensure_visible_load",
+                load_start,
+                load_length,
+            ).entered();
+            if let Err(e) = buffer.get_text_range_mut(load_start, load_length) {
+                tracing::warn!(
+                    "Failed to load data around cursor at {}: {}",
+                    cursor.position,
+                    e
+                );
+            }
         }
 
         // Find the start of the line containing the cursor using iterator
@@ -1141,6 +1155,11 @@ impl Viewport {
         // - If cursor is below viewport: place cursor at (viewport - margin) from top
         // - If cursor is above viewport: place cursor at margin from top
         if !cursor_is_visible {
+            let _span = tracing::debug_span!(
+                "ensure_visible_scroll",
+                cursor_near_top,
+                cursor_line_start,
+            ).entered();
             // We want cursor at (viewport_lines - 1 - effective_offset) rows from new top
             // when scrolling down, or at effective_offset rows from new top when scrolling up.
 
