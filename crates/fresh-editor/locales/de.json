@@ -777,7 +777,7 @@
   "goto.jumped": "Zu Zeile %{line} gesprungen",
   "goto.line_must_be_positive": "Zeilennummer muss positiv sein",
   "goto.scan_complete": "Line index built successfully",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_failed": "Failed to scan line index: %{error}",
   "keybinding_editor.action_placeholder": "(Aktionsname eingeben)",
   "keybinding_editor.bindings_count": "%{count} Zuordnungen",

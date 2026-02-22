@@ -777,7 +777,7 @@
   "goto.jumped": "Đã nhảy đến dòng %{line}",
   "goto.line_must_be_positive": "Số dòng phải là số dương",
   "goto.scan_complete": "Line index built successfully",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_failed": "Failed to scan line index: %{error}",
   "keybinding_editor.action_placeholder": "(nhập tên hành động)",
   "keybinding_editor.bindings_count": "%{count} phím tắt",

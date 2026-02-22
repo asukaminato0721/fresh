@@ -777,7 +777,7 @@
   "goto.jumped": "行 %{line} にジャンプ",
   "goto.line_must_be_positive": "行番号は正の数である必要があります",
   "goto.scan_complete": "Line index built successfully",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_failed": "Failed to scan line index: %{error}",
   "keybinding_editor.action_placeholder": "(アクション名を入力)",
   "keybinding_editor.bindings_count": "%{count} 件のキーバインド",

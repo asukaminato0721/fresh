@@ -777,7 +777,7 @@
   "goto.jumped": "Sauté à la ligne %{line}",
   "goto.line_must_be_positive": "Le numéro de ligne doit être positif",
   "goto.scan_complete": "Line index built successfully",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_failed": "Failed to scan line index: %{error}",
   "keybinding_editor.action_placeholder": "(saisir le nom de l'action)",
   "keybinding_editor.bindings_count": "%{count} raccourcis",

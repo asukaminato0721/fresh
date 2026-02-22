@@ -777,7 +777,7 @@
   "goto.jumped": "Přeskočeno na řádek %{line}",
   "goto.line_must_be_positive": "Číslo řádku musí být kladné",
   "goto.scan_complete": "Line index built successfully",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_failed": "Failed to scan line index: %{error}",
   "keybinding_editor.action_placeholder": "(zadejte název akce)",
   "keybinding_editor.bindings_count": "%{count} vazeb",

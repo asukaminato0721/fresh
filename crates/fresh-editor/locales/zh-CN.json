@@ -777,7 +777,7 @@
   "goto.jumped": "已跳转到第 %{line} 行",
   "goto.line_must_be_positive": "行号必须为正数",
   "goto.scan_complete": "Line index built successfully",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_failed": "Failed to scan line index: %{error}",
   "keybinding_editor.action_placeholder": "(输入操作名称)",
   "keybinding_editor.bindings_count": "%{count} 个快捷键",

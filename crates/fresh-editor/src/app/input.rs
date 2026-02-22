@@ -305,7 +305,7 @@ impl Editor {
                     );
                 } else {
                     self.start_prompt(
-                        t!("goto.scan_confirm_prompt").to_string(),
+                        t!("goto.scan_confirm_prompt", yes = "y", no = "N").to_string(),
                         PromptType::GotoLineScanConfirm,
                     );
                 }

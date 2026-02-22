@@ -777,7 +777,7 @@
   "goto.jumped": "Переход к строке %{line}",
   "goto.line_must_be_positive": "Номер строки должен быть положительным",
   "goto.scan_complete": "Line index built successfully",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_failed": "Failed to scan line index: %{error}",
   "keybinding_editor.action_placeholder": "(введите название действия)",
   "keybinding_editor.bindings_count": "%{count} привязок",

@@ -777,7 +777,7 @@
   "goto.jumped": "Pulou para a linha %{line}",
   "goto.line_must_be_positive": "O número da linha deve ser positivo",
   "goto.scan_complete": "Line index built successfully",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_failed": "Failed to scan line index: %{error}",
   "keybinding_editor.action_placeholder": "(digite o nome da ação)",
   "keybinding_editor.bindings_count": "%{count} atalhos",

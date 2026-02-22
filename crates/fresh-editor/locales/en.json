@@ -779,7 +779,7 @@
   "format.formatted_with": "Formatted with %{formatter}",
   "goto.jumped": "Jumped to line %{line}",
   "goto.line_must_be_positive": "Line number must be positive",
-  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (y/n): ",
+  "goto.scan_confirm_prompt": "Line numbers are approximate. Scan file for exact line numbers? (%{yes}/%{no}): ",
   "goto.scan_complete": "Line index built successfully",
   "goto.scanning_progress": "Scanning... %{percent}%",
   "goto.scan_failed": "Failed to scan line index: %{error}",
