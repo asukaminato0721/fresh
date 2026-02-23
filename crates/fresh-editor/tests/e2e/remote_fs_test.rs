@@ -229,18 +229,19 @@ fn test_remote_large_file_edits_beginning_middle_end() {
     // Edit lines
     let steps = 7;
     for i in 0..steps {
-        let target = (steps - 1 - i) * (lines / steps);
+        let target_line = (steps - 1 - i) * (lines / steps);
+        let target_byte = target_line * line_len;
         println!("{}", harness.screen_to_string());
         harness
             .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
             .unwrap();
-        // Dismiss the scan confirmation prompt (approximate line numbers in large file mode)
+        // Dismiss the scan confirmation prompt — opens byte offset prompt
         let _ = harness.type_text("n");
         harness
             .send_key(KeyCode::Enter, KeyModifiers::NONE)
             .unwrap();
-        println!("target line: {}", target);
-        let _ = harness.type_text(&format!("{}", target).to_string());
+        println!("target byte: {}", target_byte);
+        let _ = harness.type_text(&format!("{}B", target_byte).to_string());
         println!("{}", harness.screen_to_string());
         harness
             .send_key(KeyCode::Enter, KeyModifiers::NONE)

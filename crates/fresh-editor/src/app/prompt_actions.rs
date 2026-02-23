@@ -147,6 +147,27 @@ impl Editor {
                     self.set_status_message(t!("error.invalid_line", input = &input).to_string());
                 }
             },
+            PromptType::GotoByteOffset => {
+                // Parse byte offset — strip optional trailing 'B' or 'b' suffix
+                let trimmed = input.trim();
+                let num_str = trimmed
+                    .strip_suffix('B')
+                    .or_else(|| trimmed.strip_suffix('b'))
+                    .unwrap_or(trimmed);
+                match num_str.parse::<usize>() {
+                    Ok(offset) => {
+                        self.goto_byte_offset(offset);
+                        self.set_status_message(
+                            t!("goto.jumped_byte", offset = offset).to_string(),
+                        );
+                    }
+                    Err(_) => {
+                        self.set_status_message(
+                            t!("goto.invalid_byte_offset", input = &input).to_string(),
+                        );
+                    }
+                }
+            }
             PromptType::GotoLineScanConfirm => {
                 let answer = input.trim().to_lowercase();
                 if answer == "y" || answer == "yes" {
@@ -171,10 +192,10 @@ impl Editor {
                     // The GotoLine prompt will be opened when the scan completes
                     // (in process_line_scan)
                 } else {
-                    // Open the regular Go To Line prompt immediately (approximate mode)
+                    // No scan — open byte offset prompt (exact byte navigation)
                     self.start_prompt(
-                        t!("file.goto_line_prompt").to_string(),
-                        PromptType::GotoLine,
+                        t!("goto.byte_offset_prompt").to_string(),
+                        PromptType::GotoByteOffset,
                     );
                 }
             }

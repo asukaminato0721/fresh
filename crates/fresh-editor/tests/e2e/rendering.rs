@@ -220,59 +220,59 @@ fn test_cursor_position_with_large_line_numbers() {
     // Note: For large files, line numbers are estimated when jumping to end
     // The estimation is based on buffer_len / 80 (average line length)
     // Continuation lines have only whitespace before "│", so filter those out
-    // Line numbers may have a ~ prefix when approximate (large file without line scan)
-    let numbered_lines: Vec<&str> = content_lines
+    // In byte offset mode (large file without line scan), gutter shows byte offsets
+    // Parse all gutter values as byte offsets
+    let mut gutter_offsets: Vec<usize> = content_lines
         .iter()
-        .filter(|line| {
+        .filter_map(|line| {
             let part = line.split("│").next().unwrap_or("").trim();
-            let part = part.strip_prefix('~').unwrap_or(part);
-            !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())
+            if !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()) {
+                part.parse::<usize>().ok()
+            } else {
+                None
+            }
         })
-        .copied()
         .collect();
-    if let Some(last_line) = numbered_lines.last() {
-        let line_num_part = last_line.split("│").next().unwrap_or("").trim();
-        let line_num_part = line_num_part.strip_prefix('~').unwrap_or(line_num_part);
-        let line_num: usize = line_num_part.parse().unwrap_or(0);
-        println!("Last visible line number: {line_num} (may be estimated)");
+    gutter_offsets.sort();
 
-        // For a 73MB file (1M lines * 73 bytes avg), estimated lines ~= 912,500
-        // This is correct behavior - we estimate rather than iterate all lines
-        let expected_estimate = buffer_len / 80;
-        println!("Expected estimated line number: ~{expected_estimate}");
+    // Find the largest non-zero byte offset (the last content line before EOF)
+    let max_offset = gutter_offsets.iter().rev().find(|&&v| v > 0).copied();
+    if let Some(byte_offset) = max_offset {
+        println!("Largest visible byte offset in gutter: {byte_offset}");
 
-        // Line number should be close to the estimate (within 10%)
-        let lower_bound = expected_estimate.saturating_sub(expected_estimate / 10);
-        let upper_bound = expected_estimate + (expected_estimate / 10);
+        // The byte offset should be near the end of the file
+        let expected_near = buffer_len;
+        println!("Expected byte offset near: {expected_near}");
 
+        // Byte offset should be reasonably close to file size (within 10%)
+        let lower_bound = expected_near.saturating_sub(expected_near / 10);
         assert!(
-            line_num >= lower_bound && line_num <= upper_bound,
-            "Expected line number near {expected_estimate}, but got {line_num}"
+            byte_offset >= lower_bound && byte_offset <= expected_near,
+            "Expected byte offset near {expected_near}, but got {byte_offset}"
         );
 
-        // Verify this is a 6-digit number (912,500 range)
+        // Verify this is a 7+ digit number (for ~73MB file)
         assert!(
-            line_num.to_string().len() >= 6,
-            "Expected 6+ digit line number, but {} has {} digits",
-            line_num,
-            line_num.to_string().len()
+            byte_offset.to_string().len() >= 7,
+            "Expected 7+ digit byte offset, but {} has {} digits",
+            byte_offset,
+            byte_offset.to_string().len()
         );
     } else {
-        panic!("No content lines found!");
+        panic!("No non-zero byte offsets found in gutter!");
     }
 
     // Now verify cursor positioning is correct for the gutter width
-    // The gutter width is based on estimated lines (~912,500)
-    // For approximate line numbers (large file), gutter adds 1 extra digit for ~ prefix
-    // Format: [indicator (1)] + [7 digits] + [" │ " (3 chars)] = 11 chars total
-    println!(
-        "\nExpected gutter width: 11 (1 + 7 + 3 for ~6-digit estimated line numbers with ~ prefix)"
-    );
+    // In byte offset mode, gutter sized for file size (~73,000,000 bytes = 8 digits)
+    // Format: [indicator (1)] + [max(4, digits)] + [" │ " (3 chars)]
+    let digits = ((buffer_len as f64).log10().floor() as usize) + 1;
+    let expected_gutter = 1 + digits.max(4) + 3;
+    println!("\nExpected gutter width: {expected_gutter} (1 + {digits}-digit byte offset + 3)",);
     println!("Actual gutter_width: {gutter_width}");
 
     assert_eq!(
-        gutter_width, 11,
-        "Gutter width {gutter_width} doesn't match expected 11"
+        gutter_width, expected_gutter,
+        "Gutter width {gutter_width} doesn't match expected {expected_gutter}"
     );
 
     // The cursor should be positioned AFTER the gutter (at position gutter_width)

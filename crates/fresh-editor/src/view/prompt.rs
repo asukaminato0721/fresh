@@ -40,6 +40,8 @@ pub enum PromptType {
     QuickOpen,
     /// Go to a specific line number
     GotoLine,
+    /// Go to a specific byte offset (large file without line index scan)
+    GotoByteOffset,
     /// Confirm whether to scan a large file for exact line numbers before Go To Line
     GotoLineScanConfirm,
     /// Choose an ANSI background file

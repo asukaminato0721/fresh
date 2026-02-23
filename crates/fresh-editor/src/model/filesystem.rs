@@ -316,6 +316,18 @@ pub trait FileSystem: Send + Sync {
     /// Read a range of bytes from a file (for lazy loading large files)
     fn read_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>>;
 
+    /// Count `\n` bytes in a file range without returning the data.
+    ///
+    /// Used by the line-feed scanner to count newlines in unloaded chunks.
+    /// Remote filesystem implementations can override this to count on the
+    /// server side, avoiding the transfer of chunk bytes over the network.
+    ///
+    /// The default implementation reads the range and counts locally.
+    fn count_line_feeds_in_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<usize> {
+        let data = self.read_range(path, offset, len)?;
+        Ok(data.iter().filter(|&&b| b == b'\n').count())
+    }
+
     /// Write data to file atomically (temp file + rename)
     fn write_file(&self, path: &Path, data: &[u8]) -> io::Result<()>;
 
@@ -554,6 +566,16 @@ pub trait FileSystemExt: FileSystem {
         len: usize,
     ) -> impl std::future::Future<Output = io::Result<Vec<u8>>> + Send {
         async move { self.read_range(path, offset, len) }
+    }
+
+    /// Async version of count_line_feeds_in_range
+    fn count_line_feeds_in_range_async(
+        &self,
+        path: &Path,
+        offset: u64,
+        len: usize,
+    ) -> impl std::future::Future<Output = io::Result<usize>> + Send {
+        async move { self.count_line_feeds_in_range(path, offset, len) }
     }
 
     /// Async version of write_file

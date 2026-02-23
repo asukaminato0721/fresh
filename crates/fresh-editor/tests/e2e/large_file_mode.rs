@@ -609,18 +609,19 @@ fn test_large_file_edits_beginning_middle_end() {
     // Edit lines
     let steps = 17;
     for i in 0..steps {
-        let target = i * (lines / steps);
+        let target_line = i * (lines / steps);
+        let target_byte = target_line * line_len;
         println!("{}", harness.screen_to_string());
         harness
             .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
             .unwrap();
-        // Dismiss the scan confirmation prompt (approximate line numbers in large file mode)
+        // Dismiss the scan confirmation prompt — opens byte offset prompt
         let _ = harness.type_text("n");
         harness
             .send_key(KeyCode::Enter, KeyModifiers::NONE)
             .unwrap();
-        println!("target line: {}", target);
-        let _ = harness.type_text(&format!("{}", target).to_string());
+        println!("target byte: {}", target_byte);
+        let _ = harness.type_text(&format!("{}B", target_byte).to_string());
         println!("{}", harness.screen_to_string());
         harness
             .send_key(KeyCode::Enter, KeyModifiers::NONE)
@@ -677,18 +678,20 @@ fn test_large_file_edits_beginning_middle_end() {
     }
 }
 
-/// Test that approximate line numbers show ~ prefix and that scanning removes it.
+/// Test that byte offsets show in the gutter for large files and that scanning
+/// switches to exact line numbers.
 /// Also tests the Go To Line scan confirmation prompt flow:
-/// - Before scan: Ctrl+G shows scan confirmation prompt, gutter shows ~ prefix
-/// - After answering "y": file is scanned, ~ disappears
+/// - Before scan: Ctrl+G shows scan confirmation prompt, gutter shows byte offsets
+/// - After answering "n": byte offset prompt opens, user navigates by byte offset
+/// - After answering "y": file is scanned, gutter switches to line numbers
 /// - After scan: Ctrl+G goes directly to Go To Line prompt (no re-confirmation)
 #[test]
-fn test_approximate_line_number_indicator_and_scan() {
+fn test_byte_offset_gutter_and_scan() {
     use std::fs;
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();
-    let file_path = temp_dir.path().join("approx_lines.txt");
+    let file_path = temp_dir.path().join("byte_offset.txt");
 
     // Create a file large enough to trigger large file mode (default 1MB threshold)
     let lines = 100_000;
@@ -696,30 +699,36 @@ fn test_approximate_line_number_indicator_and_scan() {
     for i in 0..lines {
         content.push_str(&format!("Line {:06} content\n", i));
     }
+    let line_len = "Line 000000 content\n".len(); // 20 bytes per line
     fs::write(&file_path, &content).unwrap();
 
     // Use the temp_dir as working directory so the status bar shows a short
-    // relative filename ("approx_lines.txt") instead of the full absolute path,
-    // which on Windows can be long enough to truncate "Ln 500" off the status bar.
+    // relative filename instead of the full absolute path.
     let mut harness =
         EditorTestHarness::with_working_dir(80, 24, temp_dir.path().to_path_buf()).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
-    // === Test 1: Gutter shows ~ prefix for approximate line numbers ===
+    // === Test 1: Gutter shows byte offsets (pure numeric, no ~ prefix) ===
     let screen = harness.screen_to_string();
-    // Find a gutter line with ~ prefix (e.g., "~1 │" or "~2 │")
-    let has_tilde = screen.lines().any(|line| {
+    // The first line should show byte offset 0 in the gutter
+    let has_byte_offset = screen.lines().any(|line| {
         if let Some(before_sep) = line.split('│').next() {
             let trimmed = before_sep.trim();
-            trimmed.starts_with('~') && trimmed[1..].chars().all(|c| c.is_ascii_digit())
+            trimmed == "0" || (trimmed.chars().all(|c| c.is_ascii_digit()) && !trimmed.is_empty())
         } else {
             false
         }
     });
     assert!(
-        has_tilde,
-        "Gutter should show ~ prefix for approximate line numbers.\nScreen:\n{}",
+        has_byte_offset,
+        "Gutter should show byte offsets for large files without line scan.\nScreen:\n{}",
+        screen
+    );
+    // Status bar should show "Byte 0" (not "Ln 1")
+    assert!(
+        screen.contains("Byte 0"),
+        "Status bar should show 'Byte 0' in byte offset mode.\nScreen:\n{}",
         screen
     );
 
@@ -729,27 +738,38 @@ fn test_approximate_line_number_indicator_and_scan() {
         .unwrap();
     let screen = harness.screen_to_string();
     assert!(
-        screen.contains("approximate") || screen.contains("Scan file"),
+        screen.contains("Scan file"),
         "Ctrl+G should show scan confirmation prompt.\nScreen:\n{}",
         screen
     );
 
-    // === Test 3: Dismiss with "n" then navigate with approximate line numbers ===
+    // === Test 3: Dismiss with "n" → byte offset prompt opens ===
     let _ = harness.type_text("n");
     harness
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
-    // Now the regular Go To Line prompt should be open
     let screen = harness.screen_to_string();
     assert!(
-        screen.contains("Go to line"),
-        "After dismissing scan, Go To Line prompt should open.\nScreen:\n{}",
+        screen.contains("byte offset"),
+        "After dismissing scan, byte offset prompt should open.\nScreen:\n{}",
         screen
     );
-    // Press Escape to cancel
-    harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    // Navigate to byte offset of line 500 (= 500 * 20 = 10000)
+    let target_byte = 500 * line_len;
+    let _ = harness.type_text(&format!("{}B", target_byte));
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    // Status bar should show the byte position
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains(&format!("Byte {}", target_byte)),
+        "Should have jumped to byte offset {}.\nScreen:\n{}",
+        target_byte,
+        screen
+    );
 
-    // === Test 4: Answer "y" to scan, verify ~ disappears ===
+    // === Test 4: Answer "y" to scan, gutter switches to line numbers ===
     harness
         .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
         .unwrap();
@@ -757,28 +777,20 @@ fn test_approximate_line_number_indicator_and_scan() {
     harness
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
-    // The scan is now incremental — drive it to completion.
-    // With TestTimeSource, time doesn't advance so the 50ms budget never expires
-    // and the scan completes in a single process_line_scan() call.
+    // Drive the incremental scan to completion.
     while harness.editor_mut().process_line_scan() {}
     // After scanning, the Go To Line prompt opens (with exact line numbers now)
     // Cancel it
     harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
 
-    // Verify ~ prefix is gone from gutter
+    // Verify gutter now shows line numbers (not byte offsets)
     harness.render().unwrap();
     let screen = harness.screen_to_string();
-    let still_has_tilde = screen.lines().any(|line| {
-        if let Some(before_sep) = line.split('│').next() {
-            let trimmed = before_sep.trim();
-            trimmed.starts_with('~') && trimmed.len() > 1
-        } else {
-            false
-        }
-    });
+    // After scan, gutter should have normal line numbers (small values like 501, 502...)
+    // and status bar should show "Ln X" instead of "Byte X"
     assert!(
-        !still_has_tilde,
-        "After scanning, gutter should NOT show ~ prefix.\nScreen:\n{}",
+        screen.contains("Ln "),
+        "After scanning, status bar should show 'Ln' not 'Byte'.\nScreen:\n{}",
         screen
     );
 
@@ -895,10 +907,10 @@ fn test_line_scan_progress_updates() {
 }
 
 /// End-to-end test for the full large-file line-number lifecycle:
-///   1. Open large file (unloaded, approximate line numbers)
+///   1. Open large file (unloaded, byte offset gutter)
 ///   2. Make edits BEFORE scanning
 ///   3. Scan line numbers
-///   4. Verify exact line numbers (no ~ prefix), jump to line
+///   4. Verify exact line numbers (gutter shows line numbers), jump to line
 ///   5. Make MORE edits in previously-untouched (unloaded) chunks
 ///   6. Jump around, verify line numbers stay exact
 #[test]
@@ -922,14 +934,11 @@ fn test_edit_scan_edit_line_numbers_stay_exact() {
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
-    // === Step 1: Verify approximate line numbers (~ prefix) ===
+    // === Step 1: Verify byte offset gutter (status bar shows "Byte 0") ===
     let screen = harness.screen_to_string();
-    let has_tilde = screen
-        .lines()
-        .any(|line| line.trim_start().starts_with('~'));
     assert!(
-        has_tilde,
-        "Before scan, gutter should show ~ prefix.\nScreen:\n{}",
+        screen.contains("Byte 0"),
+        "Before scan, status bar should show 'Byte 0'.\nScreen:\n{}",
         screen
     );
 
@@ -957,20 +966,12 @@ fn test_edit_scan_edit_line_numbers_stay_exact() {
     // Cancel the Go To Line prompt that opens after scan.
     harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
 
-    // === Step 4: Verify exact line numbers (no ~ prefix) ===
+    // === Step 4: Verify exact line numbers (status bar shows "Ln") ===
     harness.render().unwrap();
     let screen = harness.screen_to_string();
-    let still_has_tilde = screen.lines().any(|line| {
-        if let Some(before_sep) = line.split('│').next() {
-            let trimmed = before_sep.trim();
-            trimmed.starts_with('~') && trimmed.len() > 1
-        } else {
-            false
-        }
-    });
     assert!(
-        !still_has_tilde,
-        "After scan, gutter should NOT show ~ prefix.\nScreen:\n{}",
+        screen.contains("Ln "),
+        "After scan, status bar should show 'Ln' (not 'Byte').\nScreen:\n{}",
         screen
     );
 
@@ -1023,17 +1024,10 @@ fn test_edit_scan_edit_line_numbers_stay_exact() {
     );
 
     // === Step 6: Verify line numbers are STILL exact after the edit ===
-    let still_has_tilde = screen.lines().any(|line| {
-        if let Some(before_sep) = line.split('│').next() {
-            let trimmed = before_sep.trim();
-            trimmed.starts_with('~') && trimmed.len() > 1
-        } else {
-            false
-        }
-    });
+    // Status bar should show "Ln" (not "Byte")
     assert!(
-        !still_has_tilde,
-        "After post-scan edit, gutter should still NOT show ~ prefix.\nScreen:\n{}",
+        screen.contains("Ln "),
+        "After post-scan edit, status bar should still show 'Ln'.\nScreen:\n{}",
         screen
     );
 

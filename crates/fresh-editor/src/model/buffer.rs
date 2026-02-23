@@ -2060,8 +2060,7 @@ impl TextBuffer {
 
                         // Split the piece to isolate the chunk
                         {
-                            let _span =
-                                tracing::debug_span!("split_piece", chunk_bytes).entered();
+                            let _span = tracing::debug_span!("split_piece", chunk_bytes).entered();
                             if chunk_start_offset_in_piece > 0 {
                                 self.piece_tree
                                     .split_at_offset(split_start_in_doc, &self.buffers);
@@ -2098,8 +2097,7 @@ impl TextBuffer {
 
                         // Load the chunk buffer using the FileSystem trait
                         {
-                            let _span =
-                                tracing::debug_span!("load_chunk", chunk_bytes).entered();
+                            let _span = tracing::debug_span!("load_chunk", chunk_bytes).entered();
                             self.buffers
                                 .get_mut(new_buffer_id)
                                 .context("Chunk buffer not found")?
@@ -2366,10 +2364,8 @@ impl TextBuffer {
     /// After this call, `line_count()` will return `Some(exact_count)` and all
     /// line-number-based operations (goto line, gutter display) will be exact.
     ///
-    /// Only one chunk of data is in memory at a time — unloaded chunks are read
-    /// from disk via `read_range`, newlines (`\n`) are counted, and the data is
-    /// dropped immediately. This matches the existing convention where only `\n`
-    /// bytes are counted (CRLF files store raw `\r\n`; the `\n` is what matters).
+    /// Uses `count_line_feeds_in_range` from the filesystem trait, which remote
+    /// implementations can override to count on the server side.
     ///
     /// The piece tree itself does no I/O — we read chunks here in TextBuffer and
     /// pass the counts to `PieceTree::update_leaf_line_feeds`.
@@ -2401,10 +2397,9 @@ impl TextBuffer {
                     file_offset,
                     ..
                 } => {
-                    // Stream-read just this chunk, count \n, drop data
                     let read_offset = *file_offset as u64 + leaf.offset as u64;
-                    let chunk = self.fs.read_range(file_path, read_offset, leaf.bytes)?;
-                    chunk.iter().filter(|&&b| b == b'\n').count()
+                    self.fs
+                        .count_line_feeds_in_range(file_path, read_offset, leaf.bytes)?
                 }
             };
 
@@ -2449,11 +2444,15 @@ impl TextBuffer {
     }
 
     /// Count `\n` bytes in a single leaf.
+    ///
+    /// Uses `count_line_feeds_in_range` for unloaded buffers, which remote
+    /// filesystem implementations can override to count server-side.
     pub fn scan_leaf(&self, leaf: &crate::model::piece_tree::LeafData) -> std::io::Result<usize> {
         let buffer_id = leaf.location.buffer_id();
-        let buffer = self.buffers.get(buffer_id).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "buffer not found")
-        })?;
+        let buffer = self
+            .buffers
+            .get(buffer_id)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "buffer not found"))?;
 
         let count = match &buffer.data {
             crate::model::piece_tree::BufferData::Loaded { data, .. } => {
@@ -2469,11 +2468,16 @@ impl TextBuffer {
                 ..
             } => {
                 let read_offset = *file_offset as u64 + leaf.offset as u64;
-                let data = self.fs.read_range(file_path, read_offset, leaf.bytes)?;
-                data.iter().filter(|&&b| b == b'\n').count()
+                self.fs
+                    .count_line_feeds_in_range(file_path, read_offset, leaf.bytes)?
             }
         };
         Ok(count)
+    }
+
+    /// Get a reference to the string buffers (for parallel scanning).
+    pub fn buffer_slice(&self) -> &[StringBuffer] {
+        &self.buffers
     }
 
     /// Apply the results of an incremental line scan.
@@ -5444,7 +5448,8 @@ mod tests {
             let fs: Arc<dyn crate::model::filesystem::FileSystem + Send + Sync> =
                 Arc::new(crate::model::filesystem::StdFileSystem);
             let bytes = content.len();
-            let buffer = crate::model::piece_tree::StringBuffer::new_loaded(0, content.to_vec(), false);
+            let buffer =
+                crate::model::piece_tree::StringBuffer::new_loaded(0, content.to_vec(), false);
             let piece_tree = if bytes > 0 {
                 crate::model::piece_tree::PieceTree::new(BufferLocation::Stored(0), 0, bytes, None)
             } else {
@@ -5469,7 +5474,7 @@ mod tests {
                 original_encoding: Encoding::Utf8,
                 saved_file_size: Some(bytes),
                 version: 0,
-            config: BufferConfig::default(),
+                config: BufferConfig::default(),
             }
         }
 
@@ -5660,7 +5665,12 @@ mod tests {
                 file_size,
             );
             let piece_tree = if file_size > 0 {
-                crate::model::piece_tree::PieceTree::new(BufferLocation::Stored(0), 0, file_size, None)
+                crate::model::piece_tree::PieceTree::new(
+                    BufferLocation::Stored(0),
+                    0,
+                    file_size,
+                    None,
+                )
             } else {
                 crate::model::piece_tree::PieceTree::empty()
             };
@@ -5683,7 +5693,7 @@ mod tests {
                 original_encoding: Encoding::Utf8,
                 saved_file_size: Some(file_size),
                 version: 0,
-            config: BufferConfig::default(),
+                config: BufferConfig::default(),
             }
         }
 
@@ -5696,7 +5706,10 @@ mod tests {
             std::fs::write(tmp.path(), &content).unwrap();
             let mut buf = large_file_buffer_unloaded(tmp.path(), content.len());
 
-            assert!(buf.line_count().is_none(), "before scan, line_count should be None");
+            assert!(
+                buf.line_count().is_none(),
+                "before scan, line_count should be None"
+            );
 
             let updates = scan_line_feeds(&mut buf);
             buf.rebuild_with_pristine_saved_root(&updates);

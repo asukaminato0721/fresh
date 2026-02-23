@@ -422,8 +422,9 @@ struct LineRenderInput<'a> {
     software_cursor_only: bool,
     /// Whether to show line numbers in the gutter
     show_line_numbers: bool,
-    /// Whether line numbers are approximate (large file without line index scan)
-    approximate_line_numbers: bool,
+    /// Whether the gutter shows byte offsets instead of line numbers
+    /// (large file without line index scan)
+    byte_offset_mode: bool,
 }
 
 /// Context for computing the style of a single character
@@ -469,8 +470,10 @@ struct LeftMarginContext<'a> {
     relative_line_numbers: bool,
     /// Whether to show line numbers in the gutter
     show_line_numbers: bool,
-    /// Whether line numbers are approximate (large file without line index scan)
-    approximate_line_numbers: bool,
+    /// Whether the gutter shows byte offsets instead of line numbers
+    byte_offset_mode: bool,
+    /// The absolute byte offset at the start of this line (used in byte_offset_mode)
+    line_byte_offset: Option<usize>,
 }
 
 /// Render the left margin (indicators + line numbers + separator) to line_spans
@@ -552,6 +555,21 @@ fn render_left_margin(
             Style::default().fg(ctx.theme.line_number_fg),
             None,
         );
+    } else if ctx.byte_offset_mode && ctx.show_line_numbers {
+        // Byte offset mode: show the absolute byte offset at the start of each line
+        let is_cursor_line = ctx.current_source_line_num == ctx.cursor_line;
+        let byte_off = ctx.line_byte_offset.unwrap_or(0);
+        let rendered_text = format!(
+            "{:>width$}",
+            byte_off,
+            width = ctx.state.margins.left_config.width
+        );
+        let margin_style = if is_cursor_line {
+            Style::default().fg(ctx.theme.editor_fg)
+        } else {
+            Style::default().fg(ctx.theme.line_number_fg)
+        };
+        push_span_with_map(line_spans, line_view_map, rendered_text, margin_style, None);
     } else if ctx.relative_line_numbers {
         // Relative line numbers: show distance from cursor, or absolute for cursor line
         let is_cursor_line = ctx.current_source_line_num == ctx.cursor_line;
@@ -562,21 +580,11 @@ fn render_left_margin(
             // Show relative distance for other lines
             ctx.current_source_line_num.abs_diff(ctx.cursor_line)
         };
-        // Prepend ~ for cursor line (absolute) when line numbers are approximate;
-        // relative distances within the viewport are always exact.
-        let rendered_text = if ctx.approximate_line_numbers && is_cursor_line {
-            format!(
-                "{:>width$}",
-                format!("~{}", display_num),
-                width = ctx.state.margins.left_config.width
-            )
-        } else {
-            format!(
-                "{:>width$}",
-                display_num,
-                width = ctx.state.margins.left_config.width
-            )
-        };
+        let rendered_text = format!(
+            "{:>width$}",
+            display_num,
+            width = ctx.state.margins.left_config.width
+        );
         // Use brighter color for the cursor line
         let margin_style = if is_cursor_line {
             Style::default().fg(ctx.theme.editor_fg)
@@ -585,33 +593,19 @@ fn render_left_margin(
         };
         push_span_with_map(line_spans, line_view_map, rendered_text, margin_style, None);
     } else {
-        // Absolute line numbers
-        if ctx.approximate_line_numbers && ctx.show_line_numbers {
-            // Approximate mode: prepend ~ to indicate estimated line numbers
-            let line_num_str = format!("~{}", ctx.current_source_line_num + 1);
-            let rendered_text = format!(
-                "{:>width$}",
-                line_num_str,
-                width = ctx.state.margins.left_config.width
-            );
-            let margin_style = Style::default().fg(ctx.theme.line_number_fg);
-            push_span_with_map(line_spans, line_view_map, rendered_text, margin_style, None);
-        } else {
-            let margin_content = ctx.state.margins.render_line(
-                ctx.current_source_line_num,
-                crate::view::margin::MarginPosition::Left,
-                ctx.estimated_lines,
-                ctx.show_line_numbers,
-            );
-            let (rendered_text, style_opt) =
-                margin_content.render(ctx.state.margins.left_config.width);
+        let margin_content = ctx.state.margins.render_line(
+            ctx.current_source_line_num,
+            crate::view::margin::MarginPosition::Left,
+            ctx.estimated_lines,
+            ctx.show_line_numbers,
+        );
+        let (rendered_text, style_opt) = margin_content.render(ctx.state.margins.left_config.width);
 
-            // Use custom style if provided, otherwise use default theme color
-            let margin_style =
-                style_opt.unwrap_or_else(|| Style::default().fg(ctx.theme.line_number_fg));
+        // Use custom style if provided, otherwise use default theme color
+        let margin_style =
+            style_opt.unwrap_or_else(|| Style::default().fg(ctx.theme.line_number_fg));
 
-            push_span_with_map(line_spans, line_view_map, rendered_text, margin_style, None);
-        }
+        push_span_with_map(line_spans, line_view_map, rendered_text, margin_style, None);
     }
 
     // Render separator
@@ -4096,7 +4090,7 @@ impl SplitRenderer {
             session_mode,
             software_cursor_only,
             show_line_numbers,
-            approximate_line_numbers,
+            byte_offset_mode,
         } = input;
 
         let selection_ranges = &selection.ranges;
@@ -4220,6 +4214,13 @@ impl SplitRenderer {
             // This is critical for proper rendering of combining characters (Thai, etc.)
             let mut span_acc = SpanAccumulator::new();
 
+            // Compute the byte offset at the start of this line (for byte offset gutter mode)
+            let line_byte_offset = if byte_offset_mode && !is_continuation {
+                line_char_source_bytes.iter().find_map(|opt| *opt)
+            } else {
+                None
+            };
+
             // Render left margin (indicators + line numbers + separator)
             render_left_margin(
                 &LeftMarginContext {
@@ -4234,7 +4235,8 @@ impl SplitRenderer {
                     cursor_line,
                     relative_line_numbers,
                     show_line_numbers,
-                    approximate_line_numbers,
+                    byte_offset_mode,
+                    line_byte_offset,
                 },
                 &mut line_spans,
                 &mut line_view_map,
@@ -4929,18 +4931,26 @@ impl SplitRenderer {
                         implicit_line_spans.push(Span::styled(" ", Style::default()));
                     }
 
-                    // Line number
-                    let estimated_lines = (state.buffer.len() / state.buffer.estimated_line_length()).max(1);
-                    let margin_content = state.margins.render_line(
-                        implicit_line_num,
-                        crate::view::margin::MarginPosition::Left,
-                        estimated_lines,
-                        show_line_numbers,
-                    );
-                    let (rendered_text, style_opt) =
-                        margin_content.render(state.margins.left_config.width);
-                    let margin_style =
-                        style_opt.unwrap_or_else(|| Style::default().fg(theme.line_number_fg));
+                    // Line number (or byte offset in byte_offset_mode)
+                    let rendered_text = if byte_offset_mode && show_line_numbers {
+                        format!(
+                            "{:>width$}",
+                            state.buffer.len(),
+                            width = state.margins.left_config.width
+                        )
+                    } else {
+                        let estimated_lines = state.buffer.line_count().unwrap_or(
+                            (state.buffer.len() / state.buffer.estimated_line_length()).max(1),
+                        );
+                        let margin_content = state.margins.render_line(
+                            implicit_line_num,
+                            crate::view::margin::MarginPosition::Left,
+                            estimated_lines,
+                            show_line_numbers,
+                        );
+                        margin_content.render(state.margins.left_config.width).0
+                    };
+                    let margin_style = Style::default().fg(theme.line_number_fg);
                     implicit_line_spans.push(Span::styled(rendered_text, margin_style));
 
                     // Separator
@@ -5113,22 +5123,17 @@ impl SplitRenderer {
         let visible_count = viewport.visible_line_count();
 
         let buffer_len = state.buffer.len();
-        let approximate_line_numbers = state.buffer.line_count().is_none();
-        let estimated_lines = if approximate_line_numbers {
-            (buffer_len / state.buffer.estimated_line_length()).max(1)
+        let byte_offset_mode = state.buffer.line_count().is_none();
+        let estimated_lines = if byte_offset_mode {
+            // In byte offset mode, gutter shows byte offsets, so size the gutter
+            // for the largest byte offset (file size)
+            buffer_len.max(1)
         } else {
             state.buffer.line_count().unwrap_or(1)
         };
-        // When approximate, multiply by 10 to add one digit of gutter width
-        // for the ~ prefix indicator
-        let gutter_line_estimate = if approximate_line_numbers {
-            estimated_lines.saturating_mul(10).max(10)
-        } else {
-            estimated_lines
-        };
         state
             .margins
-            .update_width_for_buffer(gutter_line_estimate, show_line_numbers);
+            .update_width_for_buffer(estimated_lines, show_line_numbers);
         let gutter_width = state.margins.left_total_width();
 
         let compose_layout = Self::calculate_compose_layout(area, &view_mode, compose_width);
@@ -5330,7 +5335,7 @@ impl SplitRenderer {
             session_mode,
             software_cursor_only,
             show_line_numbers,
-            approximate_line_numbers,
+            byte_offset_mode,
         });
 
         let view_line_mappings = render_output.view_line_mappings.clone();
@@ -5941,8 +5946,8 @@ mod tests {
             relative_line_numbers: false,
             session_mode: false,
             software_cursor_only: false,
-            show_line_numbers: true,         // Tests show line numbers
-            approximate_line_numbers: false, // Tests use exact line numbers
+            show_line_numbers: true, // Tests show line numbers
+            byte_offset_mode: false, // Tests use exact line numbers
         });
 
         (

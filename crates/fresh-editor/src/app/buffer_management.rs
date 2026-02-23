@@ -728,7 +728,6 @@ impl Editor {
         }
 
         let buffer_id = self.active_buffer();
-        let estimated_line_length = self.config.editor.estimated_line_length;
 
         // Read cursor state from split view state
         let cursors = self.active_cursors();
@@ -766,25 +765,9 @@ impl Editor {
                 } else {
                     0
                 }
-            } else if !has_line_index {
-                // No line index at all: estimate byte offset from the same formula
-                // the gutter uses (byte_offset / estimated_line_length → line number),
-                // so that jumping to line N lands where the gutter shows ~N.
-                // We snap backward to the start of the line containing the estimated
-                // offset so the cursor sits at a real line boundary.
-                let estimated_offset = (target_line * estimated_line_length).min(buffer_len);
-
-                if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                    let iter = state
-                        .buffer
-                        .line_iterator(estimated_offset, estimated_line_length);
-                    let line_start = iter.current_position();
-                    (line_start + target_col).min(buffer_len)
-                } else {
-                    estimated_offset
-                }
             } else {
-                // Small file with full line starts: use exact line position
+                // Small file with full line starts or no line index:
+                // use exact line position
                 let max_line = state.buffer.line_count().unwrap_or(1).saturating_sub(1);
                 let actual_line = target_line.min(max_line);
                 state.buffer.line_col_to_position(actual_line, target_col)
@@ -810,6 +793,37 @@ impl Editor {
             if let Some(line) = known_line {
                 state.primary_cursor_line_number = crate::model::buffer::LineNumber::Absolute(line);
             }
+        }
+    }
+
+    /// Go to an exact byte offset in the buffer (used in byte-offset mode for large files)
+    pub fn goto_byte_offset(&mut self, offset: usize) {
+        let buffer_id = self.active_buffer();
+
+        let cursors = self.active_cursors();
+        let cursor_id = cursors.primary_id();
+        let old_position = cursors.primary().position;
+        let old_anchor = cursors.primary().anchor;
+        let old_sticky_column = cursors.primary().sticky_column;
+
+        if let Some(state) = self.buffers.get(&buffer_id) {
+            let buffer_len = state.buffer.len();
+            let position = offset.min(buffer_len);
+
+            let event = Event::MoveCursor {
+                cursor_id,
+                old_position,
+                new_position: position,
+                old_anchor,
+                new_anchor: None,
+                old_sticky_column,
+                new_sticky_column: 0,
+            };
+
+            let split_id = self.split_manager.active_split();
+            let state = self.buffers.get_mut(&buffer_id).unwrap();
+            let view_state = self.split_view_states.get_mut(&split_id).unwrap();
+            state.apply(&mut view_state.cursors, &event);
         }
     }
 
@@ -2255,38 +2269,140 @@ impl Editor {
             } else {
                 100
             };
-            self.set_status_message(
-                t!("goto.scanning_progress", percent = pct).to_string(),
-            );
+            self.set_status_message(t!("goto.scanning_progress", percent = pct).to_string());
         }
         true
     }
 
-    /// Process leaves until 50ms have elapsed, then yield for a render.
-    /// Each leaf is at most LOAD_CHUNK_SIZE (1 MB), so individual I/O calls are fast.
+    /// Process leaves in parallel batches, yielding for a render after each batch.
+    ///
+    /// Collects up to `PARALLEL_SCAN_BATCH` leaves that need I/O, then scans
+    /// them concurrently using `std::thread::scope`. Each thread calls
+    /// `count_line_feeds_in_range` on the filesystem, which remote implementations
+    /// can override to count on the server without transferring data.
     fn process_line_scan_batch(&mut self, buffer_id: BufferId) -> std::io::Result<()> {
-        let budget = std::time::Duration::from_millis(50);
-        let deadline = self.time_source.now() + budget;
+        const PARALLEL_SCAN_BATCH: usize = 8;
+
         let state = self.buffers.get(&buffer_id);
         let scan = self.line_scan_state.as_mut().unwrap();
 
-        while scan.next_chunk < scan.chunks.len() {
+        // Collect a batch of leaves that need scanning.
+        // For each leaf, resolve the I/O parameters now while we can borrow the buffer.
+        // ScanWork::Loaded means we already have the count (counted in-memory).
+        // ScanWork::Unloaded means we need filesystem I/O.
+        enum ScanWork {
+            Loaded {
+                leaf_idx: usize,
+                count: usize,
+            },
+            Unloaded {
+                leaf_idx: usize,
+                path: std::path::PathBuf,
+                offset: u64,
+                len: usize,
+            },
+        }
+
+        let mut batch: Vec<ScanWork> = Vec::new();
+        while scan.next_chunk < scan.chunks.len() && batch.len() < PARALLEL_SCAN_BATCH {
             let chunk = scan.chunks[scan.next_chunk].clone();
             scan.next_chunk += 1;
             scan.scanned_bytes += chunk.byte_len;
 
-            if !chunk.already_known {
-                if let Some(state) = state {
-                    let leaf = &scan.leaves[chunk.leaf_index];
-                    let count = state.buffer.scan_leaf(leaf)?;
-                    scan.updates.push((chunk.leaf_index, count));
-                }
+            if chunk.already_known {
+                continue;
             }
 
-            if self.time_source.now() >= deadline {
-                break;
+            if let Some(state) = state {
+                let leaf = &scan.leaves[chunk.leaf_index];
+                let buffer_id = leaf.location.buffer_id();
+                if let Some(buffer) = state.buffer.buffer_slice().get(buffer_id) {
+                    match &buffer.data {
+                        crate::model::piece_tree::BufferData::Loaded { data, .. } => {
+                            let end = (leaf.offset + leaf.bytes).min(data.len());
+                            let count = data[leaf.offset..end]
+                                .iter()
+                                .filter(|&&b| b == b'\n')
+                                .count();
+                            batch.push(ScanWork::Loaded {
+                                leaf_idx: chunk.leaf_index,
+                                count,
+                            });
+                        }
+                        crate::model::piece_tree::BufferData::Unloaded {
+                            file_path,
+                            file_offset,
+                            ..
+                        } => {
+                            let read_offset = *file_offset as u64 + leaf.offset as u64;
+                            batch.push(ScanWork::Unloaded {
+                                leaf_idx: chunk.leaf_index,
+                                path: file_path.clone(),
+                                offset: read_offset,
+                                len: leaf.bytes,
+                            });
+                        }
+                    }
+                }
             }
         }
+
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        // Separate loaded (already counted) from unloaded (need I/O)
+        let mut results: Vec<(usize, usize)> = Vec::new();
+        let mut io_work: Vec<(usize, std::path::PathBuf, u64, usize)> = Vec::new();
+        for item in batch {
+            match item {
+                ScanWork::Loaded { leaf_idx, count } => results.push((leaf_idx, count)),
+                ScanWork::Unloaded {
+                    leaf_idx,
+                    path,
+                    offset,
+                    len,
+                } => {
+                    io_work.push((leaf_idx, path, offset, len));
+                }
+            }
+        }
+
+        // Run I/O in parallel using thread::scope
+        if !io_work.is_empty() {
+            let fs = match state {
+                Some(s) => s.buffer.filesystem().clone(),
+                None => return Ok(()),
+            };
+
+            let io_results: Vec<std::io::Result<(usize, usize)>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = io_work
+                    .iter()
+                    .map(|(leaf_idx, path, offset, len)| {
+                        let fs = &fs;
+                        let leaf_idx = *leaf_idx;
+                        let path = path.as_path();
+                        let offset = *offset;
+                        let len = *len;
+                        scope.spawn(move || {
+                            let count = fs.count_line_feeds_in_range(path, offset, len)?;
+                            Ok((leaf_idx, count))
+                        })
+                    })
+                    .collect();
+
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+
+            for result in io_results {
+                results.push(result?);
+            }
+        }
+
+        for (leaf_idx, count) in results {
+            scan.updates.push((leaf_idx, count));
+        }
+
         Ok(())
     }
 
@@ -2301,9 +2417,7 @@ impl Editor {
 
     fn finish_line_scan_with_error(&mut self, e: std::io::Error) {
         let scan = self.line_scan_state.take().unwrap();
-        self.set_status_message(
-            t!("goto.scan_failed", error = e.to_string()).to_string(),
-        );
+        self.set_status_message(t!("goto.scan_failed", error = e.to_string()).to_string());
         self.open_goto_line_if_active(scan.buffer_id);
     }
 

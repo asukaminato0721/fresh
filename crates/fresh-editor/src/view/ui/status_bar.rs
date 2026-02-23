@@ -604,12 +604,20 @@ impl StatusBarRenderer {
         let session_prefix = session_name
             .map(|name| format!("[{}] ", name))
             .unwrap_or_default();
+        let byte_offset_mode = state.buffer.line_count().is_none();
         let base_status = if state.show_cursors {
-            format!(
-                "{session_prefix}{remote_prefix}{filename}{modified} | Ln {}, Col {}{diagnostics_summary}{cursor_count_indicator}",
-                line + 1,
-                col + 1
-            )
+            if byte_offset_mode {
+                format!(
+                    "{session_prefix}{remote_prefix}{filename}{modified} | Byte {}{diagnostics_summary}{cursor_count_indicator}",
+                    cursor.position
+                )
+            } else {
+                format!(
+                    "{session_prefix}{remote_prefix}{filename}{modified} | Ln {}, Col {}{diagnostics_summary}{cursor_count_indicator}",
+                    line + 1,
+                    col + 1
+                )
+            }
         } else {
             // Virtual buffer - just show filename and modified indicator
             format!("{session_prefix}{remote_prefix}{filename}{modified}{diagnostics_summary}")

@@ -149,18 +149,12 @@ impl Viewport {
     /// Total width = 1 + N + 3 = N + 4 (where N >= 4 minimum, so min 8 total)
     /// This is a heuristic using the configured estimated line length
     pub fn gutter_width(&self, buffer: &Buffer) -> usize {
-        let buffer_len = buffer.len();
-        let approximate = buffer.line_count().is_none();
-        let estimated_lines = if approximate {
-            (buffer_len / buffer.estimated_line_length()).max(1)
+        let byte_offset_mode = buffer.line_count().is_none();
+        let gutter_estimate = if byte_offset_mode {
+            // In byte offset mode, gutter shows byte offsets up to file size
+            buffer.len().max(1)
         } else {
             buffer.line_count().unwrap_or(1)
-        };
-        // When approximate, multiply by 10 to add one digit of width for the ~ prefix
-        let gutter_estimate = if approximate {
-            estimated_lines.saturating_mul(10).max(10)
-        } else {
-            estimated_lines
         };
         let digits = if gutter_estimate == 0 {
             1
@@ -990,11 +984,8 @@ impl Viewport {
 
         // Force-load the data by actually requesting it (not just prepare_viewport)
         {
-            let _span = tracing::debug_span!(
-                "ensure_visible_load",
-                load_start,
-                load_length,
-            ).entered();
+            let _span =
+                tracing::debug_span!("ensure_visible_load", load_start, load_length,).entered();
             if let Err(e) = buffer.get_text_range_mut(load_start, load_length) {
                 tracing::warn!(
                     "Failed to load data around cursor at {}: {}",
@@ -1155,11 +1146,9 @@ impl Viewport {
         // - If cursor is below viewport: place cursor at (viewport - margin) from top
         // - If cursor is above viewport: place cursor at margin from top
         if !cursor_is_visible {
-            let _span = tracing::debug_span!(
-                "ensure_visible_scroll",
-                cursor_near_top,
-                cursor_line_start,
-            ).entered();
+            let _span =
+                tracing::debug_span!("ensure_visible_scroll", cursor_near_top, cursor_line_start,)
+                    .entered();
             // We want cursor at (viewport_lines - 1 - effective_offset) rows from new top
             // when scrolling down, or at effective_offset rows from new top when scrolling up.
 
