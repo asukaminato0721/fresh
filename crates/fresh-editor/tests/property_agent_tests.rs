@@ -237,7 +237,8 @@ proptest! {
 
     /// Property: exists() agrees with stat() success
     #[test]
-    fn prop_exists_agrees_with_stat(name in "[a-z]{1,10}") {
+    fn prop_exists_agrees_with_stat(name in "[a-z]{1,10}".prop_filter("no Windows reserved names",
+        |n| !matches!(n.as_str(), "con" | "prn" | "aux" | "nul"))) {
         let Some(mut harness) = AgentHarness::new() else {
             eprintln!("Skipping test: Python3 not available");
             return Ok(());
@@ -281,7 +282,9 @@ proptest! {
 
     /// Property: ls() returns created files
     #[test]
-    fn prop_ls_contains_created_files(names in prop::collection::hash_set("[a-z]{1,8}", 1..10)) {
+    fn prop_ls_contains_created_files(names in prop::collection::hash_set("[a-z]{1,8}", 1..10)
+        .prop_filter("no Windows reserved names",
+            |names| !names.iter().any(|n| matches!(n.as_str(), "con" | "prn" | "aux" | "nul")))) {
         let Some(mut harness) = AgentHarness::new() else {
             eprintln!("Skipping test: Python3 not available");
             return Ok(());
@@ -348,7 +351,8 @@ proptest! {
 
     /// Property: Delete removes file
     #[test]
-    fn prop_delete_removes_file(name in "[a-z]{1,8}") {
+    fn prop_delete_removes_file(name in "[a-z]{1,8}".prop_filter("no Windows reserved names",
+        |n| !matches!(n.as_str(), "con" | "prn" | "aux" | "nul"))) {
         let Some(mut harness) = AgentHarness::new() else {
             eprintln!("Skipping test: Python3 not available");
             return Ok(());
