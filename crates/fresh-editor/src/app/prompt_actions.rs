@@ -172,23 +172,7 @@ impl Editor {
                 let answer = input.trim().to_lowercase();
                 if answer == "y" || answer == "yes" {
                     // Start incremental scan (non-blocking, updates progress in status bar)
-                    let buffer_id = self.active_buffer();
-                    if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                        let (chunks, total_bytes) = state.buffer.prepare_line_scan();
-                        let leaves = state.buffer.piece_tree_leaves();
-                        self.line_scan_state = Some(super::LineScanState {
-                            buffer_id,
-                            leaves,
-                            chunks,
-                            next_chunk: 0,
-                            total_bytes,
-                            scanned_bytes: 0,
-                            updates: Vec::new(),
-                        });
-                        self.set_status_message(
-                            t!("goto.scanning_progress", percent = 0).to_string(),
-                        );
-                    }
+                    self.start_incremental_line_scan(true);
                     // The GotoLine prompt will be opened when the scan completes
                     // (in process_line_scan)
                 } else {

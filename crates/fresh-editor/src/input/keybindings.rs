@@ -347,6 +347,7 @@ pub enum Action {
 
     // Navigation
     GotoLine,
+    ScanLineIndex,
     GoToMatchingBracket,
     JumpToNextError,
     JumpToPreviousError,
@@ -753,6 +754,7 @@ impl Action {
             "toggle_auto_revert" => ToggleAutoRevert,
             "format_buffer" => FormatBuffer,
             "goto_line" => GotoLine,
+            "scan_line_index" => ScanLineIndex,
             "goto_matching_bracket" => GoToMatchingBracket,
             "jump_to_next_error" => JumpToNextError,
             "jump_to_previous_error" => JumpToPreviousError,
@@ -1831,6 +1833,7 @@ impl KeybindingResolver {
             Action::TrimTrailingWhitespace => t!("action.trim_trailing_whitespace"),
             Action::EnsureFinalNewline => t!("action.ensure_final_newline"),
             Action::GotoLine => t!("action.goto_line"),
+            Action::ScanLineIndex => t!("action.scan_line_index"),
             Action::GoToMatchingBracket => t!("action.goto_matching_bracket"),
             Action::JumpToNextError => t!("action.jump_to_next_error"),
             Action::JumpToPreviousError => t!("action.jump_to_previous_error"),

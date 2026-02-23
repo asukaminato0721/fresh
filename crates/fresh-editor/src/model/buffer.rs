@@ -2359,58 +2359,6 @@ impl TextBuffer {
         self.line_feeds_scanned
     }
 
-    /// Scan the file to count line feeds in all pieces, streaming one chunk at a time.
-    ///
-    /// After this call, `line_count()` will return `Some(exact_count)` and all
-    /// line-number-based operations (goto line, gutter display) will be exact.
-    ///
-    /// Uses `count_line_feeds_in_range` from the filesystem trait, which remote
-    /// implementations can override to count on the server side.
-    ///
-    /// The piece tree itself does no I/O — we read chunks here in TextBuffer and
-    /// pass the counts to `PieceTree::update_leaf_line_feeds`.
-    pub fn scan_line_index(&mut self) -> std::io::Result<()> {
-        let leaves = self.piece_tree.get_leaves();
-        let mut updates = Vec::new();
-
-        for (idx, leaf) in leaves.iter().enumerate() {
-            if leaf.line_feed_cnt.is_some() {
-                // Already known (e.g., from an insertion)
-                continue;
-            }
-
-            let buffer_id = leaf.location.buffer_id();
-            let buffer = self.buffers.get(buffer_id).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "buffer not found")
-            })?;
-
-            let count = match &buffer.data {
-                crate::model::piece_tree::BufferData::Loaded { data, .. } => {
-                    let end = (leaf.offset + leaf.bytes).min(data.len());
-                    data[leaf.offset..end]
-                        .iter()
-                        .filter(|&&b| b == b'\n')
-                        .count()
-                }
-                crate::model::piece_tree::BufferData::Unloaded {
-                    file_path,
-                    file_offset,
-                    ..
-                } => {
-                    let read_offset = *file_offset as u64 + leaf.offset as u64;
-                    self.fs
-                        .count_line_feeds_in_range(file_path, read_offset, leaf.bytes)?
-                }
-            };
-
-            updates.push((idx, count));
-        }
-
-        self.piece_tree.update_leaf_line_feeds(&updates);
-        self.line_feeds_scanned = true;
-        Ok(())
-    }
-
     /// Get the raw piece tree leaves (for storing alongside scan chunks).
     pub fn piece_tree_leaves(&self) -> Vec<crate::model::piece_tree::LeafData> {
         self.piece_tree.get_leaves()
@@ -2473,6 +2421,29 @@ impl TextBuffer {
             }
         };
         Ok(count)
+    }
+
+    /// Return the I/O parameters for an unloaded leaf, or `None` if loaded.
+    ///
+    /// Used by the incremental scan to distinguish leaves that can be counted
+    /// in-memory (via `scan_leaf`) from those that need filesystem I/O.
+    pub fn leaf_io_params(
+        &self,
+        leaf: &crate::model::piece_tree::LeafData,
+    ) -> Option<(std::path::PathBuf, u64, usize)> {
+        let buffer_id = leaf.location.buffer_id();
+        let buffer = self.buffers.get(buffer_id)?;
+        match &buffer.data {
+            crate::model::piece_tree::BufferData::Loaded { .. } => None,
+            crate::model::piece_tree::BufferData::Unloaded {
+                file_path,
+                file_offset,
+                ..
+            } => {
+                let read_offset = *file_offset as u64 + leaf.offset as u64;
+                Some((file_path.clone(), read_offset, leaf.bytes))
+            }
+        }
     }
 
     /// Get a reference to the string buffers (for parallel scanning).

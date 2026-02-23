@@ -310,6 +310,9 @@ impl Editor {
                     );
                 }
             }
+            Action::ScanLineIndex => {
+                self.start_incremental_line_scan(false);
+            }
             Action::New => {
                 self.new_buffer();
             }

@@ -410,6 +410,25 @@ impl TextBufferSUT {
     fn filesystem(&self) -> &Arc<ConfigurableFileSystem> {
         &self.fs
     }
+
+    /// Run the incremental line scan flow: prepare → scan each leaf → rebuild.
+    /// This exercises the same production code path as Action::ScanLineIndex:
+    /// prepare_line_scan, scan_leaf (per chunk), rebuild_with_pristine_saved_root.
+    fn scan_line_index(&mut self) -> std::io::Result<()> {
+        let (chunks, _total_bytes) = self.buffer.prepare_line_scan();
+        let leaves = self.buffer.piece_tree_leaves();
+        let mut updates = Vec::new();
+        for chunk in &chunks {
+            if chunk.already_known {
+                continue;
+            }
+            let leaf = &leaves[chunk.leaf_index];
+            let count = self.buffer.scan_leaf(leaf)?;
+            updates.push((chunk.leaf_index, count));
+        }
+        self.buffer.rebuild_with_pristine_saved_root(&updates);
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -429,6 +448,8 @@ enum Op {
     SaveAndReload,
     /// Change simulated file ownership (affects save path: atomic vs in-place write)
     SetFileOwnership { owned: bool },
+    /// Scan line index (same incremental flow as Action::ScanLineIndex)
+    ScanLineIndex,
 }
 
 // ============================================================================
@@ -446,6 +467,8 @@ struct TestContext {
     file_exists: bool,
     /// Threshold for triggering large file mode (0 = use default 100MB)
     large_file_threshold: usize,
+    /// Whether a line index scan has been performed (enables line count checks for large files)
+    line_scanned: bool,
 }
 
 impl TestContext {
@@ -493,6 +516,7 @@ impl TestContext {
             step: 0,
             file_exists: false,
             large_file_threshold,
+            line_scanned: false,
         }
     }
 
@@ -585,6 +609,13 @@ impl TestContext {
                 // No verification needed - ownership doesn't affect model state
                 return Ok(());
             }
+            Op::ScanLineIndex => {
+                self.sut
+                    .scan_line_index()
+                    .map_err(|e| format!("Step {}: Scan line index failed: {}", self.step, e))?;
+                self.line_scanned = true;
+                self.model.history.push("SCAN_LINE_INDEX".to_string());
+            }
         }
 
         self.step += 1;
@@ -630,8 +661,10 @@ impl TestContext {
             ));
         }
 
-        // Check line count (only for non-large files, as large files don't have line indexing)
-        if !self.sut.is_large_file() {
+        // Check line count:
+        // - Non-large files always have line indexing
+        // - Large files have line indexing only after a scan
+        if !self.sut.is_large_file() || self.line_scanned {
             if let Some(sut_lines) = self.sut.line_count() {
                 let model_lines = self.model.line_count();
                 if sut_lines != model_lines {
@@ -729,6 +762,8 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         2 => Just(Op::SaveAndReload),
         // Toggle file ownership (tests both atomic and in-place write paths)
         1 => prop::bool::ANY.prop_map(|owned| Op::SetFileOwnership { owned }),
+        // Scan line index (exercises incremental line scan flow)
+        1 => Just(Op::ScanLineIndex),
     ]
 }
 

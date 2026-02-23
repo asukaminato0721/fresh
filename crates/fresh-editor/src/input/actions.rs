@@ -2526,6 +2526,7 @@ pub fn action_to_events(
         | Action::Close
         | Action::CloseTab
         | Action::GotoLine
+        | Action::ScanLineIndex
         | Action::NextBuffer
         | Action::PrevBuffer
         | Action::SwitchToPreviousTab

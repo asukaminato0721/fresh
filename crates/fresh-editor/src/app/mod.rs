@@ -817,6 +817,9 @@ struct LineScanState {
     scanned_bytes: usize,
     /// Completed per-leaf updates: (leaf_index, lf_count).
     updates: Vec<(usize, usize)>,
+    /// Whether to open the Go to Line prompt after the scan completes.
+    /// True when triggered from the Go to Line flow, false from the command palette.
+    open_goto_line_on_complete: bool,
 }
 
 /// State for tracking stdin streaming in background

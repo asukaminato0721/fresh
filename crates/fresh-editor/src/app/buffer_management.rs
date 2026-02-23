@@ -2244,6 +2244,35 @@ impl Editor {
         processed_any
     }
 
+    /// Start an incremental line-feed scan for the active buffer.
+    ///
+    /// Shared by the `Action::ScanLineIndex` command and the Go to Line scan
+    /// confirmation prompt. Sets up `LineScanState` so that `process_line_scan`
+    /// will advance the scan one batch per frame.
+    ///
+    /// When `open_goto_line` is true (Go to Line flow), the Go to Line prompt
+    /// opens automatically when the scan completes.
+    pub fn start_incremental_line_scan(&mut self, open_goto_line: bool) {
+        let buffer_id = self.active_buffer();
+        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            let (chunks, total_bytes) = state.buffer.prepare_line_scan();
+            let leaves = state.buffer.piece_tree_leaves();
+            self.line_scan_state = Some(super::LineScanState {
+                buffer_id,
+                leaves,
+                chunks,
+                next_chunk: 0,
+                total_bytes,
+                scanned_bytes: 0,
+                updates: Vec::new(),
+                open_goto_line_on_complete: open_goto_line,
+            });
+            self.set_status_message(
+                t!("goto.scanning_progress", percent = 0).to_string(),
+            );
+        }
+    }
+
     /// Process chunks for the incremental line-feed scan.
     /// Returns `true` if the UI should re-render (progress updated or scan finished).
     pub fn process_line_scan(&mut self) -> bool {
@@ -2276,8 +2305,9 @@ impl Editor {
 
     /// Process leaves concurrently, yielding for a render after each batch.
     ///
-    /// Collects up to `read_concurrency` leaves that need I/O, then scans
-    /// them concurrently using `tokio::task::spawn_blocking`. Each task calls
+    /// For loaded leaves, delegates to `TextBuffer::scan_leaf` (shared counting
+    /// logic). For unloaded leaves, extracts I/O parameters and runs them
+    /// concurrently using `tokio::task::spawn_blocking` — each task calls
     /// `count_line_feeds_in_range` on the filesystem, which remote implementations
     /// override to count on the server without transferring data.
     fn process_line_scan_batch(&mut self, buffer_id: BufferId) -> std::io::Result<()> {
@@ -2286,25 +2316,10 @@ impl Editor {
         let state = self.buffers.get(&buffer_id);
         let scan = self.line_scan_state.as_mut().unwrap();
 
-        // Collect a batch of leaves that need scanning.
-        // For each leaf, resolve the I/O parameters now while we can borrow the buffer.
-        // ScanWork::Loaded means we already have the count (counted in-memory).
-        // ScanWork::Unloaded means we need filesystem I/O.
-        enum ScanWork {
-            Loaded {
-                leaf_idx: usize,
-                count: usize,
-            },
-            Unloaded {
-                leaf_idx: usize,
-                path: std::path::PathBuf,
-                offset: u64,
-                len: usize,
-            },
-        }
+        let mut results: Vec<(usize, usize)> = Vec::new();
+        let mut io_work: Vec<(usize, std::path::PathBuf, u64, usize)> = Vec::new();
 
-        let mut batch: Vec<ScanWork> = Vec::new();
-        while scan.next_chunk < scan.chunks.len() && batch.len() < concurrency {
+        while scan.next_chunk < scan.chunks.len() && (results.len() + io_work.len()) < concurrency {
             let chunk = scan.chunks[scan.next_chunk].clone();
             scan.next_chunk += 1;
             scan.scanned_bytes += chunk.byte_len;
@@ -2315,55 +2330,20 @@ impl Editor {
 
             if let Some(state) = state {
                 let leaf = &scan.leaves[chunk.leaf_index];
-                let buffer_id = leaf.location.buffer_id();
-                if let Some(buffer) = state.buffer.buffer_slice().get(buffer_id) {
-                    match &buffer.data {
-                        crate::model::piece_tree::BufferData::Loaded { data, .. } => {
-                            let end = (leaf.offset + leaf.bytes).min(data.len());
-                            let count = data[leaf.offset..end]
-                                .iter()
-                                .filter(|&&b| b == b'\n')
-                                .count();
-                            batch.push(ScanWork::Loaded {
-                                leaf_idx: chunk.leaf_index,
-                                count,
-                            });
-                        }
-                        crate::model::piece_tree::BufferData::Unloaded {
-                            file_path,
-                            file_offset,
-                            ..
-                        } => {
-                            let read_offset = *file_offset as u64 + leaf.offset as u64;
-                            batch.push(ScanWork::Unloaded {
-                                leaf_idx: chunk.leaf_index,
-                                path: file_path.clone(),
-                                offset: read_offset,
-                                len: leaf.bytes,
-                            });
-                        }
+
+                // Use scan_leaf for loaded buffers (shared counting logic with
+                // the TextBuffer-level scan). For unloaded buffers, collect I/O
+                // parameters for concurrent filesystem access.
+                match state.buffer.leaf_io_params(leaf) {
+                    None => {
+                        // Loaded: count in-memory via scan_leaf
+                        let count = state.buffer.scan_leaf(leaf)?;
+                        results.push((chunk.leaf_index, count));
                     }
-                }
-            }
-        }
-
-        if batch.is_empty() {
-            return Ok(());
-        }
-
-        // Separate loaded (already counted) from unloaded (need I/O)
-        let mut results: Vec<(usize, usize)> = Vec::new();
-        let mut io_work: Vec<(usize, std::path::PathBuf, u64, usize)> = Vec::new();
-        for item in batch {
-            match item {
-                ScanWork::Loaded { leaf_idx, count } => results.push((leaf_idx, count)),
-                ScanWork::Unloaded {
-                    leaf_idx,
-                    path,
-                    offset,
-                    len,
-                } => {
-                    io_work.push((leaf_idx, path, offset, len));
+                    Some((path, offset, len)) => {
+                        // Unloaded: batch for concurrent I/O
+                        io_work.push((chunk.leaf_index, path, offset, len));
+                    }
                 }
             }
         }
@@ -2410,17 +2390,23 @@ impl Editor {
 
     fn finish_line_scan_ok(&mut self) {
         let scan = self.line_scan_state.take().unwrap();
+        let open_goto = scan.open_goto_line_on_complete;
         if let Some(state) = self.buffers.get_mut(&scan.buffer_id) {
             state.buffer.rebuild_with_pristine_saved_root(&scan.updates);
         }
         self.set_status_message(t!("goto.scan_complete").to_string());
-        self.open_goto_line_if_active(scan.buffer_id);
+        if open_goto {
+            self.open_goto_line_if_active(scan.buffer_id);
+        }
     }
 
     fn finish_line_scan_with_error(&mut self, e: std::io::Error) {
         let scan = self.line_scan_state.take().unwrap();
+        let open_goto = scan.open_goto_line_on_complete;
         self.set_status_message(t!("goto.scan_failed", error = e.to_string()).to_string());
-        self.open_goto_line_if_active(scan.buffer_id);
+        if open_goto {
+            self.open_goto_line_if_active(scan.buffer_id);
+        }
     }
 
     fn open_goto_line_if_active(&mut self, buffer_id: BufferId) {

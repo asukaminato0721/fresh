@@ -861,6 +861,13 @@ static COMMAND_DEFS: &[CommandDef] = &[
         custom_contexts: &[],
     },
     CommandDef {
+        name_key: "cmd.scan_line_index",
+        desc_key: "cmd.scan_line_index_desc",
+        action: || Action::ScanLineIndex,
+        contexts: &[Normal],
+        custom_contexts: &[],
+    },
+    CommandDef {
         name_key: "cmd.smart_home",
         desc_key: "cmd.smart_home_desc",
         action: || Action::SmartHome,

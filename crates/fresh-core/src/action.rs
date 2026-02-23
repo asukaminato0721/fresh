@@ -155,6 +155,7 @@ pub enum Action {
 
     // Navigation
     GotoLine,
+    ScanLineIndex,
     GoToMatchingBracket,
     JumpToNextError,
     JumpToPreviousError,
