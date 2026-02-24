@@ -2244,7 +2244,9 @@ fn run_attach_command(args: &Args) -> AnyhowResult<()> {
 
     // Initialize tracing to a file for debugging
     use tracing_subscriber::{fmt, EnvFilter};
-    let log_file = std::fs::File::create("fresh-client.log").ok();
+    let log_path = fresh::services::log_dirs::log_dir()
+        .join(format!("fresh-client-{}.log", std::process::id()));
+    let log_file = std::fs::File::create(&log_path).ok();
     if let Some(file) = log_file {
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
         // Best-effort: tracing subscriber may already be set
