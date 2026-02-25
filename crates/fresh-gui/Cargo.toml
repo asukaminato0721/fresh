@@ -6,6 +6,7 @@ edition.workspace = true
 description = "GUI backend for Fresh editor: windowed ratatui via winit + wgpu"
 license.workspace = true
 repository.workspace = true
+publish = false  # depends on git-only ratatui-wgpu, not publishable to crates.io
 
 [dependencies]
 # Window management
