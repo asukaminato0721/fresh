@@ -1050,7 +1050,7 @@ fn blog_showcase_fresh_0_2_9_code_folding() {
         let state = h.editor_mut().active_state_mut();
         state.folding_ranges = vec![
             FoldingRange {
-                start_line: 2,  // fn main()
+                start_line: 2, // fn main()
                 end_line: 15,
                 start_character: None,
                 end_character: None,
@@ -1183,13 +1183,9 @@ Released under the **Apache 2.0** license. See [LICENSE](https://github.com/sine
     let md_path = project_root.join("notes.md");
     fs::write(&md_path, md_content).unwrap();
 
-    let mut h = EditorTestHarness::with_config_and_working_dir(
-        120,
-        30,
-        Default::default(),
-        project_root,
-    )
-    .unwrap();
+    let mut h =
+        EditorTestHarness::with_config_and_working_dir(120, 30, Default::default(), project_root)
+            .unwrap();
     h.open_file(&md_path).unwrap();
     h.render().unwrap();
 
@@ -1203,7 +1199,8 @@ Released under the **Apache 2.0** license. See [LICENSE](https://github.com/sine
     hold(&mut h, &mut s, 5, 100);
 
     // Create a vertical split
-    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
     h.render().unwrap();
     h.type_text("split vert").unwrap();
     h.render().unwrap();
@@ -1214,7 +1211,8 @@ Released under the **Apache 2.0** license. See [LICENSE](https://github.com/sine
     hold(&mut h, &mut s, 3, 100);
 
     // Enable compose mode in the right panel
-    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
     h.render().unwrap();
     h.type_text("Toggle Compose").unwrap();
     h.render().unwrap();
@@ -1229,7 +1227,8 @@ Released under the **Apache 2.0** license. See [LICENSE](https://github.com/sine
     hold(&mut h, &mut s, 5, 100);
 
     // Enable scroll sync
-    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
     h.render().unwrap();
     h.type_text("Toggle Scroll Sync").unwrap();
     h.render().unwrap();
@@ -1239,7 +1238,8 @@ Released under the **Apache 2.0** license. See [LICENSE](https://github.com/sine
     hold(&mut h, &mut s, 3, 100);
 
     // Switch to source panel (left) so scrolling there drives the compose panel
-    h.send_key(KeyCode::Char('k'), KeyModifiers::CONTROL).unwrap();
+    h.send_key(KeyCode::Char('k'), KeyModifiers::CONTROL)
+        .unwrap();
     h.render().unwrap();
     snap(&mut h, &mut s, Some("Ctrl+K"), 150);
     hold(&mut h, &mut s, 2, 100);
@@ -1286,7 +1286,8 @@ fn blog_showcase_fresh_0_2_9_large_file_scanning() {
     hold(&mut h, &mut s, 3, 200);
 
     // Press Ctrl+G to trigger Go to Line — shows scan confirm prompt
-    h.send_key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap();
+    h.send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
     h.render().unwrap();
     snap(&mut h, &mut s, Some("Ctrl+G"), 500);
     hold(&mut h, &mut s, 3, 200);
@@ -1343,7 +1344,8 @@ fn blog_showcase_fresh_0_2_9_vertical_rulers() {
     hold(&mut h, &mut s, 4, 100);
 
     // Add ruler at column 40 (visible in 100-col terminal)
-    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
     h.render().unwrap();
     h.type_text("Add Ruler").unwrap();
     h.render().unwrap();
@@ -1363,7 +1365,8 @@ fn blog_showcase_fresh_0_2_9_vertical_rulers() {
     hold(&mut h, &mut s, 4, 100);
 
     // Add a second ruler at column 80
-    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
     h.render().unwrap();
     h.type_text("Add Ruler").unwrap();
     h.render().unwrap();
@@ -1394,13 +1397,9 @@ fn blog_showcase_fresh_0_2_9_smart_editing() {
     let rs_path = project_root.join("test.rs");
     fs::write(&rs_path, "").unwrap();
 
-    let mut h = EditorTestHarness::with_config_and_working_dir(
-        80,
-        24,
-        Default::default(),
-        project_root,
-    )
-    .unwrap();
+    let mut h =
+        EditorTestHarness::with_config_and_working_dir(80, 24, Default::default(), project_root)
+            .unwrap();
     h.open_file(&rs_path).unwrap();
     h.render().unwrap();
 
@@ -1490,7 +1489,8 @@ fn blog_showcase_fresh_0_2_9_auto_save() {
     hold(&mut h, &mut s, 4, 100);
 
     // Open settings via command palette
-    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
     h.render().unwrap();
     snap(&mut h, &mut s, Some("Ctrl+P"), 120);
 
