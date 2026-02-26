@@ -238,8 +238,11 @@ impl Editor {
                 } else if self.handle_prompt_scroll(-3) {
                     // Check if prompt with suggestions is active and should handle scroll
                     needs_render = true;
-                } else if self.is_file_open_active() && self.handle_file_open_scroll(-3) {
-                    // Check if file browser is active and should handle scroll
+                } else if self.is_file_open_active()
+                    && self.is_mouse_over_file_browser(col, row)
+                    && self.handle_file_open_scroll(-3)
+                {
+                    // Check if file browser is active and mouse is over it
                     needs_render = true;
                 } else if self.is_mouse_over_any_popup(col, row) {
                     // Scroll the popup content (works for all popups including completion)
@@ -270,7 +273,10 @@ impl Editor {
                 } else if self.handle_prompt_scroll(3) {
                     // Check if prompt with suggestions is active and should handle scroll
                     needs_render = true;
-                } else if self.is_file_open_active() && self.handle_file_open_scroll(3) {
+                } else if self.is_file_open_active()
+                    && self.is_mouse_over_file_browser(col, row)
+                    && self.handle_file_open_scroll(3)
+                {
                     needs_render = true;
                 } else if self.is_mouse_over_any_popup(col, row) {
                     // Scroll the popup content (works for all popups including completion)
@@ -656,6 +662,13 @@ impl Editor {
         let layouts = popup_areas_to_layout_info(&self.cached_layout.popup_areas);
         let hit_tester = PopupHitTester::new(&layouts, &self.active_state().popups);
         hit_tester.is_over_popup(col, row)
+    }
+
+    /// Check if mouse position is over the file browser popup
+    fn is_mouse_over_file_browser(&self, col: u16, row: u16) -> bool {
+        self.file_browser_layout
+            .as_ref()
+            .is_some_and(|layout| layout.contains(col, row))
     }
 
     /// Compute what hover target is at the given position

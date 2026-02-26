@@ -144,6 +144,7 @@ impl FileBrowserRenderer {
             render_scrollbar(frame, scrollbar_area, &scrollbar_state, &colors);
 
         Some(FileBrowserLayout {
+            popup_area: area,
             nav_area,
             header_area,
             list_area,
@@ -655,6 +656,8 @@ impl FileBrowserRenderer {
 /// Layout information for mouse hit testing
 #[derive(Debug, Clone)]
 pub struct FileBrowserLayout {
+    /// The overall popup area (including borders)
+    pub popup_area: Rect,
     /// Navigation shortcuts area
     pub nav_area: Rect,
     /// Column headers area
@@ -674,6 +677,14 @@ pub struct FileBrowserLayout {
 }
 
 impl FileBrowserLayout {
+    /// Check if a position is within the overall popup area (including borders)
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        x >= self.popup_area.x
+            && x < self.popup_area.x + self.popup_area.width
+            && y >= self.popup_area.y
+            && y < self.popup_area.y + self.popup_area.height
+    }
+
     /// Check if a position is within the file list area
     pub fn is_in_list(&self, x: u16, y: u16) -> bool {
         x >= self.list_area.x
