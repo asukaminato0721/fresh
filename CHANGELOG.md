@@ -1,5 +1,52 @@
 # Release Notes
 
+## 0.2.10
+
+### Features
+
+* **Whitespace Indicators**: Granular control over whitespace visibility — configure space (·) and tab (→) indicators independently for leading, inner, and trailing positions. Master toggle, per-language overrides, and a new `whitespace_indicator_fg` theme color.
+
+* **Indent-Based Code Folding**: Code folding now works in large file mode and for files without LSP folding ranges, using indentation analysis as a fallback. Fold from any line within a block (not just the header). Unified byte-offset pipeline for consistent gutter indicators.
+
+* **Session Open-File Enhancements**: `--wait` flag blocks the CLI until the user dismisses a popup or closes the buffer — enables use as `git core.editor`. Range selection syntax (`file:L-EL`, `file:L:C-EL:EC`) and hover messages (`file:L@"markdown msg"`) for annotated file opening. Auto-attaches a client when `open-file` starts a new session.
+
+* **GUI: macOS Native Integration** (experimental): Native menu bar with dynamic when/checkbox conditions, Cmd keybindings (`macos-gui` keymap), app icon, and `.app` bundle resources. Menu tracking detection prevents state mutations from causing menu jumps.
+
+* **Platform Icons**: Application icons for Windows `.exe`, Linux `.deb`/`.rpm` packages, and macOS app bundles.
+
+### Bug Fixes
+
+* **Bracket Highlight Hanging on Large Files**: Bracket matching now caps scanning at 1MB and uses 16KB bulk reads instead of byte-at-a-time, preventing hangs on large files.
+
+* **Markdown Plugin Activation**: Plugin now activates based on buffer language (not just file extension), fixing cases where `Set Language` to markdown didn't enable smart editing (#1117). Reverse bullet cycling on Shift+Tab now works correctly (#1116).
+
+* **Settings UI**: Fixed Save button mouse click not closing the dialog. Fixed Reset button not showing confirmation dialog. Fixed Discard dialog persisting on reopen.
+
+* **Active Tab Styling Bleed**: Fixed active tab border color bleeding through dropdown menus.
+
+* **Cursor Corruption on Tab Click**: Fixed hardware cursor appearing at wrong position when clicking a tab in an inactive split.
+
+* **Comment Delimiter Colors**: Fixed comment delimiter characters (e.g. `//`) using the wrong color in syntax highlighting.
+
+* **Scroll Events Routing**: Fixed mouse scroll events going to the file explorer panel regardless of mouse position.
+
+* **File Explorer Border**: Fixed hover/drag bugs on the file explorer resize border.
+
+* **Windows Named Pipe Crash**: Fixed crash in `Server::handle_new_connection` on Windows.
+
+* **macOS Menu Hover Jump**: Fixed menu bar jumping to leftmost menu during hover by using `WaitUntil` instead of `Poll` and caching menu item states.
+
+### Improvements
+
+* Status log and warning log buffers are now read-only.
+
+### Internal
+
+* Folding system refactored to use byte offsets instead of line numbers for gutter indicators, fixing consistency issues in large file mode.
+* Unified fold indicator pipeline shared between LSP-based and indent-based folding.
+
+---
+
 ## 0.2.9
 
 ### Features
