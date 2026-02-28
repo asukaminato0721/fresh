@@ -170,6 +170,7 @@ impl Editor {
             .as_ref()
             .map(|p| p.input.clone())
             .unwrap_or_default();
+        let (path_input, line, column) = Self::parse_path_line_col(&prompt_input);
 
         // Get the current directory from file open state
         let current_dir = self
@@ -179,14 +180,14 @@ impl Editor {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
         // If there's any prompt input, try to resolve it as a path
-        if !prompt_input.is_empty() {
+        if !path_input.is_empty() {
             // Expand tilde and resolve path
-            let tilde_expanded = expand_tilde(&prompt_input);
+            let tilde_expanded = expand_tilde(&path_input);
             let expanded_path = if tilde_expanded.is_absolute() {
                 tilde_expanded
             } else {
                 // Relative path (including plain filename) - resolve against current directory
-                current_dir.join(&prompt_input)
+                current_dir.join(&path_input)
             };
 
             if expanded_path.is_dir() {
@@ -204,9 +205,9 @@ impl Editor {
             } else if expanded_path.is_file() && !is_folder_mode {
                 // File exists - open it directly (handles pasted paths before async load completes)
                 // Only allowed in file mode, not folder mode
-                self.file_open_open_file(expanded_path);
+                self.file_open_open_file_at_location(expanded_path, line, column);
                 return;
-            } else if !is_folder_mode && Self::should_create_new_file(&prompt_input) {
+            } else if !is_folder_mode && Self::should_create_new_file(&path_input) {
                 // File doesn't exist but input looks like a filename - create new file
                 // This handles cases like "newfile.txt" or "/path/to/newfile.txt"
                 self.file_open_create_new_file(expanded_path);
@@ -291,6 +292,16 @@ impl Editor {
 
     /// Open a file from the file browser
     fn file_open_open_file(&mut self, path: std::path::PathBuf) {
+        self.file_open_open_file_at_location(path, None, None);
+    }
+
+    /// Open a file from the file browser and optionally jump to line/column
+    fn file_open_open_file_at_location(
+        &mut self,
+        path: std::path::PathBuf,
+        line: Option<usize>,
+        column: Option<usize>,
+    ) {
         // Check if encoding detection is disabled - if so, prompt for encoding first
         let detect_encoding = self
             .file_open_state
@@ -345,6 +356,9 @@ impl Editor {
                 );
             }
         } else {
+            if let Some(line) = line {
+                self.goto_line_col(line, column);
+            }
             self.set_status_message(
                 t!("file.opened", path = path.display().to_string()).to_string(),
             );

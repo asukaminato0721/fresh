@@ -241,6 +241,49 @@ fn test_file_browser_open_file() {
         .expect("File content should be visible");
 }
 
+/// Test opening a file with line/column suffix jumps to the right position
+#[test]
+fn test_file_browser_open_file_with_line_col() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_root = temp_dir.path().to_path_buf();
+
+    let content = "11111\n22222\nABCDE12345\n44444\n";
+    fs::write(project_root.join("jump.txt"), content).unwrap();
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        80,
+        24,
+        Default::default(),
+        project_root.clone(),
+    )
+    .unwrap();
+
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+
+    // Wait for prompt to appear
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Open file:"))
+        .expect("Open File prompt should appear");
+
+    // Type file with line/column suffix and open it
+    harness.type_text("jump.txt:3:5").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+    harness.render().unwrap();
+
+    // Verify line/column in status bar and line content visible
+    harness
+        .wait_until(|h| {
+            let screen = h.screen_to_string();
+            screen.contains("Ln 3") && screen.contains("Col 5") && screen.contains("ABCDE12345")
+        })
+        .expect("Cursor should jump to Ln 3, Col 5 after opening with suffix");
+}
+
 /// Test navigating into a directory
 #[test]
 fn test_file_browser_navigate_directory() {
