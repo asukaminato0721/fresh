@@ -25,6 +25,64 @@ pub enum PromptResult {
 }
 
 impl Editor {
+    pub(crate) fn parse_path_line_col(input: &str) -> (String, Option<usize>, Option<usize>) {
+        use std::path::{Component, Path};
+
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return (String::new(), None, None);
+        }
+
+        // Check if the path has a Windows drive prefix using std::path
+        let has_prefix = Path::new(trimmed)
+            .components()
+            .next()
+            .map(|c| matches!(c, Component::Prefix(_)))
+            .unwrap_or(false);
+
+        // Calculate where to start looking for :line:col
+        let search_start = if has_prefix {
+            trimmed.find(':').map(|i| i + 1).unwrap_or(0)
+        } else {
+            0
+        };
+
+        let suffix = &trimmed[search_start..];
+        let parts: Vec<&str> = suffix.rsplitn(3, ':').collect();
+
+        match parts.as_slice() {
+            [maybe_col, maybe_line, rest] => {
+                if !rest.is_empty() {
+                    if let (Ok(line), Ok(col)) =
+                        (maybe_line.parse::<usize>(), maybe_col.parse::<usize>())
+                    {
+                        let path_str = if has_prefix {
+                            format!("{}{}", &trimmed[..search_start], rest)
+                        } else {
+                            rest.to_string()
+                        };
+                        return (path_str, Some(line), Some(col));
+                    }
+                }
+            }
+            [maybe_line, rest] => {
+                if !rest.is_empty() {
+                    if let Ok(line) = maybe_line.parse::<usize>() {
+                        let path_str = if has_prefix {
+                            format!("{}{}", &trimmed[..search_start], rest)
+                        } else {
+                            rest.to_string()
+                        };
+                        return (path_str, Some(line), None);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        (trimmed.to_string(), None, None)
+    }
+
     /// Handle prompt confirmation based on the prompt type.
     ///
     /// Returns a `PromptResult` indicating what the caller should do next.
@@ -36,8 +94,9 @@ impl Editor {
     ) -> PromptResult {
         match prompt_type {
             PromptType::OpenFile => {
+                let (path_str, line, column) = Self::parse_path_line_col(&input);
                 // Expand tilde to home directory first
-                let expanded_path = expand_tilde(&input);
+                let expanded_path = expand_tilde(&path_str);
                 let resolved_path = if expanded_path.is_absolute() {
                     normalize_path(&expanded_path)
                 } else {
@@ -49,6 +108,9 @@ impl Editor {
                         t!("file.error_opening", error = e.to_string()).to_string(),
                     );
                 } else {
+                    if let Some(line) = line {
+                        self.goto_line_col(line, column);
+                    }
                     self.set_status_message(
                         t!("buffer.opened", name = resolved_path.display().to_string()).to_string(),
                     );
@@ -1206,8 +1268,9 @@ impl Editor {
         input: &str,
         selected_index: Option<usize>,
     ) -> PromptResult {
+        let (path_from_input, line, column) = Self::parse_path_line_col(input);
         // Regenerate file suggestions since prompt was already taken by confirm_prompt
-        let suggestions = self.get_file_suggestions(input);
+        let suggestions = self.get_file_suggestions(&path_from_input);
 
         if let Some(idx) = selected_index {
             if let Some(suggestion) = suggestions.get(idx) {
@@ -1224,6 +1287,9 @@ impl Editor {
 
                     match self.open_file(&full_path) {
                         Ok(_) => {
+                            if let Some(line) = line {
+                                self.goto_line_col(line, column);
+                            }
                             self.set_status_message(
                                 t!("buffer.opened", name = full_path.display().to_string())
                                     .to_string(),
@@ -1247,7 +1313,101 @@ impl Editor {
             }
         }
 
+        if line.is_some() && !path_from_input.is_empty() {
+            let expanded_path = expand_tilde(&path_from_input);
+            let full_path = if expanded_path.is_absolute() {
+                expanded_path
+            } else {
+                self.working_dir.join(&expanded_path)
+            };
+
+            // Record file access for frecency
+            self.file_provider.record_access(&path_from_input);
+
+            match self.open_file(&full_path) {
+                Ok(_) => {
+                    if let Some(line) = line {
+                        self.goto_line_col(line, column);
+                    }
+                    self.set_status_message(
+                        t!("buffer.opened", name = full_path.display().to_string()).to_string(),
+                    );
+                }
+                Err(e) => {
+                    // Check if this is a large file encoding confirmation error
+                    if let Some(confirmation) =
+                        e.downcast_ref::<crate::model::buffer::LargeFileEncodingConfirmation>()
+                    {
+                        self.start_large_file_encoding_confirmation(confirmation);
+                    } else {
+                        self.set_status_message(
+                            t!("file.error_opening", error = e.to_string()).to_string(),
+                        );
+                    }
+                }
+            }
+            return PromptResult::Done;
+        }
+
         self.set_status_message(t!("status.no_selection").to_string());
         PromptResult::Done
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::Editor;
+
+    #[test]
+    fn test_parse_path_line_col_empty() {
+        let (path, line, col) = Editor::parse_path_line_col("");
+        assert_eq!(path, "");
+        assert_eq!(line, None);
+        assert_eq!(col, None);
+    }
+
+    #[test]
+    fn test_parse_path_line_col_plain_path() {
+        let (path, line, col) = Editor::parse_path_line_col("src/main.rs");
+        assert_eq!(path, "src/main.rs");
+        assert_eq!(line, None);
+        assert_eq!(col, None);
+    }
+
+    #[test]
+    fn test_parse_path_line_col_line_only() {
+        let (path, line, col) = Editor::parse_path_line_col("src/main.rs:42");
+        assert_eq!(path, "src/main.rs");
+        assert_eq!(line, Some(42));
+        assert_eq!(col, None);
+    }
+
+    #[test]
+    fn test_parse_path_line_col_line_and_col() {
+        let (path, line, col) = Editor::parse_path_line_col("src/main.rs:42:10");
+        assert_eq!(path, "src/main.rs");
+        assert_eq!(line, Some(42));
+        assert_eq!(col, Some(10));
+    }
+
+    #[test]
+    fn test_parse_path_line_col_trimmed() {
+        let (path, line, col) = Editor::parse_path_line_col("  src/main.rs:5:2  ");
+        assert_eq!(path, "src/main.rs");
+        assert_eq!(line, Some(5));
+        assert_eq!(col, Some(2));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_parse_path_line_col_windows_drive() {
+        let (path, line, col) = Editor::parse_path_line_col(r"C:\src\main.rs:12:3");
+        assert_eq!(path, r"C:\src\main.rs");
+        assert_eq!(line, Some(12));
+        assert_eq!(col, Some(3));
     }
 }
