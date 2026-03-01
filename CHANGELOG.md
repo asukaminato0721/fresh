@@ -1,6 +1,6 @@
 # Release Notes
 
-## 0.2.10
+## 0.2.11
 
 ### Features
 
@@ -34,16 +34,24 @@
 
 * **Windows Named Pipe Crash**: Fixed crash in `Server::handle_new_connection` on Windows.
 
+* **Bar/Underline Cursor Invisible**: Fixed bar and underline cursor styles being invisible on characters due to REVERSED modifier creating a block-like highlight (#851).
+
+* **Wrapped Line Viewport Scroll**: Fixed viewport scroll limit counting logical lines instead of visual rows, causing erratic scrolling, skipped wrapped rows, and stuck End key with line wrap enabled (#1147).
+
+* **Search on Large Files**: Fixed multi-GB memory consumption, O(N²) offset accumulation, and search scan never completing when capped at max matches. Chunked incremental search, viewport-only overlays, and 100K match cap (#1146).
+
 * **macOS Menu Hover Jump**: Fixed menu bar jumping to leftmost menu during hover by using `WaitUntil` instead of `Poll` and caching menu item states.
 
 ### Improvements
 
 * Status log and warning log buffers are now read-only.
+* Replaced `buffer_modified` JS plugin with native Rust diff indicators, eliminating JS↔Rust round-trips on every edit/scroll.
 
 ### Internal
 
 * Folding system refactored to use byte offsets instead of line numbers for gutter indicators, fixing consistency issues in large file mode.
 * Unified fold indicator pipeline shared between LSP-based and indent-based folding.
+* Fixed Nix build: include PNG files in source filter for GUI icon resources.
 
 ---
 
