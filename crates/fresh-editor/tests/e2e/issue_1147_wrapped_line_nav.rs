@@ -282,10 +282,7 @@ fn test_issue_1147_down_arrow_should_traverse_wrapped_visual_lines() {
     harness.render().unwrap();
 
     let pos_after_second_down = harness.cursor_position();
-    eprintln!(
-        "After 2nd Down: cursor at byte {}",
-        pos_after_second_down
-    );
+    eprintln!("After 2nd Down: cursor at byte {}", pos_after_second_down);
 
     assert!(
         pos_after_second_down >= line_24_start && pos_after_second_down < line_25_start,
@@ -441,7 +438,8 @@ fn test_issue_1147_end_key_should_advance_through_wrapped_segments() {
     }
 
     assert_eq!(
-        pos, line_26_end,
+        pos,
+        line_26_end,
         "Repeated End presses should eventually reach byte {} (physical end of line 26), \
          but got stuck at byte {} (offset {} within line 26)",
         line_26_end,

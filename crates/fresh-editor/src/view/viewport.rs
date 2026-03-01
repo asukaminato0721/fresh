@@ -799,9 +799,49 @@ impl Viewport {
             return;
         }
 
-        // Try to iterate viewport_height lines from proposed_top_byte
-        // If we can't reach viewport_height lines before hitting EOF,
-        // then we need to adjust backward
+        if self.line_wrap_enabled {
+            // When line wrapping is enabled, count visual rows (wrapped segments)
+            // instead of logical lines. Each logical line may wrap into multiple
+            // visual rows, so we must account for that when checking whether the
+            // viewport can be filled from proposed_top_byte.
+            let gutter_width = self.gutter_width(buffer);
+            let wrap_config = WrapConfig::new(self.width as usize, gutter_width, true);
+
+            let mut iter = buffer.line_iterator(proposed_top_byte, 80);
+            let mut visual_rows = 0;
+
+            while let Some((_, content)) = iter.next_line() {
+                let line_text = content.trim_end_matches(['\n', '\r']);
+                let segments = wrap_line(line_text, &wrap_config);
+                visual_rows += segments.len().max(1);
+                if visual_rows >= viewport_height {
+                    self.top_byte = proposed_top_byte;
+                    return;
+                }
+            }
+
+            if visual_rows >= viewport_height {
+                self.top_byte = proposed_top_byte;
+                return;
+            }
+
+            // Not enough visual rows to fill viewport from proposed position.
+            // Use find_max_visual_scroll_position which correctly counts wrapped rows.
+            let (max_byte, max_offset) =
+                self.find_max_visual_scroll_position(buffer, &wrap_config, viewport_height);
+            // Only backtrack if the proposed position is past the maximum
+            if proposed_top_byte > max_byte
+                || (proposed_top_byte == max_byte && self.top_view_line_offset > max_offset)
+            {
+                self.top_byte = max_byte;
+                self.top_view_line_offset = max_offset;
+            } else {
+                self.top_byte = proposed_top_byte;
+            }
+            return;
+        }
+
+        // Non-wrapped mode: count logical lines
         let mut iter = buffer.line_iterator(proposed_top_byte, 80);
         let mut lines_visible = 0;
 
