@@ -137,12 +137,7 @@ impl Editor {
                                 .and_then(|p| p.info.fg_key.clone());
                             self.theme_info_popup = None;
                             if let Some(key) = fg_key {
-                                // Fire hook so theme editor plugin can open at this key
-                                let theme_name = self.config.theme.0.clone();
-                                self.plugin_manager.run_hook(
-                                    "theme_inspect_key",
-                                    HookArgs::ThemeInspectKey { theme_name, key },
-                                );
+                                self.fire_theme_inspect_hook(key);
                             }
                             return Ok(true);
                         }

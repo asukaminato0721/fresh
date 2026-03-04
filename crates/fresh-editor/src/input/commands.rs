@@ -1140,6 +1140,14 @@ static COMMAND_DEFS: &[CommandDef] = &[
         contexts: &[],
         custom_contexts: &[],
     },
+    // Theme inspection
+    CommandDef {
+        name_key: "cmd.inspect_theme_at_cursor",
+        desc_key: "cmd.inspect_theme_at_cursor_desc",
+        action: || Action::InspectThemeAtCursor,
+        contexts: &[Normal],
+        custom_contexts: &[],
+    },
     // Keybinding map selection
     CommandDef {
         name_key: "cmd.select_keybinding_map",

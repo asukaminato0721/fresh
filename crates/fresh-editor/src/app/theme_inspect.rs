@@ -2,6 +2,7 @@
 
 use super::types::{ThemeInfoPopup, ThemeKeyInfo};
 use super::Editor;
+use crate::services::plugins::hooks::HookArgs;
 use crate::view::theme::color_to_rgb;
 use anyhow::Result as AnyhowResult;
 use ratatui::layout::Rect;
@@ -24,6 +25,61 @@ impl Editor {
             });
         }
         Ok(())
+    }
+
+    /// Fire the `theme_inspect_key` hook for the given key.
+    pub(super) fn fire_theme_inspect_hook(&mut self, key: String) {
+        let theme_name = self.config.theme.0.clone();
+        self.plugin_manager.run_hook(
+            "theme_inspect_key",
+            HookArgs::ThemeInspectKey { theme_name, key },
+        );
+    }
+
+    /// Inspect the theme key at the current cursor's screen position and open the theme editor.
+    pub(super) fn inspect_theme_at_cursor(&mut self) {
+        let active_split = self.split_manager.active_split();
+        let active_buffer = self.active_buffer();
+
+        // Gather layout info and cursor from split_view_states (immutable borrows)
+        let (content_rect, gutter_width, compose_width, primary_cursor) = match self
+            .cached_layout
+            .split_areas
+            .iter()
+            .find(|(sid, bid, ..)| *sid == active_split && *bid == active_buffer)
+        {
+            Some((split_id, buffer_id, rect, ..)) => {
+                let gw = self
+                    .buffers
+                    .get(buffer_id)
+                    .map(|s| s.margins.left_total_width() as u16)
+                    .unwrap_or(0);
+                let vs = match self.split_view_states.get(split_id) {
+                    Some(vs) => vs,
+                    None => return,
+                };
+                (*rect, gw, vs.compose_width, *vs.cursors.primary())
+            }
+            None => return,
+        };
+
+        // Compute cursor screen position (needs &mut buffer for line_iterator)
+        let state = match self.buffers.get_mut(&active_buffer) {
+            Some(s) => s,
+            None => return,
+        };
+        let viewport = &self.split_view_states[&active_split].viewport;
+        let cursor_rel = viewport.cursor_screen_position(&mut state.buffer, &primary_cursor);
+
+        let adjusted_rect = Self::adjust_content_rect_for_compose(content_rect, compose_width);
+        let screen_col = cursor_rel.0 + adjusted_rect.x + gutter_width;
+        let screen_row = cursor_rel.1 + content_rect.y;
+
+        if let Some(info) = self.resolve_theme_key_at(screen_col, screen_row) {
+            if let Some(key) = info.fg_key {
+                self.fire_theme_inspect_hook(key);
+            }
+        }
     }
 
     /// Resolve which theme key(s) style the character at screen position (col, row).

@@ -209,6 +209,7 @@ pub enum Action {
     ToggleReadOnly,
     ToggleComposeMode,
     SetComposeWidth,
+    InspectThemeAtCursor,
     SelectTheme,
     SelectKeybindingMap,
     SelectCursorStyle,

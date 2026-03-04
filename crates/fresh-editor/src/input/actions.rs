@@ -2806,6 +2806,7 @@ pub fn action_to_events(
         | Action::None
         | Action::ScrollTabsLeft
         | Action::ScrollTabsRight
+        | Action::InspectThemeAtCursor
         | Action::SelectTheme
         | Action::SelectKeybindingMap
         | Action::SelectCursorStyle

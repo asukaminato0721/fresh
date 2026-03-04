@@ -621,6 +621,9 @@ impl Editor {
             Action::SelectTheme => {
                 self.start_select_theme_prompt();
             }
+            Action::InspectThemeAtCursor => {
+                self.inspect_theme_at_cursor();
+            }
             Action::SelectKeybindingMap => {
                 self.start_select_keybinding_map_prompt();
             }
