@@ -1188,7 +1188,7 @@ globalThis.onThemePromptCancelled = function(args: { prompt_type: string }): boo
   state.savedCursorPath = null;
   state.pendingSaveName = null;
 
-  editor.setStatus(editor.t("status.cancelled"));
+  editor.debug(editor.t("status.cancelled"));
   return true;
 };
 
@@ -1224,7 +1224,7 @@ globalThis.onThemeSelectInitialPromptConfirmed = async function(args: {
     isBuiltin = state.builtinThemes.includes(value);
   }
 
-  editor.setStatus(editor.t("status.loading"));
+  editor.debug(editor.t("status.loading"));
 
   if (isBuiltin) {
     // Load builtin theme
@@ -1431,7 +1431,7 @@ globalThis.onThemeEditorCursorMoved = function(data: {
 
   const field = getFieldAtCursor();
   if (field) {
-    editor.setStatus(field.def.description);
+    editor.debug(field.def.description);
   }
 };
 
@@ -1631,7 +1631,7 @@ globalThis.theme_editor_nav_down = function(): void {
   }
 
   // Already at last selectable, stay there
-  editor.setStatus(editor.t("status.at_last_field"));
+  editor.debug(editor.t("status.at_last_field"));
 };
 
 /**
@@ -1655,7 +1655,7 @@ globalThis.theme_editor_nav_up = function(): void {
   }
 
   // Already at first selectable, stay there
-  editor.setStatus(editor.t("status.at_first_field"));
+  editor.debug(editor.t("status.at_first_field"));
 };
 
 /**
@@ -1728,7 +1728,7 @@ globalThis.open_theme_editor = async function(): Promise<void> {
     if (state.splitId !== null) {
       editor.focusSplit(state.splitId);
     }
-    editor.setStatus(editor.t("status.already_open"));
+    editor.debug(editor.t("status.already_open"));
     return;
   }
 
@@ -1817,7 +1817,7 @@ async function doOpenThemeEditor(): Promise<void> {
     applyHighlighting();
     editor.debug(`[theme_editor] doOpenThemeEditor: applyHighlighting completed`);
     editor.debug(`[theme_editor] doOpenThemeEditor: calling setStatus...`);
-    editor.setStatus(editor.t("status.ready"));
+    editor.debug(editor.t("status.ready"));
     editor.debug(`[theme_editor] doOpenThemeEditor: completed successfully`);
   } else {
     editor.setStatus(editor.t("status.open_failed"));
@@ -1860,7 +1860,7 @@ function doCloseEditor(): void {
   state.originalThemeData = {};
   state.hasChanges = false;
 
-  editor.setStatus(editor.t("status.closed"));
+  editor.debug(editor.t("status.closed"));
 }
 
 /**
@@ -1878,7 +1878,7 @@ globalThis.onThemeDiscardPromptConfirmed = function(args: {
     editor.setStatus(editor.t("status.unsaved_discarded"));
     doCloseEditor();
   } else {
-    editor.setStatus(editor.t("status.cancelled"));
+    editor.debug(editor.t("status.cancelled"));
   }
 
   return false;
@@ -1890,7 +1890,7 @@ globalThis.onThemeDiscardPromptConfirmed = function(args: {
 globalThis.theme_editor_edit_color = function(): void {
   const field = getFieldAtCursor();
   if (!field) {
-    editor.setStatus(editor.t("status.no_field"));
+    editor.debug(editor.t("status.no_field"));
     return;
   }
 
@@ -1908,7 +1908,7 @@ globalThis.theme_editor_edit_color = function(): void {
 globalThis.theme_editor_toggle_section = function(): void {
   const field = getFieldAtCursor();
   if (!field || !field.isSection) {
-    editor.setStatus(editor.t("status.not_section"));
+    editor.debug(editor.t("status.not_section"));
     return;
   }
 
@@ -1972,7 +1972,7 @@ globalThis.theme_editor_save = async function(): Promise<void> {
   }
 
   if (!state.hasChanges) {
-    editor.setStatus(editor.t("status.no_changes"));
+    editor.debug(editor.t("status.no_changes"));
     return;
   }
 
@@ -2017,7 +2017,7 @@ globalThis.onThemeOverwritePromptConfirmed = async function(args: {
   } else {
     state.pendingSaveName = null;
     state.savedCursorPath = null;
-    editor.setStatus(editor.t("status.cancelled"));
+    editor.debug(editor.t("status.cancelled"));
   }
 
   return false;
@@ -2068,7 +2068,7 @@ globalThis.theme_editor_reload = async function(): Promise<void> {
  * Show help
  */
 globalThis.theme_editor_show_help = function(): void {
-  editor.setStatus(editor.t("status.help"));
+  editor.debug(editor.t("status.help"));
 };
 
 /**
@@ -2122,7 +2122,7 @@ globalThis.onThemeDeletePromptConfirmed = async function(args: {
       }
     }
   } else {
-    editor.setStatus(editor.t("status.cancelled"));
+    editor.debug(editor.t("status.cancelled"));
   }
 
   return true;
