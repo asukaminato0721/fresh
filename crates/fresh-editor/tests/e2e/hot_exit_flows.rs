@@ -846,7 +846,6 @@ fn test_multiple_unnamed_buffers_preserved() {
     {
         let mut config = Config::default();
         config.editor.hot_exit = true;
-        config.editor.persist_unnamed_buffers = true;
 
         let mut harness = EditorTestHarness::create(
             100,
@@ -878,7 +877,6 @@ fn test_multiple_unnamed_buffers_preserved() {
     {
         let mut config = Config::default();
         config.editor.hot_exit = true;
-        config.editor.persist_unnamed_buffers = true;
 
         let mut harness = EditorTestHarness::create(
             100,
@@ -929,7 +927,7 @@ fn test_hot_exit_disabled_no_recovery() {
     {
         let mut config = Config::default();
         config.editor.hot_exit = false;
-        config.editor.persist_unnamed_buffers = false;
+        // hot_exit = false also disables unnamed buffer persistence
 
         let mut harness = EditorTestHarness::create(
             100,
@@ -957,7 +955,7 @@ fn test_hot_exit_disabled_no_recovery() {
     {
         let mut config = Config::default();
         config.editor.hot_exit = false;
-        config.editor.persist_unnamed_buffers = false;
+        // hot_exit = false also disables unnamed buffer persistence
 
         let mut harness = EditorTestHarness::create(
             100,

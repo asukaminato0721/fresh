@@ -1708,7 +1708,7 @@ fn test_reopen_with_file_arg_restores_session_and_opens_new_file() {
 /// Reproduces issue #1234.
 #[test]
 fn test_tab_order_preserved_across_restore() {
-    use crate::common::harness::HarnessOptions;
+    use crate::common::harness::{layout, HarnessOptions};
     use fresh::config_io::DirectoryContext;
 
     let temp_dir = TempDir::new().unwrap();
@@ -1744,14 +1744,14 @@ fn test_tab_order_preserved_across_restore() {
         harness.open_file(&file_b).unwrap();
         harness.render().unwrap();
 
-        // Verify initial order on screen: tabs should appear as c.txt, a.txt, b.txt
-        let screen = harness.screen_to_string();
-        let pos_c = screen.find("c.txt").expect("c.txt should be in tabs");
-        let pos_a = screen.find("a.txt").expect("a.txt should be in tabs");
-        let pos_b = screen.find("b.txt").expect("b.txt should be in tabs");
+        // Check only the tab bar row to avoid false matches from status bar / content
+        let tab_bar = harness.screen_row_text(layout::TAB_BAR_ROW as u16);
+        let pos_c = tab_bar.find("c.txt").expect("c.txt should be in tab bar");
+        let pos_a = tab_bar.find("a.txt").expect("a.txt should be in tab bar");
+        let pos_b = tab_bar.find("b.txt").expect("b.txt should be in tab bar");
         assert!(
             pos_c < pos_a && pos_a < pos_b,
-            "Initial tab order should be c, a, b. Got c={pos_c} a={pos_a} b={pos_b}\nScreen:\n{screen}"
+            "Initial tab order should be c, a, b.\nTab bar: {tab_bar}"
         );
 
         harness.shutdown(true).unwrap();
@@ -1772,14 +1772,21 @@ fn test_tab_order_preserved_across_restore() {
 
         let restored = harness.startup(true, &[]).unwrap();
         assert!(restored, "Session should have been restored");
+        harness.render().unwrap();
 
-        let screen = harness.screen_to_string();
-        let pos_c = screen.find("c.txt").expect("c.txt should be in tabs");
-        let pos_a = screen.find("a.txt").expect("a.txt should be in tabs");
-        let pos_b = screen.find("b.txt").expect("b.txt should be in tabs");
+        let tab_bar = harness.screen_row_text(layout::TAB_BAR_ROW as u16);
+        let pos_c = tab_bar
+            .find("c.txt")
+            .expect("c.txt should be in restored tab bar");
+        let pos_a = tab_bar
+            .find("a.txt")
+            .expect("a.txt should be in restored tab bar");
+        let pos_b = tab_bar
+            .find("b.txt")
+            .expect("b.txt should be in restored tab bar");
         assert!(
             pos_c < pos_a && pos_a < pos_b,
-            "Restored tab order should be c, a, b (same as before). Got c={pos_c} a={pos_a} b={pos_b}\nScreen:\n{screen}"
+            "Restored tab order should be c, a, b (same as before).\nTab bar: {tab_bar}"
         );
     }
 }
