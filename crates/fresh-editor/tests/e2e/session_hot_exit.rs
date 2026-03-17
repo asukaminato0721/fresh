@@ -102,7 +102,7 @@ fn test_session_unnamed_buffer_preserved_across_restart() {
     // First session: create unnamed buffer with content
     {
         let mut config = Config::default();
-        config.editor.persist_unnamed_buffers = true;
+        config.editor.hot_exit = true;
 
         let mut harness = EditorTestHarness::create(
             80,
@@ -129,7 +129,7 @@ fn test_session_unnamed_buffer_preserved_across_restart() {
     // Second session: restore and verify unnamed buffer content
     {
         let mut config = Config::default();
-        config.editor.persist_unnamed_buffers = true;
+        config.editor.hot_exit = true;
 
         let mut harness = EditorTestHarness::create(
             80,

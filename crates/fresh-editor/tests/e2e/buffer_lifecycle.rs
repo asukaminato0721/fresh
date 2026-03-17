@@ -33,7 +33,7 @@ fn test_save_unnamed_buffer_shows_save_as_prompt() {
 #[test]
 fn test_quit_with_modified_buffers_shows_confirmation() {
     let mut config = Config::default();
-    config.editor.persist_unnamed_buffers = false;
+    config.editor.hot_exit = false;
     let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
 
     // Type some text to modify the buffer
@@ -77,7 +77,7 @@ fn test_quit_without_modified_buffers() {
 #[test]
 fn test_quit_with_confirmation_discard() {
     let mut config = Config::default();
-    config.editor.persist_unnamed_buffers = false;
+    config.editor.hot_exit = false;
     let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
 
     // Modify buffer
@@ -107,7 +107,7 @@ fn test_quit_with_confirmation_discard() {
 #[test]
 fn test_quit_with_confirmation_cancel() {
     let mut config = Config::default();
-    config.editor.persist_unnamed_buffers = false;
+    config.editor.hot_exit = false;
     let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
 
     // Modify buffer

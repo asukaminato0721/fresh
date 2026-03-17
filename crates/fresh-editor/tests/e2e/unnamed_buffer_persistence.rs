@@ -18,7 +18,7 @@ fn test_unnamed_buffer_survives_save_restore_cycle() {
     // First session: create unnamed buffer, type content, save workspace + flush
     {
         let mut config = Config::default();
-        config.editor.persist_unnamed_buffers = true;
+        config.editor.hot_exit = true;
 
         let mut harness = EditorTestHarness::create(
             80,
@@ -45,7 +45,7 @@ fn test_unnamed_buffer_survives_save_restore_cycle() {
     // Second session: restore and verify unnamed buffer content
     {
         let mut config = Config::default();
-        config.editor.persist_unnamed_buffers = true;
+        config.editor.hot_exit = true;
 
         let mut harness = EditorTestHarness::create(
             80,
@@ -80,7 +80,7 @@ fn test_unnamed_and_file_buffers_restored_together() {
     // First session: open file + create unnamed buffer
     {
         let mut config = Config::default();
-        config.editor.persist_unnamed_buffers = true;
+        config.editor.hot_exit = true;
 
         let mut harness = EditorTestHarness::create(
             80,
@@ -109,7 +109,7 @@ fn test_unnamed_and_file_buffers_restored_together() {
     // Second session: restore both
     {
         let mut config = Config::default();
-        config.editor.persist_unnamed_buffers = true;
+        config.editor.hot_exit = true;
 
         let mut harness = EditorTestHarness::create(
             80,
@@ -141,7 +141,7 @@ fn test_quit_unnamed_only_skips_prompt() {
     std::fs::create_dir(&project_dir).unwrap();
 
     let mut config = Config::default();
-    config.editor.persist_unnamed_buffers = true;
+    config.editor.hot_exit = true;
 
     let mut harness = EditorTestHarness::create(
         80,
@@ -172,7 +172,7 @@ fn test_quit_unnamed_only_skips_prompt() {
     );
 }
 
-/// Test that persist_unnamed_buffers=false preserves old behavior
+/// Test that hot_exit=false preserves old behavior (shows quit prompt)
 #[test]
 fn test_persist_disabled_shows_quit_prompt() {
     let temp_dir = TempDir::new().unwrap();
@@ -180,7 +180,7 @@ fn test_persist_disabled_shows_quit_prompt() {
     std::fs::create_dir(&project_dir).unwrap();
 
     let mut config = Config::default();
-    config.editor.persist_unnamed_buffers = false;
+    config.editor.hot_exit = false;
 
     let mut harness = EditorTestHarness::create(
         80,
@@ -207,7 +207,7 @@ fn test_persist_disabled_shows_quit_prompt() {
     harness.assert_screen_contains("unsaved changes");
     assert!(
         !harness.should_quit(),
-        "Editor should show prompt when persist_unnamed_buffers is disabled"
+        "Editor should show prompt when hot_exit is disabled"
     );
 }
 
@@ -222,7 +222,6 @@ fn test_quit_mixed_modified_still_prompts() {
     std::fs::write(&file1, "original").unwrap();
 
     let mut config = Config::default();
-    config.editor.persist_unnamed_buffers = true;
     config.editor.hot_exit = false;
 
     let mut harness = EditorTestHarness::create(
@@ -474,7 +473,6 @@ fn test_quit_save_and_quit() {
 
     let mut config = Config::default();
     config.editor.hot_exit = false;
-    config.editor.persist_unnamed_buffers = false;
 
     let mut harness = EditorTestHarness::create(
         80,

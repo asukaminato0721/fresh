@@ -278,8 +278,8 @@ impl Editor {
             tracing::debug!("Captured {} external files", external_files.len());
         }
 
-        // Capture unnamed buffer references (for persist_unnamed_buffers)
-        let unnamed_buffers: Vec<UnnamedBufferRef> = if self.config.editor.persist_unnamed_buffers {
+        // Capture unnamed buffer references (for hot_exit)
+        let unnamed_buffers: Vec<UnnamedBufferRef> = if self.config.editor.hot_exit {
             self.buffer_metadata
                 .iter()
                 .filter_map(|(buffer_id, meta)| {
@@ -795,7 +795,7 @@ impl Editor {
 
         // 5c. Restore unnamed buffers from recovery files
         let mut unnamed_buffer_map: HashMap<String, BufferId> = HashMap::new();
-        if self.config.editor.persist_unnamed_buffers && !workspace.unnamed_buffers.is_empty() {
+        if self.config.editor.hot_exit && !workspace.unnamed_buffers.is_empty() {
             tracing::debug!(
                 "Restoring {} unnamed buffers from recovery",
                 workspace.unnamed_buffers.len()

@@ -21,10 +21,9 @@ impl Editor {
 
     /// End the recovery session cleanly (call on normal shutdown)
     pub fn end_recovery_session(&mut self) -> AnyhowResult<()> {
-        let persist_unnamed = self.config.editor.persist_unnamed_buffers;
         let hot_exit = self.config.editor.hot_exit;
 
-        if persist_unnamed || hot_exit {
+        if hot_exit {
             // Force all modified buffers to be re-saved by marking them pending,
             // then reuse the existing periodic recovery save logic.
             for (_, state) in self.buffers.iter_mut() {
@@ -46,7 +45,6 @@ impl Editor {
 
     /// Collect recovery IDs for all buffers that should be preserved across sessions.
     fn recovery_ids_to_preserve(&self) -> Vec<String> {
-        let persist_unnamed = self.config.editor.persist_unnamed_buffers;
         let hot_exit = self.config.editor.hot_exit;
 
         self.buffer_metadata
@@ -55,18 +53,15 @@ impl Editor {
                 if meta.hidden_from_tabs || meta.is_virtual() {
                     return None;
                 }
+                if !hot_exit {
+                    return None;
+                }
                 let state = self.buffers.get(buffer_id)?;
                 if !state.buffer.is_modified() {
                     return None;
                 }
                 let path = meta.file_path()?;
                 let is_unnamed = path.as_os_str().is_empty();
-                if is_unnamed && !persist_unnamed {
-                    return None;
-                }
-                if !is_unnamed && !hot_exit {
-                    return None;
-                }
                 if is_unnamed && state.buffer.total_bytes() == 0 {
                     return None;
                 }
