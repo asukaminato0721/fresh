@@ -77,6 +77,17 @@ pub fn invalidate_cache_for_file(file_path: &str) {
     }
 }
 
+/// Invalidate the entire diagnostic cache.
+///
+/// Call this when the theme changes so that re-applying stored diagnostics
+/// produces overlays with the new theme colors (the hash is content-based,
+/// so without invalidation the cache would suppress the update).
+pub fn invalidate_cache_all() {
+    if let Ok(mut cache) = DIAGNOSTIC_CACHE.lock() {
+        cache.clear();
+    }
+}
+
 /// Apply LSP diagnostics to editor state with hash-based caching
 ///
 /// This is the recommended entry point that skips redundant work when diagnostics haven't changed.

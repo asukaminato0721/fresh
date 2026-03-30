@@ -3140,6 +3140,10 @@ impl Editor {
                 // Set terminal cursor color to match theme
                 self.theme.set_terminal_cursor_color();
 
+                // Re-apply all stored diagnostics so overlay colors match the
+                // new theme (diagnostic overlays bake RGB at creation time).
+                self.reapply_all_diagnostics();
+
                 // Update the config in memory using the normalized registry key,
                 // not the JSON name field, so that the config value can be looked
                 // up in the registry on restart (fixes #1001).
@@ -3154,6 +3158,27 @@ impl Editor {
                 );
             } else {
                 self.set_status_message(format!("Theme '{}' not found", theme_name));
+            }
+        }
+    }
+
+    /// Re-apply all stored diagnostics with the current theme colors.
+    fn reapply_all_diagnostics(&mut self) {
+        crate::services::lsp::diagnostics::invalidate_cache_all();
+        let entries: Vec<(String, Vec<lsp_types::Diagnostic>)> = self
+            .stored_diagnostics
+            .iter()
+            .map(|(uri, diags)| (uri.clone(), diags.clone()))
+            .collect();
+        for (uri, diagnostics) in entries {
+            if let Some(buffer_id) = self.find_buffer_by_uri(&uri) {
+                if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                    crate::services::lsp::diagnostics::apply_diagnostics_to_state_cached(
+                        state,
+                        &diagnostics,
+                        &self.theme,
+                    );
+                }
             }
         }
     }
