@@ -1452,7 +1452,7 @@ fn handle_edit_dialog_input(
                 (KeyCode::Enter, KeyModifiers::NONE) => {
                     dialog.capturing_special = true;
                 }
-                (KeyCode::Tab, KeyModifiers::NONE) => {
+                (KeyCode::Tab | KeyCode::Down, KeyModifiers::NONE) => {
                     dialog.focus_area = 1;
                     dialog.mode = EditMode::EditingAction;
                 }
@@ -1524,6 +1524,17 @@ fn handle_edit_dialog_input(
                         }
                     }
                 }
+                (KeyCode::Up, KeyModifiers::NONE) => {
+                    // Move to previous field (key)
+                    dialog.autocomplete_visible = false;
+                    dialog.focus_area = 0;
+                    dialog.mode = EditMode::RecordingKey;
+                }
+                (KeyCode::Down, KeyModifiers::NONE) => {
+                    // Move to next field (context)
+                    dialog.focus_area = 2;
+                    dialog.mode = EditMode::EditingContext;
+                }
                 (KeyCode::Esc, _) if dialog.autocomplete_visible => {
                     // Close autocomplete without closing dialog
                     dialog.autocomplete_visible = false;
@@ -1558,11 +1569,11 @@ fn handle_edit_dialog_input(
         2 => {
             // Context selection area
             match (event.code, event.modifiers) {
-                (KeyCode::Tab, KeyModifiers::NONE) => {
+                (KeyCode::Tab | KeyCode::Down, KeyModifiers::NONE) => {
                     dialog.focus_area = 3;
                     dialog.selected_button = 0;
                 }
-                (KeyCode::BackTab, _) => {
+                (KeyCode::BackTab, _) | (KeyCode::Up, KeyModifiers::NONE) => {
                     dialog.focus_area = 1;
                     dialog.mode = EditMode::EditingAction;
                 }
@@ -1618,6 +1629,10 @@ fn handle_edit_dialog_input(
                         dialog.focus_area = 2;
                         dialog.mode = EditMode::EditingContext;
                     }
+                }
+                (KeyCode::Up, KeyModifiers::NONE) => {
+                    dialog.focus_area = 2;
+                    dialog.mode = EditMode::EditingContext;
                 }
                 (KeyCode::Left, _) => {
                     if dialog.selected_button > 0 {
