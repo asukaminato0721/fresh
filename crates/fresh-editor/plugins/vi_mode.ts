@@ -3130,6 +3130,15 @@ editor.registerCommand(
   null,  // Always visible - needed to enable vi mode in the first place
 );
 
+function maybe_enable_helix_mode(): void {
+  const config = editor.getConfig() as Record<string, unknown>;
+  if (config.active_keybinding_map === "helix" && !viModeEnabled) {
+    vi_mode_toggle();
+  }
+}
+registerHandler("maybe_enable_helix_mode", maybe_enable_helix_mode);
+editor.on("editor_initialized", "maybe_enable_helix_mode");
+
 // ============================================================================
 // Initialization
 // ============================================================================

@@ -919,9 +919,9 @@ impl Editor {
 
             Action::SwitchKeybindingMap(map_name) => {
                 // Check if the map exists (either built-in or user-defined)
-                let is_builtin =
-                    matches!(map_name.as_str(), "default" | "emacs" | "vscode" | "macos");
+                let is_builtin = crate::config::KeybindingMapName::is_builtin(&map_name);
                 let is_user_defined = self.config.keybinding_maps.contains_key(&map_name);
+                let was_helix = self.config.active_keybinding_map.0 == "helix";
 
                 if is_builtin || is_user_defined {
                     // Update the active keybinding map in config
@@ -934,6 +934,24 @@ impl Editor {
                     self.set_status_message(
                         t!("view.keybindings_switched", map = map_name).to_string(),
                     );
+
+                    #[cfg(feature = "plugins")]
+                    if self.plugin_manager.is_active() {
+                        let vi_active = self
+                            .editor_mode
+                            .as_deref()
+                            .is_some_and(|mode| mode.starts_with("vi-"));
+
+                        if map_name == "helix" && !vi_active {
+                            return self
+                                .handle_action(Action::PluginAction("vi_mode_toggle".into()));
+                        }
+
+                        if was_helix && map_name != "helix" && vi_active {
+                            return self
+                                .handle_action(Action::PluginAction("vi_mode_toggle".into()));
+                        }
+                    }
                 } else {
                     self.set_status_message(
                         t!("view.keybindings_unknown", map = map_name).to_string(),

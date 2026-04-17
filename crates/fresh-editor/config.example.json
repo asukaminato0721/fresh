@@ -1046,6 +1046,15 @@
                 },
                 "when": null,
                 "checkbox": null
+              },
+              {
+                "label": "Helix",
+                "action": "switch_keybinding_map",
+                "args": {
+                  "map": "helix"
+                },
+                "when": null,
+                "checkbox": null
               }
             ]
           }

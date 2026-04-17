@@ -233,7 +233,11 @@ pub struct KeybindingMapName(pub String);
 impl KeybindingMapName {
     /// Built-in keybinding map options shown in the settings dropdown
     pub const BUILTIN_OPTIONS: &'static [&'static str] =
-        &["default", "emacs", "vscode", "macos", "macos-gui"];
+        &["default", "emacs", "vscode", "helix", "macos", "macos-gui"];
+
+    pub fn is_builtin(name: &str) -> bool {
+        Self::BUILTIN_OPTIONS.contains(&name)
+    }
 }
 
 impl Deref for KeybindingMapName {
@@ -2463,6 +2467,17 @@ impl MenuConfig {
                                 checkbox: Some(context_keys::KEYMAP_VSCODE.to_string()),
                             },
                             MenuItem::Action {
+                                label: t!("menu.view.keybinding_helix").to_string(),
+                                action: "switch_keybinding_map".to_string(),
+                                args: {
+                                    let mut map = HashMap::new();
+                                    map.insert("map".to_string(), serde_json::json!("helix"));
+                                    map
+                                },
+                                when: None,
+                                checkbox: Some(context_keys::KEYMAP_HELIX.to_string()),
+                            },
+                            MenuItem::Action {
                                 label: "macOS GUI (⌘)".to_string(),
                                 action: "switch_keybinding_map".to_string(),
                                 args: {
@@ -2826,6 +2841,7 @@ impl Config {
             "default" => include_str!("../keymaps/default.json"),
             "emacs" => include_str!("../keymaps/emacs.json"),
             "vscode" => include_str!("../keymaps/vscode.json"),
+            "helix" => include_str!("../keymaps/helix.json"),
             "macos" => include_str!("../keymaps/macos.json"),
             "macos-gui" => include_str!("../keymaps/macos-gui.json"),
             _ => return None,
