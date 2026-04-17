@@ -8,14 +8,24 @@
 //! Note: These tests require the vi mode plugin to be loaded.
 
 use crate::common::fixtures::TestFixture;
-use crate::common::harness::{copy_plugin, copy_plugin_lib, EditorTestHarness};
+use crate::common::harness::{copy_plugin, copy_plugin_lib, EditorTestHarness, HarnessOptions};
 use crate::common::tracing::init_tracing_from_env;
 use crossterm::event::{KeyCode, KeyModifiers};
+use fresh::config::Config;
 use fresh::input::keybindings::Action::PluginAction;
 use std::fs;
 
 /// Create a harness with vi mode plugin loaded (uses real plugins/vi_mode.ts)
 fn vi_mode_harness(width: u16, height: u16) -> (EditorTestHarness, tempfile::TempDir) {
+    vi_mode_harness_with_config(width, height, Default::default(), false)
+}
+
+fn vi_mode_harness_with_config(
+    width: u16,
+    height: u16,
+    config: Config,
+    preserve_keybinding_map: bool,
+) -> (EditorTestHarness, tempfile::TempDir) {
     init_tracing_from_env();
     // Create a temporary project directory
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -29,13 +39,15 @@ fn vi_mode_harness(width: u16, height: u16) -> (EditorTestHarness, tempfile::Tem
     copy_plugin_lib(&plugins_dir);
 
     // Create harness with the project directory (so plugins load)
-    let mut harness = EditorTestHarness::with_config_and_working_dir(
-        width,
-        height,
-        Default::default(),
-        project_root.clone(),
-    )
-    .unwrap();
+    let mut options = HarnessOptions::new()
+        .with_config(config)
+        .with_working_dir(project_root.clone())
+        .without_empty_plugins_dir();
+    if preserve_keybinding_map {
+        options = options.with_preserved_keybinding_map();
+    }
+
+    let mut harness = EditorTestHarness::create(width, height, options).unwrap();
 
     // Enable internal-only clipboard to isolate tests from each other
     harness.editor_mut().set_clipboard_for_test("".to_string());
@@ -236,6 +248,20 @@ fn test_vi_insert_mode() {
 
     // Verify text was inserted (semantic waiting)
     harness.wait_for_buffer_content("Xhello\n").unwrap();
+}
+
+#[test]
+fn test_helix_keymap_enables_vi_mode_on_startup() {
+    let config = Config {
+        active_keybinding_map: "helix".into(),
+        ..Default::default()
+    };
+    let (mut harness, _temp_dir) = vi_mode_harness_with_config(80, 24, config, true);
+
+    harness.render().unwrap();
+    harness
+        .wait_until(|h| h.editor().editor_mode() == Some("vi-normal".to_string()))
+        .unwrap();
 }
 
 /// Test 'a' inserts after cursor
