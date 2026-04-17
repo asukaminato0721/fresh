@@ -150,7 +150,7 @@
 
 [1m[95mKeybindings[0m
 [2m────────────────────────────────────────────────────────────[0m
-  Fresh has three base keymaps: [1mdefault[0m, [1memacs[0m, and [1mmacos[0m. Switch
+  Fresh ships built-in [1mdefault[0m, [1memacs[0m, [1mvscode[0m, [1mhelix[0m, and [1mmacos[0m keymaps. Switch
   via View > Keybinding Style or the Settings editor. Custom
   bindings in the [32m"keybindings"[0m array take precedence over the keymap.
 

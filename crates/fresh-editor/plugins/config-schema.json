@@ -1127,6 +1127,7 @@
         "default",
         "emacs",
         "vscode",
+        "helix",
         "macos",
         "macos-gui"
       ]
