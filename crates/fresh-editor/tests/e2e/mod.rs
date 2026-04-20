@@ -126,6 +126,7 @@ pub mod save_nonexistent_directory;
 pub mod scroll_clearing;
 pub mod scrolling;
 pub mod search;
+pub mod search_center_on_scroll;
 pub mod search_navigation_after_move;
 pub mod search_replace;
 pub mod select_to_paragraph;

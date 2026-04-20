@@ -164,6 +164,10 @@ impl Editor {
     /// Move the primary cursor to `position`, clear its selection anchor,
     /// update the cached line number (used by the status bar), and scroll
     /// the active split so the cursor is visible.
+    ///
+    /// If the match was off-screen and required a scroll, the viewport is
+    /// vertically centered on the match to provide surrounding context
+    /// (issue #1251). Matches already visible are not re-scrolled.
     fn move_cursor_to_match(&mut self, position: usize) {
         let active_split = self.split_manager.active_split();
         let active_buffer = self.active_buffer();
@@ -175,7 +179,23 @@ impl Editor {
                 state.primary_cursor_line_number =
                     crate::model::buffer::LineNumber::Absolute(pos.line);
             }
+            let top_byte_before = view_state.viewport.top_byte;
             view_state.ensure_cursor_visible(&mut state.buffer, &state.marker_list);
+            if view_state.viewport.top_byte != top_byte_before {
+                // We had to scroll: recenter the match vertically so the user
+                // sees context above and below the match.
+                let viewport_height = view_state.viewport.visible_line_count();
+                let target_rows_from_top = viewport_height / 2;
+                let mut iter = state.buffer.line_iterator(position, 80);
+                for _ in 0..target_rows_from_top {
+                    if iter.prev().is_none() {
+                        break;
+                    }
+                }
+                view_state.viewport.top_byte = iter.current_position();
+                view_state.viewport.top_view_line_offset = 0;
+                view_state.viewport.set_skip_ensure_visible();
+            }
         }
     }
 
