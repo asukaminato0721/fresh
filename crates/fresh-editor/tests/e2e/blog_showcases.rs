@@ -2389,7 +2389,7 @@ fn blog_showcase_productivity_git_log() {
     h.render().unwrap();
 
     let mut s = BlogShowcase::new(
-        "productivity/git-log",
+        "fresh-0.2.26/git-log",
         "Git Log",
         "Magit-style git log with live-preview: a buffer-group tab pairs the aligned commit list with the selected commit's detail, updated as you navigate.",
     );
@@ -2413,11 +2413,12 @@ fn blog_showcase_productivity_git_log() {
     // Confirm — this runs `show_git_log` which creates the buffer group.
     h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     // The group buffer + `git show` dispatch is async; wait for the log
-    // header *and* the detail-panel "Author:" line so both panels are
-    // fully rendered before we start snapping.
+    // panel's commit list AND the detail-panel's `git show` output to
+    // actually land (not just the "Loading commit..." placeholder).
+    // `diff --git` is the giveaway that git-show's stdout has arrived.
     h.wait_until(|h| {
         let screen = h.screen_to_string();
-        screen.contains("Commits:") && screen.contains("Author:")
+        screen.contains("feat: initial scaffold") && screen.contains("diff --git")
     })
     .unwrap();
     snap(&mut h, &mut s, Some("Enter"), 300);
@@ -2425,24 +2426,21 @@ fn blog_showcase_productivity_git_log() {
 
     // Walk down the commit list — each `j` fires `cursor_moved`, which
     // re-renders the right panel with the newly-selected commit's diff.
+    // Wait for the async `git show` to complete before snapshotting, so
+    // the right panel matches the highlighted row.
     for _ in 0..3 {
         h.send_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
-        // Let the async `git show` land before we snapshot so the right
-        // panel matches the highlighted row.
-        h.process_async_and_render().unwrap();
+        h.wait_until(|h| !h.screen_to_string().contains("Loading commit"))
+            .unwrap();
         snap(&mut h, &mut s, Some("j"), 180);
         hold(&mut h, &mut s, 2, 120);
     }
-    // One more for effect.
-    h.send_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
-    h.process_async_and_render().unwrap();
-    snap(&mut h, &mut s, Some("j"), 220);
-    hold(&mut h, &mut s, 3, 150);
 
     // Climb back up to highlight live-update going both directions.
     for _ in 0..2 {
         h.send_key(KeyCode::Char('k'), KeyModifiers::NONE).unwrap();
-        h.process_async_and_render().unwrap();
+        h.wait_until(|h| !h.screen_to_string().contains("Loading commit"))
+            .unwrap();
         snap(&mut h, &mut s, Some("k"), 180);
     }
     hold(&mut h, &mut s, 3, 120);
@@ -2463,7 +2461,7 @@ fn blog_showcase_productivity_git_log() {
 
     // Final close — q in the log panel tears the group down.
     h.send_key(KeyCode::Char('q'), KeyModifiers::NONE).unwrap();
-    h.wait_until(|h| !h.screen_to_string().contains("Commits:"))
+    h.wait_until(|h| !h.screen_to_string().contains("feat: initial scaffold"))
         .unwrap();
     snap(&mut h, &mut s, Some("q"), 220);
     hold(&mut h, &mut s, 4, 150);
@@ -2475,42 +2473,214 @@ fn blog_showcase_productivity_git_log() {
 // Blog Post 7: Fresh 0.2.26
 // =========================================================================
 
-/// Current-line highlight: cursor row is highlighted, follows movement.
+/// Devcontainer: projects with `.devcontainer/devcontainer.json` get
+/// Dev Container commands in the palette. Demo opens the Show Info
+/// panel — it doesn't require a running Docker daemon.
 #[test]
 #[ignore]
-fn blog_showcase_fresh_0_2_26_current_line_highlight() {
-    let mut h = EditorTestHarness::with_temp_project(100, 30).unwrap();
-    let pd = h.project_dir().unwrap();
-    create_demo_project(&pd);
-    h.open_file(&pd.join("src/main.rs")).unwrap();
+fn blog_showcase_fresh_0_2_26_devcontainer() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let project_root = temp_dir.path().join("project");
+    fs::create_dir_all(project_root.join(".devcontainer")).unwrap();
+    fs::write(
+        project_root.join(".devcontainer/devcontainer.json"),
+        r#"{
+  "name": "Rust dev",
+  "image": "mcr.microsoft.com/devcontainers/rust:1",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "forwardPorts": [3000, 8080],
+  "postCreateCommand": "cargo fetch",
+  "postAttachCommand": "cargo build"
+}
+"#,
+    )
+    .unwrap();
+    fs::write(project_root.join("README.md"), "# demo\n").unwrap();
+
+    // Install the devcontainer plugin into the project's plugins/ dir.
+    let plugins_dir = project_root.join("plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+    copy_plugin_lib(&plugins_dir);
+    copy_plugin(&plugins_dir, "devcontainer");
+
+    let mut h = EditorTestHarness::with_config_and_working_dir(
+        120,
+        32,
+        Default::default(),
+        project_root,
+    )
+    .unwrap();
     h.render().unwrap();
 
     let mut s = BlogShowcase::new(
-        "fresh-0.2.26/current-line-highlight",
-        "Current-Line Highlight",
-        "The cursor's row is highlighted, making it easy to track where you are at a glance.",
+        "fresh-0.2.26/devcontainer",
+        "Devcontainers",
+        "Fresh detects .devcontainer/devcontainer.json on startup and prompts to Attach. Attached, file I/O and the embedded terminal route through the container.",
     );
 
-    hold(&mut h, &mut s, 5, 150);
+    // Wait for the "Dev Container Detected" prompt to appear on launch,
+    // then hold it so readers can see the attach / dismiss options.
+    h.wait_until(|h| h.screen_to_string().contains("Dev Container Detected"))
+        .unwrap();
+    hold(&mut h, &mut s, 10, 250);
 
-    // Walk down several lines — each move shifts the highlight.
-    for _ in 0..10 {
-        h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    // Dismiss the prompt with Escape so we can show the palette
+    // commands.
+    h.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Esc"), 250);
+    hold(&mut h, &mut s, 3, 200);
+
+    // Open the command palette and filter to Dev Container commands.
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Ctrl+P"), 200);
+
+    for ch in "Dev Container".chars() {
+        h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
         h.render().unwrap();
-        snap(&mut h, &mut s, Some("↓"), 120);
+        snap(&mut h, &mut s, Some(&ch.to_string()), 70);
+    }
+    hold(&mut h, &mut s, 6, 200);
+
+    s.finalize().unwrap();
+}
+
+/// Dashboard: opt-in TUI dashboard replaces [No Name] with weather,
+/// git status, GitHub PRs, and disk usage. Driven from init.ts.
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_26_dashboard() {
+    // A small real git repo gives the GIT section something to draw.
+    let repo = GitTestRepo::new();
+    repo.create_file("README.md", "# demo\n\nA small project.\n");
+    repo.create_file("src/main.rs", "fn main() { println!(\"hi\"); }\n");
+    repo.git_add_all();
+    repo.git_commit("initial commit");
+
+    // Make the repo's plugins/ dir contain the dashboard plugin so the
+    // runtime picks it up, plus write an init.ts that opts in.
+    let plugins_dir = repo.path.join("plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+    copy_plugin_lib(&plugins_dir);
+    copy_plugin(&plugins_dir, "dashboard");
+
+    // init.ts lives under the harness's DirectoryContext.config_dir. We
+    // need a shared dir context to point the loader at our temp config.
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir_context = fresh::config_io::DirectoryContext::for_testing(temp.path());
+    let config_dir = dir_context.config_dir.clone();
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("init.ts"),
+        r#"
+        const editor = getEditor();
+        const dash = editor.getPluginApi("dashboard");
+        if (dash) dash.enable();
+        "#,
+    )
+    .unwrap();
+
+    let mut h = EditorTestHarness::with_shared_dir_context(
+        120,
+        32,
+        Default::default(),
+        repo.path.clone(),
+        dir_context,
+    )
+    .unwrap();
+    h.editor_mut().load_init_script(true);
+    h.render().unwrap();
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.26/dashboard",
+        "Dashboard",
+        "Opt-in TUI dashboard replaces the default [No Name] buffer with weather, git status, GitHub PRs, and disk usage.",
+    );
+
+    // Wait for the dashboard buffer to swap in and hold a few frames of
+    // its initial "loading…" state so readers can see the skeleton.
+    h.wait_until(|h| {
+        let screen = h.screen_to_string();
+        screen.contains("WEATHER") || screen.contains("GIT") || screen.contains("GITHUB")
+    })
+    .unwrap();
+    hold(&mut h, &mut s, 4, 200);
+
+    // Then wait for every section to leave its "loading…" state. Network
+    // failures surface as "error" or similar; either way, "loading…"
+    // should not still be present.
+    h.wait_until(|h| !h.screen_to_string().contains("loading…"))
+        .unwrap();
+    hold(&mut h, &mut s, 10, 250);
+
+    s.finalize().unwrap();
+}
+
+/// init.ts — open the startup script via the command palette and show
+/// the auto-generated starter template.
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_26_init_ts() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir_context = fresh::config_io::DirectoryContext::for_testing(temp.path());
+    let working_dir = temp.path().join("work");
+    fs::create_dir_all(&working_dir).unwrap();
+
+    let mut h = EditorTestHarness::with_shared_dir_context(
+        100,
+        30,
+        Default::default(),
+        working_dir,
+        dir_context,
+    )
+    .unwrap();
+    h.render().unwrap();
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.26/init-ts",
+        "Startup Script (init.ts)",
+        "Fresh auto-loads ~/.config/fresh/init.ts. Run init: Edit from the palette to open it with a starter template; init: Reload re-runs without restarting.",
+    );
+
+    hold(&mut h, &mut s, 4, 150);
+
+    // Open the command palette and type the query — Ctrl+P fuzzy-searches
+    // across both files and commands, so "init: Edit" surfaces the
+    // "init: Edit init.ts" command specifically (init: Check and
+    // init: Reload are filtered out by typing "Edit").
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Ctrl+P"), 200);
+
+    for ch in "init: Edit".chars() {
+        h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        snap(&mut h, &mut s, Some(&ch.to_string()), 70);
     }
     hold(&mut h, &mut s, 3, 150);
 
-    // Jump to end of file and back to show larger moves.
-    h.send_key(KeyCode::End, KeyModifiers::CONTROL).unwrap();
-    h.render().unwrap();
-    snap(&mut h, &mut s, Some("Ctrl+End"), 300);
-    hold(&mut h, &mut s, 3, 150);
+    // Accept the match — "init: Edit init.ts" — which creates the
+    // starter template in the config dir and opens it in a buffer.
+    // Wait for the template content to render (it contains the
+    // `getEditor()` reference line).
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.wait_until(|h| h.screen_to_string().contains("getEditor()"))
+        .unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 300);
+    hold(&mut h, &mut s, 5, 180);
 
-    h.send_key(KeyCode::Home, KeyModifiers::CONTROL).unwrap();
-    h.render().unwrap();
-    snap(&mut h, &mut s, Some("Ctrl+Home"), 300);
-    hold(&mut h, &mut s, 5, 150);
+    // Scroll down through the template to show the examples.
+    for _ in 0..8 {
+        h.send_key(KeyCode::PageDown, KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        snap(&mut h, &mut s, Some("PgDn"), 220);
+    }
+    hold(&mut h, &mut s, 4, 150);
 
     s.finalize().unwrap();
 }

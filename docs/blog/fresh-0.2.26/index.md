@@ -15,13 +15,25 @@ Fresh now auto-loads `~/.config/fresh/init.ts` on startup. Run **init: Edit** fr
 
 See the [Startup Script guide](/configuration/init) for the full picture.
 
+<div class="showcase-demo">
+  <img src="./init-ts/showcase.gif" alt="init.ts demo" />
+</div>
+
 ## Dashboard
 
 A built-in TUI dashboard replaces the default `[No Name]` buffer with weather info, git status + repo URL, a "vs master" commits-ahead/behind row, recent GitHub PRs, and disk usage for common mounts. Opt in from `init.ts` — see the [Dashboard feature page](/features/dashboard).
 
+<div class="showcase-demo">
+  <img src="./dashboard/showcase.gif" alt="Dashboard demo" />
+</div>
+
 ## Devcontainers
 
-Projects with `.devcontainer/devcontainer.json` get **Devcontainer: Attach** and **Devcontainer: Rebuild** in the command palette. While attached, the embedded terminal, filesystem, and any process Fresh spawns all run inside the container. Requires the [devcontainer CLI](https://github.com/devcontainers/cli). See [Devcontainers](/features/devcontainer).
+Projects with `.devcontainer/devcontainer.json` get **Dev Container: Attach** and **Dev Container: Rebuild** in the command palette, plus an attach prompt on launch. While attached, the embedded terminal, filesystem, and any process Fresh spawns all run inside the container. Requires the [devcontainer CLI](https://github.com/devcontainers/cli). See [Devcontainers](/features/devcontainer).
+
+<div class="showcase-demo">
+  <img src="./devcontainer/showcase.gif" alt="Devcontainer demo" />
+</div>
 
 ## Review Diff Rewrite
 
@@ -35,20 +47,16 @@ The review diff view is now a single unified buffer: file list at the top, hunks
 
 **Git Log** opens a live-preview view — moving through the log updates the right panel with the selected commit's diff. Columns are aligned, messages wrap, and the toolbar is clickable.
 
+<div class="showcase-demo">
+  <img src="./git-log/showcase.gif" alt="Git Log demo" />
+</div>
+
 ## Preview Tabs in File Explorer
 
 Single-clicking a file in the explorer now opens it in an ephemeral *preview* tab. The next single-click replaces that preview instead of accumulating tabs. Any real commitment — editing, double-clicking, pressing Enter, clicking the tab, or a layout action — promotes it to a permanent tab. On by default; turn off in the Settings UI if you prefer the old behavior.
 
 <div class="showcase-demo">
   <img src="./preview-tabs/showcase.gif" alt="Preview Tabs demo" />
-</div>
-
-## Current-Line Highlight
-
-A subtle highlight on the cursor's row, on by default. Toggle from the command palette or Settings UI.
-
-<div class="showcase-demo">
-  <img src="./current-line-highlight/showcase.gif" alt="Current Line Highlight demo" />
 </div>
 
 ## Customizable Status Bar
