@@ -13,7 +13,7 @@ impl Editor {
             KeyContext::Menu
         } else if self.is_prompting() {
             KeyContext::Prompt
-        } else if self.active_state().popups.is_visible() {
+        } else if self.global_popups.is_visible() || self.active_state().popups.is_visible() {
             KeyContext::Popup
         } else if self.is_composite_buffer(self.active_buffer()) {
             KeyContext::CompositeBuffer
@@ -80,9 +80,14 @@ impl Editor {
         // Special case: Hover and Signature Help popups should be dismissed on any key press
         // EXCEPT for Ctrl+C when the popup has a text selection (allow copy first)
         if matches!(context, crate::input::keybindings::KeyContext::Popup) {
-            // Check if the current popup is transient (hover, signature help)
+            // Check if the current popup is transient (hover, signature help).
+            // Editor-level popups always take precedence over buffer popups
+            // when both are visible — they're effectively modal overlays.
             let (is_transient_popup, has_selection) = {
-                let popup = self.active_state().popups.top();
+                let popup = self
+                    .global_popups
+                    .top()
+                    .or_else(|| self.active_state().popups.top());
                 (
                     popup.is_some_and(|p| p.transient),
                     popup.is_some_and(|p| p.has_selection()),
@@ -442,9 +447,13 @@ impl Editor {
                 }
             },
             Action::Copy => {
-                // Check if there's an active popup with text selection
-                let state = self.active_state();
-                if let Some(popup) = state.popups.top() {
+                // Check if there's an active popup with text selection.
+                // Editor-level popups take precedence over buffer popups.
+                let popup = self
+                    .global_popups
+                    .top()
+                    .or_else(|| self.active_state().popups.top());
+                if let Some(popup) = popup {
                     if popup.has_selection() {
                         if let Some(text) = popup.get_selected_text() {
                             self.clipboard.copy(text);

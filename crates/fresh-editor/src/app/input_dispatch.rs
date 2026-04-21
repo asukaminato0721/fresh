@@ -22,6 +22,7 @@ impl Editor {
     pub fn dispatch_terminal_input(&mut self, event: &KeyEvent) -> Option<InputResult> {
         // Skip if we're in a prompt/popup (those need to handle keys normally)
         let in_modal = self.is_prompting()
+            || self.global_popups.is_visible()
             || self.active_state().popups.is_visible()
             || self.menu_state.active_menu.is_some()
             || self.settings_state.as_ref().is_some_and(|s| s.visible)
@@ -170,6 +171,20 @@ impl Editor {
                     return Some(result);
                 }
             }
+        }
+
+        // Editor-level (global) popups take precedence over buffer popups so
+        // that plugin notifications stay focused even when the active buffer
+        // owns its own popup stack.
+        if self.global_popups.is_visible() {
+            let result = self.global_popups.dispatch_input(event, &mut ctx);
+            self.process_deferred_actions(ctx);
+            if result != InputResult::Ignored {
+                return Some(result);
+            }
+            // Re-check visibility — the dispatch may have queued a ClosePopup
+            // that the deferred-action processor has now fired.
+            return None;
         }
 
         // Popup is next

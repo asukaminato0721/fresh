@@ -82,6 +82,23 @@ impl Editor {
 
     /// Hide the topmost popup
     pub fn hide_popup(&mut self) {
+        // Editor-level popups take precedence: dismiss them first if any are
+        // visible. This avoids leaking a popup-stack pop event into the
+        // active buffer's event log when the popup we're closing is global.
+        if self.global_popups.is_visible() {
+            self.global_popups.hide();
+
+            // Clear hover symbol highlight if present (kept for parity with
+            // the buffer-popup branch even though global popups don't use it
+            // today — cheap no-op when nothing is set).
+            if let Some(handle) = self.hover.take_symbol_overlay() {
+                let remove_overlay_event = crate::model::event::Event::RemoveOverlay { handle };
+                self.apply_event_to_active_buffer(&remove_overlay_event);
+            }
+            self.hover.set_symbol_range(None);
+            return;
+        }
+
         let event = Event::HidePopup;
         self.active_event_log_mut().append(event.clone());
         self.apply_event_to_active_buffer(&event);
@@ -103,6 +120,8 @@ impl Editor {
     /// Dismiss transient popups if present
     /// These popups should be dismissed on scroll or other user actions
     pub(super) fn dismiss_transient_popups(&mut self) {
+        // Action popups are persistent by design — only buffer-level transient
+        // popups (Hover, Signature Help) get auto-dismissed here.
         let is_transient_popup = self
             .active_state()
             .popups
@@ -118,6 +137,10 @@ impl Editor {
     /// Scroll any popup content by delta lines
     /// Positive delta scrolls down, negative scrolls up
     pub(super) fn scroll_popup(&mut self, delta: i32) {
+        if let Some(popup) = self.global_popups.top_mut() {
+            popup.scroll_by(delta);
+            return;
+        }
         if let Some(popup) = self.active_state_mut().popups.top_mut() {
             popup.scroll_by(delta);
             tracing::debug!(
@@ -447,6 +470,10 @@ impl Editor {
 
     /// Navigate popup selection (next item)
     pub fn popup_select_next(&mut self) {
+        if let Some(popup) = self.global_popups.top_mut() {
+            popup.select_next();
+            return;
+        }
         let event = Event::PopupSelectNext;
         self.active_event_log_mut().append(event.clone());
         self.apply_event_to_active_buffer(&event);
@@ -454,6 +481,10 @@ impl Editor {
 
     /// Navigate popup selection (previous item)
     pub fn popup_select_prev(&mut self) {
+        if let Some(popup) = self.global_popups.top_mut() {
+            popup.select_prev();
+            return;
+        }
         let event = Event::PopupSelectPrev;
         self.active_event_log_mut().append(event.clone());
         self.apply_event_to_active_buffer(&event);
@@ -461,6 +492,10 @@ impl Editor {
 
     /// Navigate popup (page down)
     pub fn popup_page_down(&mut self) {
+        if let Some(popup) = self.global_popups.top_mut() {
+            popup.page_down();
+            return;
+        }
         let event = Event::PopupPageDown;
         self.active_event_log_mut().append(event.clone());
         self.apply_event_to_active_buffer(&event);
@@ -468,6 +503,10 @@ impl Editor {
 
     /// Navigate popup (page up)
     pub fn popup_page_up(&mut self) {
+        if let Some(popup) = self.global_popups.top_mut() {
+            popup.page_up();
+            return;
+        }
         let event = Event::PopupPageUp;
         self.active_event_log_mut().append(event.clone());
         self.apply_event_to_active_buffer(&event);

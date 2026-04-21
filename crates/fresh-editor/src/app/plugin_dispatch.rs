@@ -1543,7 +1543,7 @@ impl Editor {
                 self.active_action_popup = Some((popup_id.clone(), action_ids));
 
                 // Create popup with message + action list
-                let popup = crate::model::event::PopupData {
+                let popup_data = crate::model::event::PopupData {
                     kind: crate::model::event::PopupKindHint::List,
                     title: Some(title),
                     description: Some(message),
@@ -1555,7 +1555,13 @@ impl Editor {
                     bordered: true,
                 };
 
-                self.show_popup(popup);
+                // Action popups are buffer-independent notifications; route
+                // them to the editor-level popup stack so they remain visible
+                // (and dismissible) regardless of which buffer is focused —
+                // including virtual buffers like the Dashboard that own the
+                // whole split.
+                let popup_obj = crate::state::convert_popup_data_to_popup(&popup_data);
+                self.global_popups.show(popup_obj);
                 tracing::info!(
                     "Action popup shown: id={}, active_action_popup={:?}",
                     popup_id,

@@ -913,6 +913,11 @@ pub(crate) struct CachedLayout {
     /// Popup areas for mouse hit testing
     /// scrollbar_rect is Some if popup has a scrollbar
     pub popup_areas: Vec<PopupAreaLayout>,
+    /// Editor-level popup areas (e.g. plugin action popups) for mouse hit
+    /// testing. Stored separately from buffer popups because they're owned by
+    /// `Editor.global_popups` rather than the active buffer's state.
+    /// Fields: (popup_index, rect, inner_rect, scroll_offset, num_items)
+    pub global_popup_areas: Vec<(usize, Rect, Rect, usize, usize)>,
     /// Suggestions area for mouse hit testing
     /// (inner_rect, scroll_start_idx, visible_count, total_count)
     pub suggestions_area: Option<(Rect, usize, usize, usize)>,

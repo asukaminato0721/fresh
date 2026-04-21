@@ -1033,6 +1033,12 @@ pub struct Editor {
     /// Stores (popup_id, Vec<(action_id, action_label)>)
     active_action_popup: Option<(String, Vec<(String, String)>)>,
 
+    /// Editor-level popups that float above any buffer regardless of which
+    /// one is active. Plugin notifications (showActionPopup) live here so a
+    /// switch to a virtual buffer (Dashboard, diagnostics panel, …) doesn't
+    /// hide them mid-decision.
+    pub(crate) global_popups: crate::view::popup::PopupManager,
+
     /// Composite buffers (separate from regular buffers)
     /// These display multiple source buffers in a single tab
     composite_buffers: HashMap<BufferId, crate::model::composite_buffer::CompositeBuffer>,

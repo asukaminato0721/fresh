@@ -48,13 +48,16 @@ impl Editor {
             return PopupConfirmResult::EarlyReturn;
         }
 
-        // Check if this is an action popup (from plugin showActionPopup)
+        // Check if this is an action popup (from plugin showActionPopup).
+        // Action popups live on the editor-level (global) stack so they show
+        // over any buffer; read the selection from there first, falling back
+        // to the active buffer's stack for legacy callers.
         if let Some((popup_id, _actions)) = &self.active_action_popup {
             let popup_id = popup_id.clone();
             let action_id = self
-                .active_state()
-                .popups
+                .global_popups
                 .top()
+                .or_else(|| self.active_state().popups.top())
                 .and_then(|p| p.selected_item())
                 .and_then(|item| item.data.clone())
                 .unwrap_or_else(|| "dismissed".to_string());

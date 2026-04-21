@@ -731,6 +731,17 @@ impl Editor {
 
     /// Check if mouse position is over any popup (including non-transient ones like completion)
     fn is_mouse_over_any_popup(&self, col: u16, row: u16) -> bool {
+        // Editor-level popup overlays absorb every click within their outer
+        // rect so the buffer below doesn't receive a stray cursor placement.
+        for (_, popup_area, _, _, _) in &self.cached_layout.global_popup_areas {
+            if col >= popup_area.x
+                && col < popup_area.x + popup_area.width
+                && row >= popup_area.y
+                && row < popup_area.y + popup_area.height
+            {
+                return true;
+            }
+        }
         let layouts = popup_areas_to_layout_info(&self.cached_layout.popup_areas);
         let hit_tester = PopupHitTester::new(&layouts, &self.active_state().popups);
         hit_tester.is_over_popup(col, row)
@@ -1432,6 +1443,39 @@ impl Editor {
                 popup.scroll_by(delta);
             }
             return Ok(());
+        }
+
+        // Editor-level popups overlay buffer popups, so handle their clicks
+        // first. Mirrors the buffer-popup loop below: close-button →
+        // PopupCancel, list item → select + PopupConfirm.
+        for (popup_idx, popup_rect, inner_rect, scroll_offset, num_items) in
+            self.cached_layout.global_popup_areas.clone().iter().rev()
+        {
+            if popup_rect.width >= 5 {
+                let cb_x = popup_rect.x + popup_rect.width - 4;
+                if row == popup_rect.y && col >= cb_x && col < cb_x + 3 {
+                    return self.handle_action(Action::PopupCancel);
+                }
+            }
+            if col >= inner_rect.x
+                && col < inner_rect.x + inner_rect.width
+                && row >= inner_rect.y
+                && row < inner_rect.y + inner_rect.height
+                && *num_items > 0
+            {
+                let relative_row = (row - inner_rect.y) as usize;
+                let item_idx = scroll_offset + relative_row;
+                if item_idx < *num_items {
+                    if let Some(popup) = self.global_popups.get_mut(*popup_idx) {
+                        if let crate::view::popup::PopupContent::List { items: _, selected } =
+                            &mut popup.content
+                        {
+                            *selected = item_idx;
+                        }
+                    }
+                    return self.handle_action(Action::PopupConfirm);
+                }
+            }
         }
 
         // Check if click is on the popup's close-button overlay ("[×]")
