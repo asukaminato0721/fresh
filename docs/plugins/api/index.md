@@ -42,6 +42,29 @@ Plugins can call `getPluginDir()` to locate their own package directory, useful 
 
 Terminals created by a plugin now follow the lifetime of the action that spawned them — when the action finishes, the terminal closes cleanly on its own. This is what you want for one-shot commands (a test run, a formatter) where you don't want the tab to linger.
 
+### Typed Plugin APIs
+
+`editor.exportPluginApi("name", api)` makes an object available to other plugins and `init.ts` via `editor.getPluginApi("name")`. The return type is inferred automatically if the publishing plugin augments the shared `FreshPluginRegistry` interface:
+
+```ts
+// In my_plugin.ts
+export type MyPluginApi = { doThing(): void };
+declare global {
+  interface FreshPluginRegistry {
+    "my-plugin": MyPluginApi;
+  }
+}
+editor.exportPluginApi("my-plugin", { doThing() { /* ... */ } });
+```
+
+Consumers then get a typed surface with no cast:
+
+```ts
+const api = editor.getPluginApi("my-plugin"); // MyPluginApi | null
+```
+
+Each loaded plugin's augmentation is emitted to `<config_dir>/types/plugins.d.ts` at startup (via oxc's isolated-declarations), so `init.ts` sees every registry entry automatically. Plugins that don't augment the registry still work — the untyped `getPluginApi<T = unknown>(name): T | null` overload takes over.
+
 ### Modes
 
 Keybinding contexts that determine how keypresses are interpreted. Each buffer has a mode (e.g., "normal", "insert", "special"). Custom modes can inherit from parents and define buffer-local keybindings. Virtual buffers typically use custom modes.

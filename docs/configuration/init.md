@@ -15,21 +15,28 @@ Reach for `init.ts` when the decision depends on *where or how Fresh is starting
 - Different settings when launched over SSH vs. locally.
 - Host-specific tool paths (e.g. `rust-analyzer` lives in a different prefix on your work laptop).
 - Environment-driven profiles (`FRESH_PROFILE=writing fresh` → wrap at 80, turn off diagnostics).
-- Enabling an opt-in bundled plugin like [Dashboard](/features/dashboard).
+- Extending a bundled plugin with your own data — e.g. adding a custom section to the [Dashboard](/features/dashboard).
 - One-off startup effects — e.g. fade in to your theme on launch.
 
 ## Complementary with plugins
 
 If you're building something reusable, prefer a plugin — it's installable, shareable, and gets the plugin lifecycle for free.
 
-Sometimes a plugin is the right unit, but part of its behavior only makes sense at startup or depends on the environment. In that case expose the knobs as a plugin API and *call them from `init.ts`*:
+Sometimes a plugin is the right unit, but part of its behavior only makes sense at startup or depends on the environment. In that case expose the knobs as a plugin API and *call them from `init.ts`*. Plugin APIs are typed automatically — `editor.getPluginApi("dashboard")` returns the right interface or `null`, no `as`-cast needed:
 
 ```ts
 // In init.ts — plug the parts together for this machine.
-const dash = editor.getPluginApi("dashboard");
-if (dash) dash.enable();
-
 editor.on("plugins_loaded", () => {
+  // Add a custom section to the Dashboard plugin.
+  const dash = editor.getPluginApi("dashboard");
+  if (dash) {
+    dash.registerSection("todo", async (ctx) => {
+      ctx.kv("open", "3", "warn");
+      ctx.newline();
+    });
+  }
+
+  // Configure another plugin for this environment.
   const todo = editor.getPluginApi("todo-highlighter");
   if (todo) todo.configure({ tags: ["TODO", "FIXME", "HACK"] });
 });

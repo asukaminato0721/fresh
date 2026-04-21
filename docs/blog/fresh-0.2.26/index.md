@@ -21,7 +21,7 @@ See the [Startup Script guide](/configuration/init) for the full picture.
 
 ## Dashboard
 
-A built-in TUI dashboard replaces the default `[No Name]` buffer with weather info, git status + repo URL, a "vs master" commits-ahead/behind row, recent GitHub PRs, and disk usage for common mounts. Opt in from `init.ts` — see the [Dashboard feature page](/features/dashboard).
+A built-in TUI dashboard replaces the default `[No Name]` buffer with weather info, git status + repo URL, a "vs master" commits-ahead/behind row, open GitHub PRs for the current repo, and disk usage for common mounts. Enable it via `plugins.dashboard.enabled` in `config.json` or the Settings UI. Third-party plugins and your `init.ts` can contribute custom sections through the `registerSection()` API — see the [Dashboard feature page](/features/dashboard).
 
 <div class="showcase-demo">
   <img src="./dashboard/showcase.gif" alt="Dashboard demo" />
