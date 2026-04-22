@@ -951,8 +951,21 @@ impl Editor {
         );
     }
 
-    /// Clear the file explorer search (or multi-selection, or transfer focus)
+    /// Clear the file explorer search (or multi-selection, pending cut, or transfer focus)
     pub fn file_explorer_search_clear(&mut self) {
+        // A pending cut has no other exit: the user marked files for cut
+        // but hasn't pasted yet, and there's no visible button to undo it.
+        // Before this, Escape just transferred focus to the editor while
+        // the clipboard stayed primed, so the next Ctrl+V in the explorer
+        // would silently move a file the user had effectively "forgotten".
+        if matches!(
+            self.file_explorer_clipboard,
+            Some(FileExplorerClipboard { is_cut: true, .. })
+        ) {
+            self.file_explorer_clipboard = None;
+            self.set_status_message(t!("explorer.cut_cancelled").to_string());
+            return;
+        }
         if let Some(explorer) = &mut self.file_explorer {
             if explorer.has_multi_selection() {
                 explorer.clear_multi_selection();
@@ -1147,7 +1160,12 @@ impl Editor {
 
             if src.parent().map(|p| p == dst_dir).unwrap_or(false) {
                 if is_cut {
-                    self.set_status_message(t!("explorer.paste_same_location").to_string());
+                    // Same-dir paste of a cut is effectively "changed my
+                    // mind": treat it as a cancel rather than surfacing a
+                    // scary error. Must clear the clipboard, otherwise a
+                    // later paste elsewhere would silently move the file.
+                    self.file_explorer_clipboard = None;
+                    self.set_status_message(t!("explorer.cut_cancelled").to_string());
                     return;
                 } else {
                     let unique = unique_paste_name(
@@ -1205,7 +1223,15 @@ impl Editor {
             }
 
             if safe.is_empty() && conflicts.is_empty() {
-                self.set_status_message(t!("explorer.paste_same_location").to_string());
+                // For cut, an all-same-dir paste is a cancel (see the
+                // single-path branch above). Clear the clipboard so a
+                // later paste can't silently move the files after all.
+                if is_cut {
+                    self.file_explorer_clipboard = None;
+                    self.set_status_message(t!("explorer.cut_cancelled").to_string());
+                } else {
+                    self.set_status_message(t!("explorer.paste_same_location").to_string());
+                }
                 return;
             }
 

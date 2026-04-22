@@ -1240,9 +1240,11 @@ fn test_copy_to_same_dir_auto_renames() {
     );
 }
 
-/// Test that cutting and pasting to the same directory shows an error
+/// Cutting and pasting to the same directory cancels the cut — the user
+/// effectively changed their mind. The file stays in place, the clipboard
+/// is cleared, and the status line says so.
 #[test]
-fn test_cut_paste_same_location_shows_error() {
+fn test_cut_paste_same_location_cancels_cut() {
     let mut harness = EditorTestHarness::with_temp_project(100, 30).unwrap();
     let project_root = harness.project_dir().unwrap();
 
@@ -1267,8 +1269,13 @@ fn test_cut_paste_same_location_shows_error() {
 
     let screen = harness.screen_to_string();
     assert!(
-        screen.contains("same location") || screen.contains("Cannot paste"),
-        "Should show 'same location' error. Screen:\n{}",
+        !screen.contains("Cannot paste"),
+        "Same-dir paste of a cut should be a cancel, not an error. Screen:\n{}",
+        screen
+    );
+    assert!(
+        screen.contains("Cut cancelled"),
+        "Status line should say the cut was cancelled. Screen:\n{}",
         screen
     );
     // File should not be moved

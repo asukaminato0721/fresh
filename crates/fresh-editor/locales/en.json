@@ -791,6 +791,7 @@
   "explorer.pasted_n": "Pasted %{count} items",
   "explorer.pasted_moved_n": "Moved %{count} items",
   "explorer.cut": "Marked for cut: %{name}",
+  "explorer.cut_cancelled": "Cut cancelled",
   "explorer.error_copying": "Error copying: %{error}",
   "explorer.error_moving": "Error moving: %{error}",
   "explorer.paste_cancelled": "Paste cancelled",

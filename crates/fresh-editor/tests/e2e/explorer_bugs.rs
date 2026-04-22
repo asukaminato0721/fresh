@@ -996,3 +996,123 @@ fn test_cross_fs_cut_source_delete_failure_is_reported() {
         screen
     );
 }
+
+// ---------------------------------------------------------------------------
+// Follow-ups to PR #1665
+// ---------------------------------------------------------------------------
+
+/// Pressing Escape in the file explorer after a cut must cancel the cut —
+/// there is no other way to dismiss a pending cut without actually pasting
+/// somewhere. Before this fix, Escape with no multi-selection and no active
+/// search simply transferred focus to the editor; the clipboard stayed
+/// primed, so the next Ctrl+V in the explorer (even in an unrelated flow)
+/// could move the supposedly-forgotten file.
+#[test]
+fn test_escape_cancels_pending_cut() {
+    let mut harness = EditorTestHarness::with_temp_project(100, 30).unwrap();
+    let project_root = harness.project_dir().unwrap();
+    // dirs first: root → dst/ → a.txt
+    fs::create_dir(project_root.join("dst")).unwrap();
+    fs::write(project_root.join("a.txt"), "a").unwrap();
+
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+    harness.wait_for_file_explorer_item("a.txt").unwrap();
+
+    // Cursor: root → dst/ → a.txt
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap(); // dst/
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap(); // a.txt
+    harness
+        .send_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    harness.assert_screen_contains("Marked");
+
+    // Escape should clear the pending cut while keeping focus on the explorer.
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    // Move to dst/ and attempt to paste. With the cut cancelled, paste must
+    // report "Nothing to paste" — the clipboard is empty — and the source
+    // file must stay at its original location.
+    harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap(); // dst/
+    harness
+        .send_key(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        project_root.join("a.txt").exists(),
+        "Source must remain after Escape cancels the cut. Screen:\n{}",
+        screen
+    );
+    assert!(
+        !project_root.join("dst/a.txt").exists(),
+        "Cancelled cut must not land the file at dst. Screen:\n{}",
+        screen
+    );
+    assert!(
+        screen.contains("Nothing to paste"),
+        "After Escape cancels a cut, a subsequent paste should find an empty \
+         clipboard. Screen:\n{}",
+        screen
+    );
+}
+
+/// Trying to paste a cut back into its own directory should cancel the cut
+/// rather than surfacing a scary "Cannot paste here" error. Cancellation is
+/// the natural outcome — the user effectively changed their mind — and the
+/// clipboard must be cleared so a later paste elsewhere doesn't silently
+/// move the file after all.
+#[test]
+fn test_paste_into_same_dir_cancels_cut() {
+    let mut harness = EditorTestHarness::with_temp_project(100, 30).unwrap();
+    let project_root = harness.project_dir().unwrap();
+    fs::write(project_root.join("a.txt"), "a").unwrap();
+
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+    harness.wait_for_file_explorer_item("a.txt").unwrap();
+
+    // Cursor on a.txt (root → a.txt).
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Paste where cursor already is → same directory. Must cancel the cut.
+    harness
+        .send_key(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    assert!(
+        project_root.join("a.txt").exists(),
+        "File must stay in place when same-dir paste cancels the cut."
+    );
+
+    let first_screen = harness.screen_to_string();
+    assert!(
+        !first_screen.contains("Cannot paste here"),
+        "Same-dir paste should be a cancellation, not an error. Screen:\n{}",
+        first_screen
+    );
+
+    // A second Ctrl+V must now report an empty clipboard — the cut was
+    // cancelled, not just no-op'd.
+    harness
+        .send_key(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Nothing to paste"),
+        "After same-dir paste cancels a cut, the clipboard must be empty. \
+         Screen:\n{}",
+        screen
+    );
+}
+
