@@ -774,19 +774,25 @@ fn test_quick_open_buffers_action() {
     harness.render().unwrap();
 
     // Should show buffer mode (with # prefix)
-    harness.wait_until(|h| h.screen_to_string().contains('#')).unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains('#'))
+        .unwrap();
 
     // Should show both opened buffers
-    harness.wait_until(|h| {
-        let s = h.screen_to_string();
-        s.contains("alpha") && s.contains("beta")
-    }).unwrap();
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("alpha") && s.contains("beta")
+        })
+        .unwrap();
 
     // gamma should NOT appear since it wasn't opened
-    harness.wait_until(|h| {
-        let s = h.screen_to_string();
-        !s.contains("gamma")
-    }).unwrap();
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            !s.contains("gamma")
+        })
+        .unwrap();
 
     harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
 }
@@ -816,10 +822,12 @@ fn test_quick_open_files_action() {
     harness.render().unwrap();
 
     // Should show ALL 3 files even though none are open
-    harness.wait_until(|h| {
-        let s = h.screen_to_string();
-        s.contains("alpha") && s.contains("beta") && s.contains("gamma")
-    }).unwrap();
+    harness
+        .wait_until(|h| {
+            let s = h.screen_to_string();
+            s.contains("alpha") && s.contains("beta") && s.contains("gamma")
+        })
+        .unwrap();
 
     harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
 }
