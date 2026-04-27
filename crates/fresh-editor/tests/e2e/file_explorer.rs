@@ -3450,7 +3450,9 @@ fn test_file_explorer_side_workspace_serialization() {
     let mut config = Config::default();
     config.file_explorer.side = FileExplorerSide::Right;
 
-    let mut harness = EditorTestHarness::with_config_and_working_dir(120, 40, config, project_dir.clone()).unwrap();
+    let mut harness =
+        EditorTestHarness::with_config_and_working_dir(120, 40, config, project_dir.clone())
+            .unwrap();
 
     // Show file explorer
     harness.editor_mut().toggle_file_explorer();
