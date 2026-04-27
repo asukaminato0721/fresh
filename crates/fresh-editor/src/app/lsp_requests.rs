@@ -233,13 +233,14 @@ impl Editor {
         let location = &locations[0];
 
         // Convert URI to file path. The LSP runs on the other side of
-        // a possible host↔container mount, so apply the active
-        // authority's translation before crossing back into the
-        // editor's host-path-based filesystem layer.
-        if let Ok(path) = super::uri_to_path_with_translation(
-            &location.uri,
-            self.authority.path_translation.as_ref(),
-        ) {
+        // a possible host↔container mount, so wrap the wire URI in
+        // [`LspUri`] and apply the authority's translation before
+        // crossing back into the editor's host-path-based filesystem
+        // layer.
+        let wire = crate::app::types::LspUri::from_wire(location.uri.clone());
+        if let Ok(path) =
+            super::lsp_uri_to_host_path(&wire, self.authority.path_translation.as_ref())
+        {
             // Open the file
             let buffer_id = match self.open_file(&path) {
                 Ok(id) => id,
@@ -376,7 +377,7 @@ impl Editor {
         f: F,
     ) -> Option<R>
     where
-        F: FnOnce(&LspHandle, &lsp_types::Uri, &str) -> R,
+        F: FnOnce(&LspHandle, &crate::app::types::LspUri, &str) -> R,
     {
         use crate::services::lsp::manager::LspSpawnResult;
 
@@ -417,7 +418,7 @@ impl Editor {
         f: F,
     ) -> Vec<R>
     where
-        F: Fn(&LspHandle, &lsp_types::Uri, &str) -> R,
+        F: Fn(&LspHandle, &crate::app::types::LspUri, &str) -> R,
     {
         use crate::services::lsp::manager::LspSpawnResult;
 
@@ -471,7 +472,7 @@ impl Editor {
         f: F,
     ) -> Vec<R>
     where
-        F: Fn(&LspHandle, &lsp_types::Uri, &str, &str) -> R,
+        F: Fn(&LspHandle, &crate::app::types::LspUri, &str, &str) -> R,
     {
         use crate::services::lsp::manager::LspSpawnResult;
 
@@ -519,7 +520,7 @@ impl Editor {
     fn ensure_did_open_all(
         &mut self,
         buffer_id: BufferId,
-        uri: &lsp_types::Uri,
+        uri: &crate::app::types::LspUri,
         language: &str,
     ) -> Option<()> {
         let lsp = self.lsp.as_mut()?;
@@ -545,7 +546,7 @@ impl Editor {
                 if needs_open.contains(&sh.handle.id()) {
                     if let Err(e) =
                         sh.handle
-                            .did_open(uri.clone(), text.clone(), language.to_string())
+                            .did_open(uri.as_uri().clone(), text.clone(), language.to_string())
                     {
                         tracing::warn!("Failed to send didOpen to '{}': {}", sh.name, e);
                         continue;
@@ -612,8 +613,12 @@ impl Editor {
             |handle, uri, _language| {
                 let idx = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let request_id = base_request_id + idx;
-                let result =
-                    handle.completion(request_id, uri.clone(), line as u32, character as u32);
+                let result = handle.completion(
+                    request_id,
+                    uri.as_uri().clone(),
+                    line as u32,
+                    character as u32,
+                );
                 if result.is_ok() {
                     tracing::info!(
                         "Requested completion at {}:{}:{} (request_id={})",
@@ -749,7 +754,7 @@ impl Editor {
                 |handle, uri, _language| {
                     let result = handle.goto_definition(
                         request_id,
-                        uri.clone(),
+                        uri.as_uri().clone(),
                         line as u32,
                         character as u32,
                     );
@@ -800,7 +805,12 @@ impl Editor {
         // Use helper to ensure didOpen is sent before the request
         let sent = self
             .with_lsp_for_buffer(buffer_id, LspFeature::Hover, |handle, uri, _language| {
-                let result = handle.hover(request_id, uri.clone(), line as u32, character as u32);
+                let result = handle.hover(
+                    request_id,
+                    uri.as_uri().clone(),
+                    line as u32,
+                    character as u32,
+                );
                 if result.is_ok() {
                     tracing::info!(
                         "Requested hover at {}:{}:{} (byte_pos={})",
@@ -851,7 +861,12 @@ impl Editor {
         // Use helper to ensure didOpen is sent before the request
         let sent = self
             .with_lsp_for_buffer(buffer_id, LspFeature::Hover, |handle, uri, _language| {
-                let result = handle.hover(request_id, uri.clone(), line as u32, character as u32);
+                let result = handle.hover(
+                    request_id,
+                    uri.as_uri().clone(),
+                    line as u32,
+                    character as u32,
+                );
                 if result.is_ok() {
                     tracing::trace!(
                         "Mouse hover requested at {}:{}:{} (byte_pos={})",
@@ -1344,8 +1359,12 @@ impl Editor {
                 buffer_id,
                 LspFeature::References,
                 |handle, uri, _language| {
-                    let result =
-                        handle.references(request_id, uri.clone(), line as u32, character as u32);
+                    let result = handle.references(
+                        request_id,
+                        uri.as_uri().clone(),
+                        line as u32,
+                        character as u32,
+                    );
                     if result.is_ok() {
                         tracing::info!(
                             "Requested find references at {}:{}:{} (byte_pos={})",
@@ -1388,7 +1407,7 @@ impl Editor {
                 |handle, uri, _language| {
                     let result = handle.signature_help(
                         request_id,
-                        uri.clone(),
+                        uri.as_uri().clone(),
                         line as u32,
                         character as u32,
                     );
@@ -1583,7 +1602,7 @@ impl Editor {
                 let request_id = base_request_id + idx;
                 let result = handle.code_actions(
                     request_id,
-                    uri.clone(),
+                    uri.as_uri().clone(),
                     start_line,
                     start_char,
                     end_line,
@@ -2004,10 +2023,12 @@ impl Editor {
 
         if let Some(lsp) = &mut self.lsp {
             if let Some(sh) = lsp.handle_for_feature_mut(&language, LspFeature::Format) {
-                if let Err(e) =
-                    sh.handle
-                        .document_formatting(request_id, uri, tab_size, insert_spaces)
-                {
+                if let Err(e) = sh.handle.document_formatting(
+                    request_id,
+                    uri.as_uri().clone(),
+                    tab_size,
+                    insert_spaces,
+                ) {
                     tracing::warn!("Failed to request formatting: {}", e);
                 }
             } else {
@@ -2040,14 +2061,25 @@ impl Editor {
             return Ok(());
         }
 
-        // Convert locations to hook args format
+        // Convert locations to hook args format. Each `loc.uri` is a
+        // wire-side URI from the LSP, so wrap it in [`LspUri`] and run
+        // it through the active authority's translation before
+        // handing a host-path string to the references hook —
+        // otherwise plugins (notably `find_references`) try to open
+        // an in-container path on the host and fail.
+        let translation = self.authority.path_translation.clone();
         let lsp_locations: Vec<crate::services::plugins::hooks::LspLocation> = locations
             .iter()
             .map(|loc| {
-                // Convert URI to file path
+                let wire = crate::app::types::LspUri::from_wire(loc.uri.clone());
+                // Prefer the host-side path (after translation) so
+                // plugin-side file ops resolve. Fall back to the raw
+                // string for non-`file://` URIs so callers can still
+                // see *something*.
                 let file = if loc.uri.scheme().map(|s| s.as_str()) == Some("file") {
-                    // Extract path from file:// URI
-                    loc.uri.path().as_str().to_string()
+                    wire.to_host_path(translation.as_ref())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| loc.uri.path().as_str().to_string())
                 } else {
                     loc.uri.as_str().to_string()
                 };
@@ -2199,13 +2231,15 @@ impl Editor {
         &mut self,
         text_doc_edit: lsp_types::TextDocumentEdit,
     ) -> AnyhowResult<usize> {
-        let uri = text_doc_edit.text_document.uri;
+        // Wrap the incoming wire URI once; both the version-check
+        // lookup and the file-open below need the host-path form.
+        let uri = crate::app::types::LspUri::from_wire(text_doc_edit.text_document.uri);
 
         // Version check: if the server specifies a version, verify it matches
         // what we sent. A mismatch means the edit was computed against stale content.
         if let Some(expected_version) = text_doc_edit.text_document.version {
             if let Ok(path) =
-                super::uri_to_path_with_translation(&uri, self.authority.path_translation.as_ref())
+                super::lsp_uri_to_host_path(&uri, self.authority.path_translation.as_ref())
             {
                 if let Some(lsp) = &self.lsp {
                     let language = self
@@ -2232,7 +2266,7 @@ impl Editor {
         }
 
         if let Ok(path) =
-            super::uri_to_path_with_translation(&uri, self.authority.path_translation.as_ref())
+            super::lsp_uri_to_host_path(&uri, self.authority.path_translation.as_ref())
         {
             let buffer_id = match self.open_file(&path) {
                 Ok(id) => id,
@@ -2280,9 +2314,19 @@ impl Editor {
 
     /// Apply a resource operation (CreateFile, RenameFile, DeleteFile) from a workspace edit.
     fn apply_resource_operation(&mut self, op: lsp_types::ResourceOp) -> AnyhowResult<()> {
+        // Each URI in a resource operation is wire-side and must be
+        // translated back to the host before we touch the host
+        // filesystem. Wrapping in [`LspUri`] and calling
+        // `to_host_path` is the type-checked path.
+        let translation = self.authority.path_translation.clone();
+        let to_host = |uri: &lsp_types::Uri| -> std::path::PathBuf {
+            crate::app::types::LspUri::from_wire(uri.clone())
+                .to_host_path(translation.as_ref())
+                .unwrap_or_else(|| std::path::PathBuf::from(uri.path().as_str()))
+        };
         match op {
             lsp_types::ResourceOp::Create(create) => {
-                let path = std::path::PathBuf::from(create.uri.path().as_str());
+                let path = to_host(&create.uri);
                 let overwrite = create
                     .options
                     .as_ref()
@@ -2318,8 +2362,8 @@ impl Editor {
                 }
             }
             lsp_types::ResourceOp::Rename(rename) => {
-                let old_path = std::path::PathBuf::from(rename.old_uri.path().as_str());
-                let new_path = std::path::PathBuf::from(rename.new_uri.path().as_str());
+                let old_path = to_host(&rename.old_uri);
+                let new_path = to_host(&rename.new_uri);
                 let overwrite = rename
                     .options
                     .as_ref()
@@ -2353,7 +2397,7 @@ impl Editor {
                 tracing::info!("RenameFile: {:?} -> {:?}", old_path, new_path);
             }
             lsp_types::ResourceOp::Delete(delete) => {
-                let path = std::path::PathBuf::from(delete.uri.path().as_str());
+                let path = to_host(&delete.uri);
                 let recursive = delete
                     .options
                     .as_ref()
@@ -2406,10 +2450,10 @@ impl Editor {
         // Handle changes (map of URI -> Vec<TextEdit>)
         if let Some(changes) = workspace_edit.changes {
             for (uri, edits) in changes {
-                if let Ok(path) = super::uri_to_path_with_translation(
-                    &uri,
-                    self.authority.path_translation.as_ref(),
-                ) {
+                let uri = crate::app::types::LspUri::from_wire(uri);
+                if let Ok(path) =
+                    super::lsp_uri_to_host_path(&uri, self.authority.path_translation.as_ref())
+                {
                     let buffer_id = match self.open_file(&path) {
                         Ok(id) => id,
                         Err(e) => {
@@ -2801,9 +2845,9 @@ impl Editor {
                     .iter()
                     .any(|(_, id)| *id == sh.handle.id())
                 {
-                    if let Err(e) = sh
-                        .handle
-                        .did_open(uri.clone(), text.clone(), language.clone())
+                    if let Err(e) =
+                        sh.handle
+                            .did_open(uri.as_uri().clone(), text.clone(), language.clone())
                     {
                         tracing::warn!(
                             "Failed to send didOpen to '{}' before didChange: {}",
@@ -2837,7 +2881,7 @@ impl Editor {
         let Some(lsp) = self.lsp.as_mut() else { return };
         let mut any_sent = false;
         for sh in lsp.get_handles_mut(&language) {
-            if let Err(e) = sh.handle.did_change(uri.clone(), changes.clone()) {
+            if let Err(e) = sh.handle.did_change(uri.as_uri().clone(), changes.clone()) {
                 tracing::warn!("Failed to send didChange to '{}': {}", sh.name, e);
             } else {
                 any_sent = true;
@@ -2958,10 +3002,12 @@ impl Editor {
 
         if let Some(lsp) = &mut self.lsp {
             if let Some(sh) = lsp.handle_for_feature_mut(&language, LspFeature::Rename) {
-                if let Err(e) =
-                    sh.handle
-                        .prepare_rename(request_id, uri, line as u32, character as u32)
-                {
+                if let Err(e) = sh.handle.prepare_rename(
+                    request_id,
+                    uri.as_uri().clone(),
+                    line as u32,
+                    character as u32,
+                ) {
                     tracing::warn!("Failed to send prepareRename: {}", e);
                 }
             }
@@ -3060,7 +3106,7 @@ impl Editor {
             .with_lsp_for_buffer(buffer_id, LspFeature::Rename, |handle, uri, _language| {
                 let result = handle.rename(
                     request_id,
-                    uri.clone(),
+                    uri.as_uri().clone(),
                     line as u32,
                     character as u32,
                     new_name.clone(),
@@ -3122,8 +3168,14 @@ impl Editor {
                 buffer_id,
                 LspFeature::InlayHints,
                 |handle, uri, _language| {
-                    let result =
-                        handle.inlay_hints(request_id, uri.clone(), 0, 0, last_line, 10000);
+                    let result = handle.inlay_hints(
+                        request_id,
+                        uri.as_uri().clone(),
+                        0,
+                        0,
+                        last_line,
+                        10000,
+                    );
                     if result.is_ok() {
                         tracing::info!(
                             "Requested inlay hints for {} (request_id={})",
@@ -3212,7 +3264,7 @@ impl Editor {
             .map(|s| s.buffer.version())
             .unwrap_or(0);
 
-        match handle.folding_ranges(request_id, uri) {
+        match handle.folding_ranges(request_id, uri.as_uri().clone()) {
             Ok(()) => {
                 self.pending_folding_range_requests.insert(
                     request_id,
@@ -3307,9 +3359,13 @@ impl Editor {
         };
 
         let request_result = if use_delta {
-            handle.semantic_tokens_full_delta(request_id, uri, previous_result_id.unwrap())
+            handle.semantic_tokens_full_delta(
+                request_id,
+                uri.as_uri().clone(),
+                previous_result_id.unwrap(),
+            )
         } else {
-            handle.semantic_tokens_full(request_id, uri)
+            handle.semantic_tokens_full(request_id, uri.as_uri().clone())
         };
 
         match request_result {
@@ -3500,7 +3556,7 @@ impl Editor {
         let request_id = self.next_lsp_request_id;
         self.next_lsp_request_id += 1;
 
-        match handle.semantic_tokens_range(request_id, uri, lsp_range) {
+        match handle.semantic_tokens_range(request_id, uri.as_uri().clone(), lsp_range) {
             Ok(_) => {
                 self.pending_semantic_token_range_requests.insert(
                     request_id,
