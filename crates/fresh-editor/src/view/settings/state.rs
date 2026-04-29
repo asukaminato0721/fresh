@@ -346,12 +346,15 @@ impl SettingsState {
         if target == cur {
             return;
         }
+        let prev_category = self.selected_category;
         self.update_control_focus(false);
         match rows[target] {
             TreeRow::Category { idx, .. } => {
                 self.selected_category = idx;
                 self.selected_item = 0;
-                self.scroll_panel = ScrollablePanel::new();
+                if idx != prev_category {
+                    self.scroll_panel = ScrollablePanel::new();
+                }
                 self.sub_focus = None;
                 self.update_control_focus(true);
             }
@@ -362,25 +365,51 @@ impl SettingsState {
                 let first = self.pages[cat_idx].sections[section_idx].first_item_index;
                 self.selected_category = cat_idx;
                 self.selected_item = first;
-                self.scroll_panel = ScrollablePanel::new();
+                if cat_idx != prev_category {
+                    self.scroll_panel = ScrollablePanel::new();
+                }
                 self.sub_focus = None;
                 self.init_map_focus(true);
                 self.update_control_focus(true);
             }
         }
-        // Keep the cursor row visible in the categories scroll viewport.
+        // We deliberately do NOT auto-expand here: Up/Down sequential
+        // navigation should walk through categories without unfolding
+        // each one as you pass over it — that would balloon the tree
+        // every time the user holds Down. Auto-expand fires on
+        // deliberate visits (click, search-jump, Enter on a section).
         let width = self.layout_width;
+        if let Some(page) = self.pages.get(self.selected_category) {
+            self.scroll_panel.update_content_height(&page.items, width);
+        }
+        self.ensure_visible();
         let new_rows = self.visible_tree();
+        let new_cur = self.tree_cursor_index(&new_rows);
         self.categories_scroll
-            .ensure_focused_visible(&new_rows, target, None, width);
+            .ensure_focused_visible(&new_rows, new_cur, None, width);
     }
 
     /// Find the visible-tree index for the current selection. Prefers the
-    /// section row when `selected_item` matches a section's first item
-    /// (so the cursor "lives" on a section after a click/jump); otherwise
-    /// falls back to the category row.
+    /// section row that matches `current_section_index()` — i.e. the
+    /// section the body is actually showing right now (which follows
+    /// scroll, not just clicks). Falls back to a section whose first
+    /// item is exactly `selected_item`, then to the category row.
     pub(super) fn tree_cursor_index(&self, rows: &[TreeRow]) -> usize {
         let cat = self.selected_category;
+        let current_section = self.current_section_index();
+        if let Some(s_idx) = current_section {
+            for (i, row) in rows.iter().enumerate() {
+                if let TreeRow::Section {
+                    cat_idx,
+                    section_idx,
+                } = *row
+                {
+                    if cat_idx == cat && section_idx == s_idx {
+                        return i;
+                    }
+                }
+            }
+        }
         let item = self.selected_item;
         for (i, row) in rows.iter().enumerate() {
             if let TreeRow::Section {
@@ -406,6 +435,20 @@ impl SettingsState {
 
     /// Toggle whether a category is expanded in the tree view. No-op for
     /// categories that aren't expandable (zero or one section).
+    /// Ensure the currently selected category is expanded in the tree view
+    /// when it has more than one section. Called on any path that "visits"
+    /// a category (Up/Down to it, click, search-jump) so the user
+    /// immediately sees that the category contains sections — they don't
+    /// have to remember to press Right.
+    ///
+    /// No-op for non-expandable categories (≤ 1 section). Idempotent.
+    pub fn auto_expand_current_category(&mut self) {
+        let idx = self.selected_category;
+        if self.is_category_expandable(idx) {
+            self.expanded_categories.insert(idx);
+        }
+    }
+
     pub fn toggle_category_expanded(&mut self, cat_idx: usize) {
         if !self.is_category_expandable(cat_idx) {
             return;
@@ -438,6 +481,7 @@ impl SettingsState {
         self.sub_focus = None;
         self.init_map_focus(true);
         self.update_control_focus(true);
+        self.auto_expand_current_category();
         self.ensure_visible();
     }
 
@@ -1199,6 +1243,7 @@ impl SettingsState {
         }
 
         self.update_control_focus(true); // Focus the new item
+        self.auto_expand_current_category();
         self.ensure_visible();
         self.cancel_search();
     }

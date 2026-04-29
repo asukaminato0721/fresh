@@ -529,7 +529,12 @@ fn render_categories(
                         " "
                     },
                     is_expandable: expandable,
-                    is_selected: idx == selected_category,
+                    // The cursor row is the SECTION row when there's a
+                    // current section in this category — don't also flag
+                    // the parent category as selected, otherwise the `>`
+                    // marker shows up twice.
+                    is_selected: idx == selected_category
+                        && !(expanded && current_section.is_some()),
                     is_hovered: matches!(hover_hit, Some(SettingsHit::Category(i)) if i == idx)
                         || matches!(hover_hit, Some(SettingsHit::CategoryDisclosure(i)) if i == idx),
                     has_changes: page.items.iter().any(|i| i.modified),

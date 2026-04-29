@@ -258,6 +258,9 @@ impl Editor {
                     state.selected_item = 0;
                     state.scroll_panel = crate::view::ui::ScrollablePanel::new();
                     state.sub_focus = None;
+                    // Deliberate click on a category — auto-expand so the
+                    // user immediately sees its sections.
+                    state.auto_expand_current_category();
                 }
             }
             SettingsHit::CategoryDisclosure(idx) => {
