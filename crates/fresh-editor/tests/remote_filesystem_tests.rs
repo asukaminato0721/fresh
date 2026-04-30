@@ -15,6 +15,19 @@ use fresh::services::remote::{
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Effectively-unbounded per-request timeout for the test harness.
+///
+/// CONTRIBUTING.md §Testing rule 3 mandates "wait indefinitely, don't put
+/// timeouts inside tests (cargo nextest will timeout externally)". The
+/// production `AgentChannel` defaults to a 10s timeout that is fine for
+/// real interactive use, but tests in this file move tens of MB through
+/// the streaming protocol and a loaded CI runner can blow past 10s while
+/// still making forward progress. Setting an essentially-unbounded
+/// timeout removes the time dependency from the happy path; the
+/// intentional-timeout test below configures its own short value.
+const TEST_HARNESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Simple pseudo-random number generator (xorshift64) to avoid external deps.
 /// Not cryptographic — just deterministic and fast for test data generation.
@@ -42,6 +55,7 @@ fn create_test_filesystem() -> Option<(RemoteFileSystem, tempfile::TempDir, toki
     let rt = tokio::runtime::Runtime::new().ok()?;
 
     let channel = rt.block_on(spawn_local_agent()).ok()?;
+    channel.set_request_timeout(TEST_HARNESS_REQUEST_TIMEOUT);
     let fs = RemoteFileSystem::new(channel, "test@localhost".to_string());
 
     Some((fs, temp_dir, rt))
@@ -547,6 +561,7 @@ fn create_test_filesystem_arc() -> Option<(
     let rt = tokio::runtime::Runtime::new().ok()?;
 
     let channel = rt.block_on(spawn_local_agent()).ok()?;
+    channel.set_request_timeout(TEST_HARNESS_REQUEST_TIMEOUT);
     let fs = Arc::new(RemoteFileSystem::new(channel, "test@localhost".to_string()));
 
     Some((fs, temp_dir, rt))
@@ -1298,6 +1313,7 @@ fn test_regression_1059_streaming_read_backpressure() {
         eprintln!("Skipping test: could not create test filesystem");
         return;
     };
+    channel.set_request_timeout(TEST_HARNESS_REQUEST_TIMEOUT);
     let fs: Arc<dyn FileSystem + Send + Sync> =
         Arc::new(RemoteFileSystem::new(channel, "test@localhost".to_string()));
 
@@ -1374,6 +1390,7 @@ fn test_concurrent_count_lf_requests() {
         eprintln!("Skipping test: could not spawn agent");
         return;
     };
+    channel.set_request_timeout(TEST_HARNESS_REQUEST_TIMEOUT);
     let fs = Arc::new(RemoteFileSystem::new(channel, "test@localhost".to_string()));
 
     // Create a file where we can predict newline counts exactly.
@@ -1465,6 +1482,7 @@ fn test_concurrent_mixed_requests() {
         eprintln!("Skipping test: could not spawn agent");
         return;
     };
+    channel.set_request_timeout(TEST_HARNESS_REQUEST_TIMEOUT);
     let fs = Arc::new(RemoteFileSystem::new(channel, "test@localhost".to_string()));
 
     // Create a file with predictable content
@@ -1627,4 +1645,85 @@ fn test_unique_temp_path_uses_system_temp_dir() {
         "temp file name should end with .tmp, got {:?}",
         name,
     );
+}
+
+/// Regression test: an explicitly configured request timeout still fires when
+/// the request flows through `RemoteFileSystem`, even though the integration
+/// test harness raises the default timeout to "essentially unbounded".
+///
+/// Guards against accidentally short-circuiting the timeout path in
+/// production code (e.g., by removing `tokio::time::timeout` from
+/// `AgentChannel::request`). The flaky-on-CI fix that prompted this test
+/// only changes the *test harness* default; production callers must still
+/// observe `ChannelError::Timeout` (surfaced as `io::Error` with "timed
+/// out" in the message) when the configured budget is exceeded.
+#[test]
+fn test_remote_filesystem_explicit_timeout_fires() {
+    use fresh::services::remote::AgentChannel;
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    // Python script: send the ready handshake, then read stdin forever
+    // without ever responding to a request. Any `request_blocking` call
+    // on the resulting channel will block until the configured timeout.
+    let script = r#"
+import sys, json
+sys.stdout.write(json.dumps({"id": 0, "ok": True, "v": 1}) + "\n")
+sys.stdout.flush()
+for line in sys.stdin:
+    pass
+"#;
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+
+    let mut child = match TokioCommand::new("python3")
+        .arg("-u")
+        .arg("-c")
+        .arg(script)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("Skipping test: python3 not available");
+            return;
+        }
+    };
+
+    let stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(stdout);
+
+    let mut ready_line = String::new();
+    rt.block_on(reader.read_line(&mut ready_line))
+        .expect("read ready");
+    assert!(
+        !ready_line.is_empty(),
+        "silent agent did not send ready message"
+    );
+
+    let channel = Arc::new(AgentChannel::new(reader, stdin));
+    // Short, but generous enough to avoid being mistaken for a successful
+    // response on a fast runner. Wall-clock cost of this test is bounded
+    // by this value.
+    channel.set_request_timeout(Duration::from_millis(200));
+
+    let fs = RemoteFileSystem::new(channel, "test@silent".to_string());
+
+    // Any operation that goes through the channel will time out, since
+    // the agent never replies. `metadata` is a single round-trip call.
+    let result = fs.metadata(std::path::Path::new("/anything"));
+    let err = result.expect_err("expected timeout error, got Ok");
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("timed out") || msg.contains("timeout"),
+        "expected timeout-related error, got: {:?}",
+        err,
+    );
+
+    // Tidy up so the python process doesn't outlive the test.
+    let _ = child.start_kill();
 }
