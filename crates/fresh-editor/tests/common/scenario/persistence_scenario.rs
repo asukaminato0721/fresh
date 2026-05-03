@@ -209,13 +209,18 @@ pub fn write_then_save(
         },
     ))
     .collect();
-    let typed_actions = typed
-        .chars()
-        .map(|c| InputEvent::Action(fresh::test_api::Action::InsertChar(c)))
-        .chain(std::iter::once(InputEvent::Action(
-            fresh::test_api::Action::Save,
-        )))
-        .collect();
+    let typed_actions = std::iter::once(InputEvent::Action(
+        fresh::test_api::Action::MoveDocumentEnd,
+    ))
+    .chain(
+        typed
+            .chars()
+            .map(|c| InputEvent::Action(fresh::test_api::Action::InsertChar(c))),
+    )
+    .chain(std::iter::once(InputEvent::Action(
+        fresh::test_api::Action::Save,
+    )))
+    .collect();
     PersistenceScenario {
         description: description.to_string(),
         initial_fs: VirtualFs {
