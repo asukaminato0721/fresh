@@ -13,6 +13,7 @@ pub mod layout_expanded;
 pub mod layout_shadow_diff;
 pub mod migrated_basic;
 pub mod migrated_block_selection;
+pub mod migrated_bulk;
 pub mod migrated_indent;
 pub mod migrated_issue_repros;
 pub mod migrated_layout;
