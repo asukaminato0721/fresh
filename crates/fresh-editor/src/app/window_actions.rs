@@ -37,6 +37,8 @@ impl crate::app::Editor {
             authority: self.authority.clone(),
             time_source: std::sync::Arc::clone(&self.time_source),
             dir_context: self.dir_context.clone(),
+            tokio_runtime: self.tokio_runtime.clone(),
+            async_bridge: self.async_bridge.clone(),
         }
     }
 

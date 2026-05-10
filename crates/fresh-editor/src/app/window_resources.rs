@@ -165,6 +165,16 @@ pub struct WindowResources {
     /// Directory context (config dir, themes dir, plugins dir, etc.).
     /// Cloned by value because it's a small struct of `PathBuf`s.
     pub dir_context: DirectoryContext,
+
+    /// Tokio runtime for async I/O tasks (LSP, file watchers, git, etc.).
+    /// Single runtime shared across all windows via `Arc`. `None` means
+    /// the editor was constructed without async support (rare).
+    pub tokio_runtime: Option<Arc<tokio::runtime::Runtime>>,
+
+    /// Async-message bridge (Sender + Arc'd Receiver). Windows clone this
+    /// to publish messages back to the editor's main loop. The Receiver
+    /// is `Arc<Mutex<>>` internally, so all clones drain the same queue.
+    pub async_bridge: Option<crate::services::async_bridge::AsyncBridge>,
 }
 
 /// Cross-window orchestration events that a `Window` handler returns to

@@ -132,7 +132,7 @@ pub(super) struct EditorParts {
     pub(super) color_capability: crate::view::color_support::ColorCapability,
 
     // Async / IO
-    pub(super) tokio_runtime: Option<tokio::runtime::Runtime>,
+    pub(super) tokio_runtime: Option<Arc<tokio::runtime::Runtime>>,
     pub(super) async_bridge: AsyncBridge,
     pub(super) fs_manager: Arc<FsManager>,
     pub(super) authority: crate::services::authority::Authority,
@@ -583,7 +583,8 @@ impl Editor {
             .thread_name("editor-async")
             .enable_all()
             .build()
-            .ok();
+            .ok()
+            .map(Arc::new);
         t.phase("tokio_runtime");
 
         // Create editor-global async bridge for editor-scoped async
@@ -1027,6 +1028,8 @@ impl Editor {
             authority: authority.clone(),
             time_source: Arc::clone(&time_source),
             dir_context: dir_context.clone(),
+            tokio_runtime: tokio_runtime.clone(),
+            async_bridge: Some(async_bridge.clone()),
         };
 
         // Build the active window — the one that holds the seed
@@ -1099,6 +1102,8 @@ impl Editor {
                     authority: authority.clone(),
                     time_source: Arc::clone(&time_source),
                     dir_context: dir_context.clone(),
+                    tokio_runtime: tokio_runtime.clone(),
+                    async_bridge: Some(async_bridge.clone()),
                 };
                 let mut shell = crate::app::window::Window::new(
                     id,
