@@ -953,7 +953,7 @@ impl Editor {
     /// When the file explorer is visible, tabs only get a portion of the
     /// terminal width. Matches the layout calculation in render.rs.
     fn effective_tabs_width(&self) -> u16 {
-        if self.active_window().file_explorer_visible && self.file_explorer().is_some() {
+        if self.file_explorer_visible() && self.file_explorer().is_some() {
             let explorer = self
                 .active_window()
                 .file_explorer_width

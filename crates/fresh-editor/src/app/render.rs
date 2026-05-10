@@ -243,7 +243,7 @@ impl Editor {
         // Split main content area based on file explorer visibility
         // Also keep the layout split if a sync is in progress (to avoid flicker)
         let editor_content_area;
-        let file_explorer_should_show = self.active_window().file_explorer_visible
+        let file_explorer_should_show = self.file_explorer_visible()
             && (self.file_explorer().is_some()
                 || self.active_window().file_explorer_sync_in_progress);
 
@@ -3234,7 +3234,7 @@ impl Editor {
         let main_content_area = main_chunks[1];
 
         // Compute editor_content_area (with file explorer split if visible)
-        let file_explorer_should_show = self.active_window().file_explorer_visible
+        let file_explorer_should_show = self.file_explorer_visible()
             && (self.file_explorer().is_some()
                 || self.active_window().file_explorer_sync_in_progress);
         let editor_content_area = if file_explorer_should_show {

@@ -300,7 +300,7 @@ impl Editor {
             // Get expanded directories from the tree
             let expanded_dirs = get_expanded_dirs(explorer, &self.working_dir);
             FileExplorerState {
-                visible: self.active_window().file_explorer_visible,
+                visible: self.file_explorer_visible(),
                 width: self.active_window().file_explorer_width,
                 side: self.active_window().file_explorer_side,
                 expanded_dirs,
@@ -310,7 +310,7 @@ impl Editor {
             }
         } else {
             FileExplorerState {
-                visible: self.active_window().file_explorer_visible,
+                visible: self.file_explorer_visible(),
                 width: self.active_window().file_explorer_width,
                 side: self.active_window().file_explorer_side,
                 expanded_dirs: Vec::new(),
@@ -927,7 +927,7 @@ impl Editor {
         }
 
         // Keep key_context as Normal so the editor (not the explorer) has focus.
-        if self.active_window().file_explorer_visible && self.file_explorer().is_none() {
+        if self.file_explorer_visible() && self.file_explorer().is_none() {
             self.init_file_explorer();
         }
     }

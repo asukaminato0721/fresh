@@ -72,10 +72,10 @@ impl Editor {
     }
 
     pub fn toggle_file_explorer(&mut self) {
-        self.active_window_mut().file_explorer_visible =
-            !self.active_window().file_explorer_visible;
+        let new_visible = !self.active_window().file_explorer_visible;
+        self.active_window_mut().file_explorer_visible = new_visible;
 
-        if self.active_window().file_explorer_visible {
+        if new_visible {
             if self.file_explorer().is_none() {
                 self.init_file_explorer();
             }
@@ -98,13 +98,13 @@ impl Editor {
     }
 
     pub fn show_file_explorer(&mut self) {
-        if !self.active_window().file_explorer_visible {
+        if !self.file_explorer_visible() {
             self.toggle_file_explorer();
         }
     }
 
     pub fn sync_file_explorer_to_active_file(&mut self) {
-        if !self.active_window().file_explorer_visible {
+        if !self.file_explorer_visible() {
             return;
         }
 
@@ -156,7 +156,7 @@ impl Editor {
     }
 
     pub fn focus_file_explorer(&mut self) {
-        if self.active_window().file_explorer_visible {
+        if self.file_explorer_visible() {
             // Dismiss transient popups and clear hover state when focusing file explorer
             self.on_editor_focus_lost();
 
