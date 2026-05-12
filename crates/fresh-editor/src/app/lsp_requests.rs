@@ -1109,7 +1109,9 @@ impl Editor {
             // Cancel any pending scheduled trigger
             self.active_window_mut().scheduled_completion_trigger = None;
             self.request_completion();
-            let _ = self.request_inline_completion_automatic();
+            if let Err(err) = self.request_inline_completion_automatic() {
+                tracing::debug!("Failed to request inline completion: {err}");
+            }
             return;
         }
 

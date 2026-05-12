@@ -1426,7 +1426,9 @@ impl Editor {
 
         // Trigger the completion request
         self.request_completion();
-        let _ = self.request_inline_completion_automatic();
+        if let Err(err) = self.request_inline_completion_automatic() {
+            tracing::debug!("Failed to request inline completion: {err}");
+        }
 
         true
     }
