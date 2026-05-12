@@ -262,26 +262,31 @@ fn test_lsp_completion_popup() -> anyhow::Result<()> {
 fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
     use crate::common::fake_lsp::FakeLspServer;
 
-    let _fake_server = FakeLspServer::spawn()?;
-
     let temp_dir = tempfile::tempdir()?;
+    let _fake_server = FakeLspServer::spawn_with_logging(temp_dir.path())?;
+
+    let log_file = temp_dir.path().join("inline_completion_test_log.txt");
     let test_file = temp_dir.path().join("test.rs");
     std::fs::write(&test_file, "")?;
 
     let mut config = fresh::config::Config::default();
     config.editor.enable_ghost_text = true;
+    config.editor.completion_popup_auto_show = true;
     config.editor.quick_suggestions = true;
     config.editor.quick_suggestions_delay_ms = 0;
     config.lsp.insert(
         "rust".to_string(),
-        fresh::services::lsp::LspServerConfig {
-            command: FakeLspServer::script_path().to_string_lossy().to_string(),
-            args: vec![],
+        fresh::types::LspLanguageConfig::Multi(vec![fresh::services::lsp::LspServerConfig {
+            command: FakeLspServer::logging_script_path(temp_dir.path())
+                .to_string_lossy()
+                .to_string(),
+            args: vec![log_file.to_string_lossy().to_string()],
             enabled: true,
             auto_start: true,
             process_limits: fresh::services::process_limits::ProcessLimits::default(),
             initialization_options: None,
-        },
+            ..Default::default()
+        }]),
     );
 
     let mut harness = EditorTestHarness::with_config_and_working_dir(
@@ -294,15 +299,36 @@ fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
     harness.open_file(&test_file)?;
     harness.render()?;
 
-    for _ in 0..5 {
+    let mut inline_completion_ready = false;
+    for _ in 0..40 {
         harness.process_async_and_render()?;
         harness.sleep(std::time::Duration::from_millis(50));
+        if harness
+            .editor()
+            .active_window()
+            .lsp
+            .as_ref()
+            .and_then(|lsp| lsp.inline_completion_support("rust"))
+            == Some(true)
+        {
+            inline_completion_ready = true;
+            break;
+        }
     }
+    assert!(
+        inline_completion_ready,
+        "Expected fake LSP to advertise inline completion support"
+    );
+    std::fs::write(&log_file, "")?;
 
     harness.type_text("hel")?;
+    harness.wait_until(|h| h.screen_to_string().contains("lo_world"))?;
 
-    let found = harness.wait_for_async(|h| h.screen_to_string().contains("lo_world"), 1000)?;
-    assert!(found, "Expected inline ghost text to render");
+    let log_content = std::fs::read_to_string(&log_file)?;
+    assert!(
+        log_content.contains("textDocument/inlineCompletion"),
+        "Expected inline completion request. Log: {log_content}"
+    );
 
     let buffer_content = harness.get_buffer_content().unwrap();
     assert_eq!(buffer_content, "hel");

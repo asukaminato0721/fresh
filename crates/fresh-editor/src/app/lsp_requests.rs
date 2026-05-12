@@ -105,7 +105,9 @@ impl Editor {
 
         let (buffer_id, line, character, language) = {
             let state = self.active_state();
-            if state.cursors.count() != 1 || !state.cursors.primary().collapsed() {
+            let cursor_count = self.active_cursors().count();
+            let cursor = self.active_cursors().primary();
+            if cursor_count != 1 || !cursor.collapsed() {
                 self.clear_ghost_text();
                 return Ok(());
             }
@@ -120,7 +122,7 @@ impl Editor {
                 None => return Ok(()),
             };
 
-            let cursor_pos = state.cursors.primary().position;
+            let cursor_pos = cursor.position;
             let (line, character) = state.buffer.position_to_lsp_position(cursor_pos);
             (self.active_buffer(), line, character, language)
         };
@@ -339,11 +341,12 @@ impl Editor {
 
         let (buffer_id, cursor_pos, cursor_count, cursor_collapsed, buffer_len, suggestion_item) = {
             let state = self.active_state();
-            let cursor = state.cursors.primary();
+            let cursor_count = self.active_cursors().count();
+            let cursor = self.active_cursors().primary();
             (
                 self.active_buffer(),
                 cursor.position,
-                state.cursors.count(),
+                cursor_count,
                 cursor.collapsed(),
                 state.buffer.len(),
                 items.into_iter().next(),
