@@ -386,11 +386,12 @@ impl Editor {
 
         let (buffer_id, cursor_pos, cursor_count, cursor_collapsed, buffer_len, suggestion_item) = {
             let state = self.active_state();
+            let cursor_count = self.active_cursors().count();
             let cursor = self.active_cursors().primary();
             (
                 self.active_buffer(),
                 cursor.position,
-                self.active_cursors().count(),
+                cursor_count,
                 cursor.collapsed(),
                 state.buffer.len(),
                 items.into_iter().next(),
