@@ -1820,7 +1820,13 @@ fn test_folder_shows_modified_indicator_for_unsaved_file() {
 /// Test that nested folder hierarchy shows modified indicator up the tree
 #[test]
 fn test_nested_folder_shows_modified_indicator() {
-    let mut harness = EditorTestHarness::with_temp_project(120, 40).unwrap();
+    // Disable compact-directory rendering so `src` and `components` keep
+    // their own rows; this test asserts on the per-folder modified
+    // indicator propagating up the tree, which the compact-chain
+    // breadcrumb (`src/components` on one row) would otherwise collapse.
+    let mut config = Config::default();
+    config.file_explorer.compact_directories = false;
+    let mut harness = EditorTestHarness::with_temp_project_and_config(120, 40, config).unwrap();
     let project_root = harness.project_dir().unwrap();
 
     // Create a nested folder structure: src/components/Button.js
