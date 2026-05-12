@@ -272,6 +272,7 @@ impl Editor {
                 .get_mut(&self.active_window)
                 .map(|w| &mut w.buffers)
                 .expect("active window present")
+                .as_map_mut()
                 .values_mut()
             {
                 state

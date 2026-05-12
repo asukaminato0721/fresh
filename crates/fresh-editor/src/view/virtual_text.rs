@@ -515,6 +515,9 @@ impl VirtualTextManager {
                 priority,
                 string_id: Some(string_id),
                 namespace: None,
+                gutter_glyph: None,
+                gutter_color: None,
+                text_overlays: Vec::new(),
             },
         );
 

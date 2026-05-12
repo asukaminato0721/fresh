@@ -1468,7 +1468,9 @@ impl Editor {
             }
             Action::LspCompletion => {
                 self.request_completion();
-                let _ = self.request_inline_completion_invoked();
+                if let Err(err) = self.request_inline_completion_invoked() {
+                    tracing::debug!("Failed to request inline completion: {err}");
+                }
             }
             Action::DabbrevExpand => {
                 self.dabbrev_expand();
