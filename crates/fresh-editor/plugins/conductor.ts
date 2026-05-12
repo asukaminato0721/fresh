@@ -4,24 +4,32 @@
 //
 // MVP scope (`docs/internal/conductor-sessions-design.md`):
 //
-//   - "Conductor: Open" opens a floating overlay prompt (same
-//     UX shape as Live Grep) listing every session with its
-//     state column. Up/Down navigates, Enter dives into the
-//     selected session.
-//   - "Conductor: New Session" prompts for branch name + agent
-//     command, allocates a worktree-rooted session and spawns
-//     the agent in a terminal attached to it.
+//   - "Conductor: Open" opens a floating overlay prompt listing
+//     every session with its state column. Up/Down navigates,
+//     Enter dives into the selected session.
+//   - "Conductor: New Session" opens a single floating widget
+//     form with three optional fields (session name, agent
+//     command, branch), allocates a worktree-rooted session and
+//     spawns the agent in a terminal attached to it.
 //   - "Conductor: Kill Selected" closes the session whose row is
 //     currently highlighted in the open prompt.
 //   - Agent state column updates from terminal_output regex and
 //     terminal_exit code: RUNNING / AWAITING / READY / ERRORED.
-//
-// Why a floating prompt rather than a utility-dock panel:
-// floating overlays don't mutate the split tree, so opening
-// Conductor (and closing it) leaves the user's editor layout
-// undisturbed. The previous utility-dock implementation stuck
-// to the dock and clashed with reopen flows. This shape mirrors
-// the existing Live Grep / Quick Open patterns.
+
+import {
+  button,
+  col,
+  flexSpacer,
+  FloatingWidgetPanel,
+  hintBar,
+  key as widgetKey,
+  row,
+  spacer,
+  styledRow,
+  text,
+  textInputChar,
+  type WidgetSpec,
+} from "./lib/widgets.ts";
 
 const editor = getEditor();
 
@@ -54,18 +62,33 @@ interface AgentSession {
 
 const conductorSessions = new Map<number, AgentSession>();
 
-// Two-step "New Session" prompt: store the branch from step 1
-// so step 2's confirm handler can read it.
-let pendingBranchName: string | null = null;
-
 // Pending session-creation intent. Stashed across the
 // async `createWindow → window_created hook` handoff so the
 // hook handler can attach the spawned terminal. (Internally
 // the editor calls these "windows"; Conductor still presents
 // them as "sessions" in its UX.)
 let pendingNewSession:
-  | { branch: string; cmd: string; root: string }
+  | { label: string; branch: string; cmd: string; root: string }
   | null = null;
+
+// New-session form state. `null` ⇒ the floating form isn't
+// open. Each field's `value` + `cursor` mirrors what the host
+// renders inside the panel's TextInput widgets; the `submitting`
+// flag debounces double-Enter on the Create button; `lastError`
+// is rendered as a styled error row inside the form when the
+// most recent submit failed (status bar would get clobbered —
+// see MEMORY.md).
+interface NewSessionForm {
+  name: { value: string; cursor: number };
+  cmd: { value: string; cursor: number };
+  branch: { value: string; cursor: number };
+  submitting: boolean;
+  lastError: string | null;
+}
+let form: NewSessionForm | null = null;
+let formPanel: FloatingWidgetPanel | null = null;
+
+const NEW_SESSION_MODE = "conductor-new-form";
 
 // Last suggestion list shown in the open prompt. Mirrors the
 // snapshot the user sees so prompt_confirmed can map the
@@ -214,7 +237,7 @@ editor.on("prompt_selection_changed", (e) => {
   }
 });
 
-editor.on("prompt_confirmed", async (e) => {
+editor.on("prompt_confirmed", (e) => {
   if (e.prompt_type === PROMPT_TYPE) {
     // Enter commits: dive into the highlighted session for
     // real. Clear the preview override so the next prompt
@@ -227,34 +250,6 @@ editor.on("prompt_confirmed", async (e) => {
     originalActiveSessionBeforePrompt = null;
     return;
   }
-
-  if (e.prompt_type === "conductor-new-branch") {
-    const name = (e.input || "").trim();
-    if (!name) return;
-    pendingBranchName = name;
-    editor.startPrompt(
-      "Agent command (e.g. 'aider', 'claude -p \"...\"')",
-      "conductor-new-cmd",
-      true,
-    );
-    return;
-  }
-
-  if (e.prompt_type === "conductor-new-cmd") {
-    const cmd = (e.input || "").trim();
-    const branch = pendingBranchName;
-    pendingBranchName = null;
-    if (!branch || !cmd) return;
-    const cwd = editor.getCwd();
-    const root = editor.pathJoin(cwd, ".fresh", "conductor", branch);
-    try {
-      await editor.spawnProcess("mkdir", ["-p", root], cwd);
-    } catch {
-      // best-effort; createTerminal will surface failures
-    }
-    pendingNewSession = { branch, cmd, root };
-    editor.createWindow(root, branch);
-  }
 });
 
 editor.on("prompt_cancelled", (e) => {
@@ -265,24 +260,334 @@ editor.on("prompt_cancelled", (e) => {
     originalActiveSessionBeforePrompt = null;
     return;
   }
-  if (
-    e.prompt_type === "conductor-new-branch" ||
-    e.prompt_type === "conductor-new-cmd"
-  ) {
-    pendingBranchName = null;
-    pendingNewSession = null;
-  }
 });
 
-function startNewSession(): void {
-  pendingBranchName = null;
-  pendingNewSession = null;
-  editor.startPrompt(
-    "New session — branch / worktree name",
-    "conductor-new-branch",
-    true,
-  );
+// =============================================================================
+// New-session floating form
+// =============================================================================
+
+function slugify(p: string): string {
+  // Drop any leading separator so the slug isn't anchored to the
+  // filesystem root; replace remaining separators with underscores.
+  return p.replace(/^[\\\/]+/, "").replace(/[\\\/]+/g, "_");
 }
+
+function lastNonEmptyLine(s: string): string {
+  const lines = (s || "").split(/\r?\n/).filter((l) => l.trim().length > 0);
+  return lines.length ? lines[lines.length - 1].trim() : "";
+}
+
+async function spawnCollect(
+  command: string,
+  args: string[],
+  cwd: string,
+): Promise<SpawnResult> {
+  const handle = editor.spawnProcess(command, args, cwd);
+  return await editor.spawnProcessWait(handle.processId);
+}
+
+async function detectDefaultBranch(repoRoot: string): Promise<string> {
+  // `git symbolic-ref refs/remotes/origin/HEAD` → e.g.
+  // `refs/remotes/origin/main`. Strip the prefix; fall back to
+  // `HEAD` when no remote is set or the symbolic ref is missing.
+  const res = await spawnCollect(
+    "git",
+    ["-C", repoRoot, "symbolic-ref", "refs/remotes/origin/HEAD"],
+    repoRoot,
+  );
+  if (res.exit_code === 0) {
+    const trimmed = (res.stdout || "").trim();
+    const prefix = "refs/remotes/origin/";
+    if (trimmed.startsWith(prefix)) {
+      return trimmed.slice(prefix.length);
+    }
+  }
+  return "HEAD";
+}
+
+function nextAutoSessionName(): string {
+  // Persisted counter so consecutive empty submits produce
+  // session-1, session-2, … even across plugin reloads.
+  const counter = (editor.getGlobalState("conductor.session_counter") as
+    | number
+    | undefined) ?? 0;
+  const next = counter + 1;
+  editor.setGlobalState("conductor.session_counter", next);
+  return `session-${next}`;
+}
+
+function buildFormSpec(): WidgetSpec {
+  if (!form) return col();
+  const children: WidgetSpec[] = [
+    {
+      kind: "raw",
+      entries: [
+        styledRow([
+          {
+            text: "Conductor — New Session",
+            style: { fg: "ui.popup_border_fg", bold: true },
+          },
+        ]),
+      ],
+    },
+    spacer(0),
+    text({
+      value: form.name.value,
+      cursorByte: form.name.cursor,
+      label: "Session name",
+      placeholder: "(auto-generated)",
+      fieldWidth: 40,
+      key: "name",
+    }),
+    text({
+      value: form.cmd.value,
+      cursorByte: form.cmd.cursor,
+      label: "Agent command",
+      placeholder: "(plain shell)",
+      fieldWidth: 40,
+      key: "cmd",
+    }),
+    text({
+      value: form.branch.value,
+      cursorByte: form.branch.cursor,
+      label: "Branch",
+      placeholder: "(off default branch)",
+      fieldWidth: 40,
+      key: "branch",
+    }),
+    spacer(0),
+  ];
+  if (form.lastError) {
+    children.push({
+      kind: "raw",
+      entries: [
+        styledRow([
+          { text: "Error: ", style: { fg: "ui.error_fg", bold: true } },
+          { text: form.lastError },
+        ]),
+      ],
+    });
+    children.push(spacer(0));
+  }
+  children.push(
+    row(
+      flexSpacer(),
+      button("Cancel", { key: "cancel" }),
+      spacer(2),
+      button("Create", { intent: "primary", key: "create" }),
+    ),
+    spacer(0),
+    hintBar([
+      { keys: "Tab", label: "next" },
+      { keys: "S-Tab", label: "prev" },
+      { keys: "Enter", label: "submit" },
+      { keys: "Esc", label: "cancel" },
+    ]),
+  );
+  return col(...children);
+}
+
+function renderForm(): void {
+  if (!form || !formPanel) return;
+  formPanel.update(buildFormSpec());
+}
+
+function openForm(): void {
+  pendingNewSession = null;
+  const lastCmd =
+    (editor.getGlobalState("conductor.last_cmd") as string | undefined) ?? "";
+  form = {
+    name: { value: "", cursor: 0 },
+    cmd: { value: lastCmd, cursor: lastCmd.length },
+    branch: { value: "", cursor: 0 },
+    submitting: false,
+    lastError: null,
+  };
+  formPanel = new FloatingWidgetPanel();
+  formPanel.mount(buildFormSpec(), { widthPct: 60, heightPct: 50 });
+  editor.setEditorMode(NEW_SESSION_MODE);
+}
+
+function closeForm(): void {
+  if (formPanel) {
+    formPanel.unmount();
+    formPanel = null;
+  }
+  form = null;
+  editor.setEditorMode(null);
+}
+
+async function submitForm(): Promise<void> {
+  if (!form || form.submitting) return;
+  form.submitting = true;
+  form.lastError = null;
+  renderForm();
+
+  const sessionName = form.name.value.trim() || nextAutoSessionName();
+  const cmd = form.cmd.value.trim();
+  const branchInput = form.branch.value.trim();
+
+  const cwd = editor.getCwd();
+  const top = await spawnCollect("git", ["rev-parse", "--show-toplevel"], cwd);
+  if (top.exit_code !== 0) {
+    if (!form) return;
+    form.submitting = false;
+    form.lastError = lastNonEmptyLine(top.stderr) || "not a git repository";
+    renderForm();
+    return;
+  }
+  const repoRoot = (top.stdout || "").trim();
+
+  const root = editor.pathJoin(
+    editor.getDataDir(),
+    "conductor",
+    slugify(repoRoot),
+    sessionName,
+  );
+  const parent = editor.pathDirname(root);
+  if (!editor.createDir(parent)) {
+    if (!form) return;
+    form.submitting = false;
+    form.lastError = `mkdir failed: ${parent}`;
+    renderForm();
+    return;
+  }
+
+  const defaultBranch = await detectDefaultBranch(repoRoot);
+  const branchName = branchInput || sessionName;
+  // Try `-b <new>` first; if it fails because the branch already
+  // exists, fall back to checking out the existing branch into a
+  // new worktree.
+  let addRes = await spawnCollect(
+    "git",
+    ["-C", repoRoot, "worktree", "add", root, "-b", branchName, defaultBranch],
+    repoRoot,
+  );
+  if (addRes.exit_code !== 0) {
+    const fallback = await spawnCollect(
+      "git",
+      ["-C", repoRoot, "worktree", "add", root, branchName],
+      repoRoot,
+    );
+    if (fallback.exit_code !== 0) {
+      if (!form) return;
+      form.submitting = false;
+      form.lastError = lastNonEmptyLine(addRes.stderr) ||
+        lastNonEmptyLine(fallback.stderr) ||
+        "git worktree add failed";
+      renderForm();
+      return;
+    }
+    addRes = fallback;
+  }
+
+  if (cmd) {
+    editor.setGlobalState("conductor.last_cmd", cmd);
+  }
+
+  pendingNewSession = { label: sessionName, branch: branchName, cmd, root };
+  closeForm();
+  editor.createWindow(root, sessionName);
+}
+
+function startNewSession(): void {
+  if (form) return; // already open
+  openForm();
+}
+
+// Form key bindings — each delegates to smart-key dispatch on the
+// panel, which routes to the focused widget. `mode_text_input`
+// handles printable input outside this list.
+const FORM_MODE_BINDINGS: [string, string][] = [
+  ["Tab", "conductor_form_key_tab"],
+  ["S-Tab", "conductor_form_key_shift_tab"],
+  ["Return", "conductor_form_key_enter"],
+  ["Escape", "conductor_form_key_escape"],
+  ["Backspace", "conductor_form_key_backspace"],
+  ["Delete", "conductor_form_key_delete"],
+  ["Home", "conductor_form_key_home"],
+  ["End", "conductor_form_key_end"],
+  ["Left", "conductor_form_key_left"],
+  ["Right", "conductor_form_key_right"],
+  ["Up", "conductor_form_key_up"],
+  ["Down", "conductor_form_key_down"],
+];
+
+editor.defineMode(NEW_SESSION_MODE, FORM_MODE_BINDINGS, true, true);
+
+function dispatchFormKey(name: string): void {
+  if (!form || !formPanel) return;
+  formPanel.command(widgetKey(name));
+}
+
+registerHandler("conductor_form_key_tab", () => dispatchFormKey("Tab"));
+registerHandler(
+  "conductor_form_key_shift_tab",
+  () => dispatchFormKey("Shift+Tab"),
+);
+registerHandler("conductor_form_key_enter", () => dispatchFormKey("Enter"));
+registerHandler("conductor_form_key_escape", () => {
+  if (form) closeForm();
+});
+registerHandler(
+  "conductor_form_key_backspace",
+  () => dispatchFormKey("Backspace"),
+);
+registerHandler("conductor_form_key_delete", () => dispatchFormKey("Delete"));
+registerHandler("conductor_form_key_home", () => dispatchFormKey("Home"));
+registerHandler("conductor_form_key_end", () => dispatchFormKey("End"));
+registerHandler("conductor_form_key_left", () => dispatchFormKey("Left"));
+registerHandler("conductor_form_key_right", () => dispatchFormKey("Right"));
+registerHandler("conductor_form_key_up", () => dispatchFormKey("Up"));
+registerHandler("conductor_form_key_down", () => dispatchFormKey("Down"));
+
+// Printable input arrives via the global `mode_text_input` action.
+// Other plugins may also register a `mode_text_input` handler;
+// guard on `form` so this handler is a no-op outside the form.
+function conductor_mode_text_input(args: { text: string }): void {
+  if (!form || !formPanel || !args?.text) return;
+  formPanel.command(textInputChar(args.text));
+}
+registerHandler("mode_text_input", conductor_mode_text_input);
+
+editor.on("widget_event", (e) => {
+  if (!form || !formPanel) return;
+  if (e.panel_id !== formPanel.id()) return;
+  if (e.event_type === "change") {
+    const field = e.widget_key;
+    const payload = (e.payload ?? {}) as Record<string, unknown>;
+    const value = payload.value;
+    const cursor = payload.cursorByte;
+    if (typeof value !== "string") return;
+    const slot = field === "name"
+      ? form.name
+      : field === "cmd"
+      ? form.cmd
+      : field === "branch"
+      ? form.branch
+      : null;
+    if (slot) {
+      slot.value = value;
+      if (typeof cursor === "number") slot.cursor = cursor;
+    }
+    return;
+  }
+  if (e.event_type === "activate") {
+    if (e.widget_key === "create") {
+      void submitForm();
+    } else if (e.widget_key === "cancel") {
+      closeForm();
+    }
+    return;
+  }
+  if (e.event_type === "cancel") {
+    // Host fires this when Esc unmounts the floating panel —
+    // clean up our own state to match.
+    form = null;
+    formPanel = null;
+    editor.setEditorMode(null);
+  }
+});
 
 function killSelected(): void {
   if (promptSessionIds.length === 0) {
@@ -321,7 +626,7 @@ editor.on("window_created", async (payload) => {
   const id = payload.id;
   if (
     pendingNewSession &&
-    payload.label === pendingNewSession.branch
+    payload.label === pendingNewSession.label
   ) {
     const intent = pendingNewSession;
     pendingNewSession = null;
@@ -335,14 +640,16 @@ editor.on("window_created", async (payload) => {
     });
     const tracked: AgentSession = {
       id,
-      label: intent.branch,
+      label: intent.label,
       root: intent.root,
       terminalId: term.terminalId,
       state: "running",
       createdAt: Date.now(),
     };
     conductorSessions.set(id, tracked);
-    editor.sendTerminalInput(term.terminalId, intent.cmd + "\n");
+    if (intent.cmd) {
+      editor.sendTerminalInput(term.terminalId, intent.cmd + "\n");
+    }
   }
   refreshPromptIfOpen();
 });
