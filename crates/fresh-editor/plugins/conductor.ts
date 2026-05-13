@@ -282,8 +282,7 @@ async function spawnCollect(
   args: string[],
   cwd: string,
 ): Promise<SpawnResult> {
-  const handle = editor.spawnProcess(command, args, cwd);
-  return await editor.spawnProcessWait(handle.processId);
+  return await editor.spawnProcess(command, args, cwd);
 }
 
 async function detectDefaultBranch(repoRoot: string): Promise<string> {
