@@ -54,7 +54,10 @@ fn open_search_replace_via_palette(harness: &mut EditorTestHarness) {
     harness.type_text("Search and Replace in Project").unwrap();
 
     harness
-        .wait_until(|h| h.screen_to_string().contains("Search and Replace in Project"))
+        .wait_until(|h| {
+            h.screen_to_string()
+                .contains("Search and Replace in Project")
+        })
         .unwrap();
 
     harness
