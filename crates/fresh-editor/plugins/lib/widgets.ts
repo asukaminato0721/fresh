@@ -618,6 +618,25 @@ export class WidgetPanel {
   setCheckedKeys(widgetKey: string, checked: boolean, keys: string[]): boolean {
     return this.mutate({ kind: "setCheckedKeys", widgetKey, checked, keys });
   }
+
+  /** Append `newNodes` (and parallel `newItemKeys`) to an existing
+   * `Tree`'s node list — the streaming-friendly counterpart to
+   * `setItems`. Existing selection, scroll, and expansion state are
+   * preserved; the renderer simply has more tail to paint on the next
+   * cycle. Cheap relative to a full spec re-emit for plugins that
+   * stream large result sets (e.g. a project-wide grep). */
+  appendTreeNodes(
+    widgetKey: string,
+    newNodes: TreeNode[],
+    newItemKeys: string[] = [],
+  ): boolean {
+    return this.mutate({
+      kind: "appendTreeNodes",
+      widgetKey,
+      newNodes,
+      newItemKeys,
+    });
+  }
 }
 
 // =============================================================================

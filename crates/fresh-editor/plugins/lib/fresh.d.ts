@@ -1020,6 +1020,11 @@ type WidgetMutation = {
 	widgetKey: string;
 	checked: boolean;
 	keys: Array<string>;
+} | {
+	"kind": "appendTreeNodes";
+	widgetKey: string;
+	newNodes: Array<TreeNode>;
+	newItemKeys: Array<string>;
 };
 type SearchTakeResult = {
 	/**
@@ -1074,6 +1079,17 @@ type AuthorityPayload = {
 	spawner: AuthoritySpawner;
 	terminal_wrapper: AuthorityTerminalWrapper;
 	display_label?: string;
+	/**
+	* Optional host↔remote workspace path mapping. The dev-container
+	* authority sets both roots (editor.getCwd() on host;
+	* remoteWorkspaceFolder on container) so LSP URIs translate at the
+	* host/container boundary. Local and SSH authorities omit it.
+	*/
+	path_translation?: PathTranslationSpec;
+};
+type PathTranslationSpec = {
+	host_root: string;
+	remote_root: string;
 };
 type BackgroundProcessResult = {
 	/**
@@ -1388,7 +1404,7 @@ interface EditorAPI {
 	* again with the same `name` replaces the previous registration
 	* (idempotent — reload works). Exports are auto-dropped when the
 	* calling plugin is unloaded.
-	*
+	* 
 	* Returns `true` on success. Rejects with a TypeError if `name` is
 	* empty or `api` is not an object (functions and primitives are not
 	* valid API surfaces — only objects).
@@ -1430,7 +1446,7 @@ interface EditorAPI {
 	getKeybindingLabel(action: string, mode: string | null): string | null;
 	/**
 	* Register a command in the command palette (Ctrl+P).
-	*
+	* 
 	* Usually you should omit `context` so the command is always visible.
 	* If provided, the command is **hidden** unless your plugin has activated
 	* that context with `editor.setContext(name, true)` or the focused buffer's
@@ -1458,8 +1474,8 @@ interface EditorAPI {
 	*/
 	registerStatusBarElement(tokenName: string, title: string): boolean;
 	/**
-	* Set the value of a registered status-bar token for a specific buffer.
-	* The token key sent to the editor is "plugin_name:token_name".
+	* Set the value of a status-bar token for a specific buffer.
+	* The full token key sent to the editor is "plugin_name:token_name".
 	*/
 	setStatusBarValue(bufferId: number, tokenName: string, value: string): boolean;
 	/**
@@ -1510,7 +1526,7 @@ interface EditorAPI {
 	getViewport(): ViewportInfo | null;
 	/**
 	* List every split with its active buffer and viewport.
-	*
+	* 
 	* Plugins that need to operate on every visible buffer
 	* simultaneously (multi-split flash labels, syncing decorations
 	* across panes, …) iterate this list rather than only seeing
@@ -1656,7 +1672,7 @@ interface EditorAPI {
 	getCwd(): string;
 	/**
 	* Get the active authority's display label.
-	*
+	* 
 	* Empty means the local (default) authority. A non-empty value
 	* means a plugin-installed or SSH authority is in effect (e.g.
 	* `"Container:abc123def456"` for a devcontainer). Intended as a
@@ -1668,7 +1684,7 @@ interface EditorAPI {
 	/**
 	* Join path components (variadic - accepts multiple string arguments)
 	* Always uses forward slashes for cross-platform consistency (like Node.js path.posix.join)
-	*
+	* 
 	* Preserves up to 2 leading slashes, which matters on Windows: Rust's
 	* `Path::canonicalize` returns `\\?\`-prefixed paths, and `editor.getCwd()`
 	* surfaces that to plugin code verbatim. After the backslash→slash
@@ -1707,7 +1723,7 @@ interface EditorAPI {
 	pathToFileUri(path: string): string;
 	/**
 	* Get the UTF-8 byte length of a JavaScript string.
-	*
+	* 
 	* JS strings are UTF-16 internally, so `str.length` returns the number of
 	* UTF-16 code units, not the number of bytes in a UTF-8 encoding.  The
 	* editor API uses byte offsets for all buffer positions (overlays, cursor,
@@ -1758,18 +1774,18 @@ interface EditorAPI {
 	getTempDir(): string;
 	/**
 	* Parse a JSONC (JSON with comments) string into a JS value.
-	*
+	* 
 	* Accepts the JSONC superset: line and block comments, trailing
 	* commas, single-quoted strings, and unquoted object keys — matching
 	* devcontainer.json / tsconfig.json / VS Code settings.json.
-	*
+	* 
 	* Throws a JS error (catchable with try/catch) when the input is not
 	* valid JSONC, like `JSON.parse` does for invalid JSON.
 	*/
 	parseJsonc(text: string): unknown;
 	/**
 	* Get current config as JS object.
-	*
+	* 
 	* The snapshot holds an `Arc<serde_json::Value>` that was serialized
 	* on the editor side the last time the underlying `Arc<Config>`
 	* changed. Cloning the Arc inside the read lock is a refcount bump;
@@ -1786,14 +1802,14 @@ interface EditorAPI {
 	reloadConfig(): void;
 	/**
 	* Set a single config setting in the runtime layer for this session.
-	*
+	* 
 	* `path` is dot-separated (e.g. `"editor.tab_size"`). `value` is any JSON
 	* value in the shape the setting expects. The write lives in an
 	* in-memory layer scoped to the calling plugin — it does not modify
 	* `config.json`, and unloading the plugin (or reloading init.ts) drops
 	* it. Intended use is `init.ts` running a conditional:
 	* `if (editor.getEnv("SSH_TTY")) editor.setSetting("terminal.mouse", false);`
-	*
+	* 
 	* Returns `true` if the write was queued. The actual update is
 	* asynchronous; a subsequent `getConfig()` will reflect it after the
 	* editor processes the command.
@@ -1854,7 +1870,7 @@ interface EditorAPI {
 	* Override theme colors in-memory for the running session. `overrides`
 	* is a JS object mapping `"section.field"` keys (same namespace as
 	* `getThemeSchema`) to `[r, g, b]` triplets (0–255 each).
-	*
+	* 
 	* Unknown keys are dropped silently; out-of-range values are clamped
 	* to `0..=255`. Overrides survive until the next `applyTheme` call
 	* (which replaces the whole `Theme`). Intended for fast animation
@@ -1908,14 +1924,14 @@ interface EditorAPI {
 	pluginTranslate(pluginName: string, key: string, args?: Record<string, unknown>): string;
 	/**
 	* Create a composite buffer (async)
-	*
+	* 
 	* Uses typed CreateCompositeBufferOptions - serde validates field names at runtime
 	* via `deny_unknown_fields` attribute
 	*/
 	createCompositeBuffer(opts: TsCreateCompositeBufferOptions): Promise<number>;
 	/**
 	* Update alignment hunks for a composite buffer
-	*
+	* 
 	* Uses typed Vec<CompositeHunk> - serde validates field names at runtime
 	*/
 	updateCompositeAlignment(bufferId: number, hunks: TsCompositeHunk[]): boolean;
@@ -1943,15 +1959,15 @@ interface EditorAPI {
 	getHighlights(bufferId: number, start: number, end: number): Promise<TsHighlightSpan[]>;
 	/**
 	* Add an overlay with styling options
-	*
+	* 
 	* Colors can be specified as RGB arrays `[r, g, b]` or theme key strings.
 	* Theme keys are resolved at render time, so overlays update with theme changes.
-	*
+	* 
 	* Theme key examples: "ui.status_bar_fg", "editor.selection_bg", "syntax.keyword"
-	*
+	* 
 	* Options: fg, bg (RGB array or theme key string), bold, italic, underline,
 	* strikethrough, extend_to_line_end (all booleans, default false).
-	*
+	* 
 	* Example usage in TypeScript:
 	* ```typescript
 	* editor.addOverlay(bufferId, "my-namespace", 0, 10, {
@@ -2016,10 +2032,10 @@ interface EditorAPI {
 	clearSoftBreaksInRange(bufferId: number, start: number, end: number): boolean;
 	/**
 	* Submit a view transform for a buffer/split
-	*
+	* 
 	* Accepts tokens in the simple format:
 	* {kind: "text"|"newline"|"space"|"break", text: "...", sourceOffset: N, style?: {...}}
-	*
+	* 
 	* Also accepts the TypeScript-defined format for backwards compatibility:
 	* {kind: {Text: "..."} | "Newline" | "Space" | "Break", source_offset: N, style?: {...}}
 	*/
@@ -2071,7 +2087,7 @@ interface EditorAPI {
 	clearVirtualTextNamespace(bufferId: number, namespace: string): boolean;
 	/**
 	* Add a virtual line (full line above/below a position)
-	*
+	* 
 	* The `options` object accepts:
 	* * `fg`, `bg` — either an `[r, g, b]` array (each `0..=255`) or a
 	* theme-key string (e.g. `"editor.line_number_fg"`).  Theme keys
@@ -2093,7 +2109,7 @@ interface EditorAPI {
 	prompt(label: string, initialValue: string): Promise<string | null>;
 	/**
 	* Start an interactive prompt.
-	*
+	* 
 	* When `floatingOverlay` is true, the editor renders the prompt
 	* and its suggestions inside a centred floating frame instead of
 	* the bottom minibuffer row (issue #1796 — Live Grep). The flag
@@ -2103,7 +2119,7 @@ interface EditorAPI {
 	startPrompt(label: string, promptType: string, floatingOverlay?: boolean): boolean;
 	/**
 	* Begin a key-capture window for the calling plugin.
-	*
+	* 
 	* Pair with `endKeyCapture()` around any `getNextKey()` loop.
 	* While capture is active, keys arriving between two
 	* `getNextKey()` calls are buffered in-order rather than
@@ -2121,27 +2137,26 @@ interface EditorAPI {
 	endKeyCapture(): boolean;
 	/**
 	* Wait for the next keypress and resolve with a `KeyEventPayload`.
-	*
+	* 
 	* While the returned promise is pending the editor consumes the
 	* next key and resolves it; the key does not propagate to mode
 	* bindings or other dispatch. Multiple in-flight requests across
 	* plugins are FIFO. Designed for short input loops (flash labels,
 	* vi find-char, replace-char) that would otherwise need to bind
 	* every printable key in `defineMode`.
-	*
+	* 
 	* For lossless capture against fast typing or paste, wrap the
 	* loop with `beginKeyCapture()` / `endKeyCapture()`.
 	*/
 	getNextKey(): Promise<KeyEventPayload>;
 	/**
-	* Start a prompt with initial value. See `start_prompt` for why
-	* `floating_overlay` uses `rquickjs::function::Opt` (so JS
-	* callers can omit the argument).
+	* Start a prompt with initial value. See `startPrompt` for the
+	* meaning of `floatingOverlay`.
 	*/
 	startPromptWithInitial(label: string, promptType: string, initialValue: string, floatingOverlay?: boolean): boolean;
 	/**
 	* Set suggestions for the current prompt
-	*
+	* 
 	* Uses typed Vec<Suggestion> - serde validates field names at runtime
 	*/
 	setPromptSuggestions(suggestions: PromptSuggestion[]): boolean;
@@ -2305,7 +2320,7 @@ interface EditorAPI {
 	setBufferCursor(bufferId: number, position: number): boolean;
 	/**
 	* Toggle whether the editor draws a native caret in this buffer.
-	*
+	* 
 	* Buffer-group panel buffers default to `show_cursors = false`, which
 	* also blocks all native movement actions in `action_to_events`. Plugins
 	* that want native cursor motion in a panel (e.g. magit-style row
@@ -2386,13 +2401,13 @@ interface EditorAPI {
 	removeScrollSyncGroup(groupId: number): boolean;
 	/**
 	* Execute multiple actions in sequence
-	*
+	* 
 	* Takes typed ActionSpec array - serde validates field names at runtime
 	*/
 	executeActions(actions: ActionSpec[]): boolean;
 	/**
 	* Show an action popup
-	*
+	* 
 	* Takes a typed ActionPopupOptions struct - serde validates field names at runtime
 	*/
 	showActionPopup(opts: ActionPopupOptions): boolean;
@@ -2449,7 +2464,7 @@ interface EditorAPI {
 	focusBufferGroupPanel(groupId: number, panelName: string): boolean;
 	/**
 	* Set virtual buffer content (takes array of entry objects)
-	*
+	* 
 	* Note: entries should be TextPropertyEntry[] - uses manual parsing for HashMap support
 	*/
 	setVirtualBufferContent(bufferId: number, entriesArr: Record<string, unknown>[]): boolean;
@@ -2517,7 +2532,7 @@ interface EditorAPI {
 	spawnProcess(command: string, args: string[], cwd?: string): ProcessHandle<SpawnResult>;
 	/**
 	* Spawn a process on the host regardless of the active authority.
-	*
+	* 
 	* Intended for plugin internals that must run host-side work
 	* (e.g. `devcontainer up`) before installing an authority that
 	* would otherwise route the spawn elsewhere. Same calling shape
@@ -2526,7 +2541,7 @@ interface EditorAPI {
 	spawnHostProcess(command: string, args: string[], cwd?: string): ProcessHandle<SpawnResult>;
 	/**
 	* Install a new authority via an opaque payload.
-	*
+	* 
 	* The payload is a JS object describing filesystem + spawner +
 	* terminal wrapper + display label. The canonical schema lives in
 	* the `AuthorityPayload` type in `fresh-editor`; plugins should
@@ -2545,7 +2560,7 @@ interface EditorAPI {
 	* this to surface lifecycle transitions that the authority layer
 	* doesn't know about yet — "Connecting" while `devcontainer up`
 	* runs, "FailedAttach" after a non-zero exit, etc.
-	*
+	* 
 	* Accepts a tagged JS object:
 	* ```ts
 	* editor.setRemoteIndicatorState({ kind: "connecting", label: "Building" });
@@ -2553,7 +2568,7 @@ interface EditorAPI {
 	* editor.setRemoteIndicatorState({ kind: "connected", label: "Container:abc" });
 	* editor.setRemoteIndicatorState({ kind: "local" });
 	* ```
-	*
+	* 
 	* The override sticks until replaced or cleared via
 	* `clearRemoteIndicatorState`. Editor restart (e.g. on
 	* `setAuthority`) resets it — plugins must reassert after a

@@ -638,6 +638,35 @@ function renderFlatItemEntry(item: FlatItem, W: number): TextPropertyEntry {
   });
 }
 
+// Convert a slice of `FlatItem`s into the corresponding TreeNodes.
+// Pulled out of `buildMatchListSpec` so the streaming path can use it
+// to build deltas for `appendTreeNodes` — it must produce nodes
+// identical to the full-spec rebuild for the same items, so
+// auto-expand of first-seen file rows happens here.
+function flatItemsToTreeNodes(
+  flatItems: FlatItem[],
+  itemKeys: string[],
+  W: number,
+): TreeNode[] {
+  return flatItems.map((item, i) => {
+    const entry = renderFlatItemEntry(item, W);
+    if (item.type === "file") {
+      const k = itemKeys[i];
+      if (!panel!.knownFileKeys.has(k)) {
+        panel!.knownFileKeys.add(k);
+        panel!.expandedFileKeys.add(k);
+      }
+      // File-row checkbox derives from children: checked iff every
+      // match in this file is selected.
+      const fileChecked = panel!.fileGroups[item.fileIndex].matches.every(m => m.selected);
+      return treeNode(entry, { depth: 0, hasChildren: true, checked: fileChecked });
+    }
+    const matchSelected = panel!.fileGroups[item.fileIndex]
+      .matches[item.matchIndex!].selected;
+    return treeNode(entry, { depth: 1, hasChildren: false, checked: matchSelected });
+  });
+}
+
 // Build the typed spec for the matches body — either a Tree widget
 // (when there are matches) or a Raw cell with the empty/prompt
 // message. The Tree widget owns scroll, selection styling, click
@@ -681,35 +710,7 @@ function buildMatchListSpec(): WidgetSpec {
 
   const flatItems = buildFlatItems();
   const itemKeys = flatItems.map(flatItemKey);
-  // Track the file-row keys present in this render. Newly-discovered
-  // file groups are auto-added to `expandedFileKeys` (default state =
-  // expanded). Files the user has collapsed remain absent from the
-  // set; we never re-add a key that's already known but currently
-  // collapsed, since `clearedThisRender` would tag them as "first
-  // time seen". Tracking is via the per-search reset in
-  // `performSearch`: at the start of a search the set is empty, so
-  // every file is auto-added on its first appearance, then user
-  // collapse events remove them.
-  const nodes: TreeNode[] = flatItems.map((item, i) => {
-    const entry = renderFlatItemEntry(item, W);
-    if (item.type === "file") {
-      const k = itemKeys[i];
-      if (!panel!.knownFileKeys.has(k)) {
-        panel!.knownFileKeys.add(k);
-        panel!.expandedFileKeys.add(k);
-      }
-      // File-row checkbox derives from children: checked iff every
-      // match in this file is selected. Mixed (some selected, some
-      // not) renders as `[ ]` for v1 — adding a tristate `[~]`
-      // glyph is a future host-side option but not needed to wire
-      // the toggle path end-to-end.
-      const fileChecked = panel!.fileGroups[item.fileIndex].matches.every(m => m.selected);
-      return treeNode(entry, { depth: 0, hasChildren: true, checked: fileChecked });
-    }
-    const matchSelected = panel!.fileGroups[item.fileIndex]
-      .matches[item.matchIndex!].selected;
-    return treeNode(entry, { depth: 1, hasChildren: false, checked: matchSelected });
-  });
+  const nodes = flatItemsToTreeNodes(flatItems, itemKeys, W);
   const selectedIndex = panel.focusPanel === "matches" ? panel.matchIndex : -1;
   // Tree visible rows = panel viewport height minus the chrome
   // (line 1 + options row + separator + footer = 4 rows) — same
@@ -955,10 +956,13 @@ let activeSearchHandle: SearchHandle | null = null;
 /** Pump cadence between successive `take()` drains (ms). The host writes
  * matches at full speed; this knob bounds the UI rebuild rate. */
 const SEARCH_PUMP_INTERVAL_MS = 50;
-/** Minimum interval between intermediate `updatePanelContent()` calls
- *  during streaming. See the comment on the throttle in performSearch. */
-const STREAMING_UPDATE_MIN_MS = 300;
-let lastStreamingUpdate = 0;
+/** Number of `buildFlatItems()` entries the streaming path has already
+ *  pushed to the host via `appendTreeNodes`. Zero means "no streaming
+ *  append has happened for the current search"; the first batch of
+ *  results will do a full `updatePanelContent()` instead so the Tree
+ *  exists for subsequent appends. Reset at the start of each search
+ *  and after `batch.done` (which forces a full re-emit). */
+let lastStreamingFlatCount = 0;
 
 /**
  * Perform a streaming search using a pull-based handle. The host writes
@@ -977,10 +981,11 @@ async function performSearch(pattern: string, silent?: boolean): Promise<SearchR
   // result set isn't meaningful for the new one.
   panel.expandedFileKeys.clear();
   panel.knownFileKeys.clear();
-  // New search → next intermediate update should fire immediately, not
-  // be delayed by the throttle from a previous (potentially recent)
-  // search's last update.
-  lastStreamingUpdate = 0;
+  // New search → reset the streaming-append checkpoint. The first
+  // batch of results will trigger a full `updatePanelContent()`
+  // (mounting the empty Tree); subsequent batches append deltas to
+  // that mounted Tree.
+  lastStreamingFlatCount = 0;
 
   // Cancel any in-flight search before kicking off a new one. Without
   // this the prior search would keep walking the project until it
@@ -1026,22 +1031,50 @@ async function performSearch(pattern: string, silent?: boolean): Promise<SearchR
         panel.searchResults = allResults;
         panel.fileGroups = buildFileGroups(allResults);
       }
-      // Throttle the streaming re-render. Without this, a search that
-      // returns thousands of matches (e.g. project-wide grep for a
-      // common word) re-emits the full panel spec — toolbar + scope
-      // row + ~5000-row Tree — on every 50 ms pump tick. The IPC traffic
-      // and per-emit host work make Tab / Esc / typing wait seconds for
-      // the pump to finish. Cap at one render per 300 ms during
-      // streaming; the final batch unconditionally flushes regardless
-      // of throttle state.
-      const now = Date.now();
-      const due = now - lastStreamingUpdate >= STREAMING_UPDATE_MIN_MS;
-      if (batch.matches.length > 0 && due) {
-        lastStreamingUpdate = now;
+      // Streaming updates use `appendTreeNodes` on the matchTree
+      // widget rather than re-emitting the full panel spec. Without
+      // this, a project-wide grep for a common word (thousands of
+      // matches across hundreds of files) re-serializes the entire
+      // ~5000-row Tree on every 50 ms pump tick — multi-MB IPC traffic
+      // that pins the host main thread, so Tab / Esc / typing the user
+      // fires mid-search wait seconds for the pump to finish.
+      //
+      // Each batch we re-walk `buildFlatItems()` (cheap, fileGroups is
+      // O(matches)) and ship only the suffix that hasn't been sent
+      // yet via `appendTreeNodes`. The host grep walks files in order
+      // and never revisits one, so new flat items are always at the
+      // tail — pure append is correct. The file-row counts ("(N/M)")
+      // can lag behind the real selection set during streaming; the
+      // final batch flushes a full spec re-emit which fixes them.
+      if (batch.matches.length > 0 && panel.widgetPanel && lastStreamingFlatCount > 0) {
+        const W = Math.max(MIN_WIDTH, panel.viewportWidth - 2);
+        const flat = buildFlatItems();
+        if (flat.length > lastStreamingFlatCount) {
+          const newItems = flat.slice(lastStreamingFlatCount);
+          const newItemKeys = newItems.map(flatItemKey);
+          const newNodes = flatItemsToTreeNodes(newItems, newItemKeys, W);
+          panel.widgetPanel.appendTreeNodes("matchTree", newNodes, newItemKeys);
+          lastStreamingFlatCount = flat.length;
+          // Also push the new file rows' expansion state so children
+          // render. The host treats `setExpandedKeys` as the full list,
+          // which is fine.
+          panel.widgetPanel.setExpandedKeys(
+            "matchTree",
+            [...panel.expandedFileKeys],
+          );
+        }
+      } else if (batch.matches.length > 0) {
+        // First streaming render or no tree mounted yet — emit the full
+        // spec so the Tree exists for subsequent appends to target.
         updatePanelContent();
-      } else if (batch.done) {
-        lastStreamingUpdate = now;
+        lastStreamingFlatCount = buildFlatItems().length;
+      }
+      if (batch.done) {
+        // Final flush — full spec re-emit so the matchStats line,
+        // file-row counts, and separator label all reflect the
+        // final state (rather than the last-streaming snapshot).
         updatePanelContent();
+        lastStreamingFlatCount = 0;
       }
 
       if (batch.done) {

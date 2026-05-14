@@ -3469,6 +3469,20 @@ impl Editor {
                     );
                 }
             }
+            WidgetMutation::AppendTreeNodes {
+                widget_key,
+                new_nodes,
+                new_item_keys,
+            } => {
+                if let Some(panel) = self.widget_registry.get_mut(panel_id) {
+                    crate::widgets::append_tree_nodes_in_spec(
+                        &mut panel.spec,
+                        &widget_key,
+                        new_nodes,
+                        new_item_keys,
+                    );
+                }
+            }
         }
 
         // Re-render with the mutated state. `rerender_widget_panel`

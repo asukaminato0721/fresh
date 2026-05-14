@@ -1773,6 +1773,18 @@ pub enum WidgetMutation {
         checked: bool,
         keys: Vec<String>,
     },
+    /// Append `new_nodes` (and parallel `new_item_keys`) to an
+    /// existing Tree's node list. Streaming-friendly counterpart to
+    /// `SetItems`: a plugin streaming thousands of results sends only
+    /// the per-batch delta instead of re-transmitting the entire tree
+    /// on every batch. Existing selection / scroll / expansion state
+    /// is preserved across the append.
+    AppendTreeNodes {
+        widget_key: String,
+        new_nodes: Vec<crate::api::TreeNode>,
+        #[serde(default)]
+        new_item_keys: Vec<String>,
+    },
 }
 
 /// Plugin command - allows plugins to send commands to the editor

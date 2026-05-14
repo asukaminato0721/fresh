@@ -368,6 +368,49 @@ pub fn set_tree_nodes_in_spec(
     false
 }
 
+/// Append `new_nodes` (and their item keys) to an existing Tree's
+/// node list, preserving everything already present. Returns true
+/// when a matching Tree was found and extended.
+///
+/// Existing instance state (selection, scroll, expansion) is untouched —
+/// the renderer keeps the user's current scroll position even as new
+/// items appear at the tail.
+///
+/// Used by `WidgetMutation::AppendTreeNodes` to make streaming updates
+/// cheap: a project-wide search reporting thousands of matches sends
+/// only the per-batch delta instead of re-transmitting the full tree
+/// on every pump tick. The plugin tracks how many nodes it last sent
+/// and emits only the new tail.
+pub fn append_tree_nodes_in_spec(
+    spec: &mut WidgetSpec,
+    widget_key: &str,
+    new_nodes: Vec<TreeNode>,
+    new_item_keys: Vec<String>,
+) -> bool {
+    if widget_key.is_empty() {
+        return false;
+    }
+    if let WidgetSpec::Tree {
+        nodes,
+        item_keys,
+        key,
+        ..
+    } = spec
+    {
+        if key.as_deref() == Some(widget_key) {
+            nodes.extend(new_nodes);
+            item_keys.extend(new_item_keys);
+            return true;
+        }
+    }
+    for c in spec.children_mut() {
+        if c.contains_key(widget_key) {
+            return append_tree_nodes_in_spec(c, widget_key, new_nodes, new_item_keys);
+        }
+    }
+    false
+}
+
 /// Stamp `Some(checked)` onto every `TreeNode` whose item-key
 /// appears in `keys`. Used by `WidgetMutation::SetCheckedKeys` —
 /// the host writes the new checkbox state into the spec so the
