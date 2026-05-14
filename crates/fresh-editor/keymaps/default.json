@@ -536,6 +536,14 @@
       "when": "normal"
     },
     {
+      "comment": "Project-wide Search and Replace panel. Mnemonic: 'A' for All files. Avoids Ctrl+Shift+F because many terminals collapse Ctrl+Shift+letter to Ctrl+letter (Ctrl+Shift+H ≡ Ctrl+H ≡ Backspace, Ctrl+Shift+L ≡ Ctrl+L ≡ form feed). Implements §10 of docs/internal/search-replace-scope-replan-on-widgets.md.",
+      "key": "a",
+      "modifiers": ["alt"],
+      "action": "start_search_replace",
+      "args": {},
+      "when": "normal"
+    },
+    {
       "key": "r",
       "modifiers": ["ctrl", "alt"],
       "action": "query_replace",
