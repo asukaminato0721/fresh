@@ -140,6 +140,18 @@ impl ProcessSpawner for DockerExecSpawner {
             exit_code: output.status.code().unwrap_or(-1),
         })
     }
+
+    async fn spawn_to_file(
+        &self,
+        _command: String,
+        _args: Vec<String>,
+        _cwd: Option<String>,
+        _stdout_to: std::path::PathBuf,
+    ) -> Result<SpawnResult, SpawnError> {
+        Err(SpawnError::Process(
+            "stdoutTo is not supported for docker-exec processes".to_string(),
+        ))
+    }
 }
 
 /// Long-running spawner for container authorities — wraps the `docker

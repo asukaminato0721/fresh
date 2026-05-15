@@ -1970,10 +1970,20 @@ pub enum PluginCommand {
     InsertAtCursor { text: String },
 
     /// Spawn an async process
+    ///
+    /// When `stdout_to` is `Some(path)`, the child's stdout is piped
+    /// directly into that file on disk (via `tokio::io::copy`) rather
+    /// than being buffered in memory. The resulting `SpawnResult.stdout`
+    /// is empty in that case; `stderr` and `exit_code` are populated as
+    /// usual. This lets large outputs (e.g. `git show` for a big commit)
+    /// stay on disk and be opened as a file-backed buffer without ever
+    /// crossing the JS bridge.
     SpawnProcess {
         command: String,
         args: Vec<String>,
         cwd: Option<String>,
+        #[serde(default)]
+        stdout_to: Option<PathBuf>,
         callback_id: JsCallbackId,
     },
 

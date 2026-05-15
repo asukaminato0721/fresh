@@ -4702,6 +4702,11 @@ impl JsEditorApi {
     // === Async Operations ===
 
     /// Spawn a process (async, returns request_id)
+    ///
+    /// Optional 4th argument `stdoutTo: string` pipes the child's stdout
+    /// directly into the named file instead of buffering it. The
+    /// resolved `SpawnResult.stdout` is empty in that case; the bytes
+    /// land on disk for `openFile` to pick up as a file-backed buffer.
     #[plugin_api(async_thenable, js_name = "spawnProcess", ts_return = "SpawnResult")]
     #[qjs(rename = "_spawnProcessStart")]
     pub fn spawn_process_start(
@@ -4710,6 +4715,7 @@ impl JsEditorApi {
         command: String,
         args: Vec<String>,
         cwd: rquickjs::function::Opt<String>,
+        stdout_to: rquickjs::function::Opt<String>,
     ) -> u64 {
         let id = self.alloc_request_id();
         // Use provided cwd, or fall back to snapshot's working_dir.
@@ -4723,12 +4729,17 @@ impl JsEditorApi {
                 .ok()
                 .map(|s| s.working_dir.to_string_lossy().to_string())
         });
+        let stdout_to_path = stdout_to
+            .0
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from);
         tracing::info!(
-            "spawn_process_start: plugin='{}', command='{}', args={:?}, cwd={:?}, callback_id={}",
+            "spawn_process_start: plugin='{}', command='{}', args={:?}, cwd={:?}, stdout_to={:?}, callback_id={}",
             self.plugin_name,
             command,
             args,
             effective_cwd,
+            stdout_to_path,
             id
         );
         let _ = self.command_sender.send(PluginCommand::SpawnProcess {
@@ -4736,6 +4747,7 @@ impl JsEditorApi {
             command,
             args,
             cwd: effective_cwd,
+            stdout_to: stdout_to_path,
         });
         id
     }
@@ -5811,7 +5823,47 @@ impl QuickJsBackend {
                 };
 
                 // Apply wrappers to async functions on editor
-                editor.spawnProcess = _wrapAsyncThenable("_spawnProcessStart", "spawnProcess");
+                // spawnProcess takes an optional 4th `options` object:
+                //   editor.spawnProcess(cmd, args, cwd?, { stdoutTo?: string })
+                // The Rust binding takes `cwd` and `stdoutTo` as flat
+                // `Opt<String>` args; this wrapper unpacks the options
+                // object so plugin authors get the structured shape.
+                editor.spawnProcess = function(command, argsArr, cwdOrOpts, maybeOpts) {
+                    if (typeof editor._spawnProcessStart !== 'function') {
+                        throw new Error('editor.spawnProcess is not implemented (missing _spawnProcessStart)');
+                    }
+                    // Backward-compat: callers passed `(cmd, args, cwd)` or
+                    // `(cmd, args)` historically. New shape adds a 4th
+                    // `options` object. We also accept an options object
+                    // in the 3rd slot when cwd is omitted.
+                    let cwd = "";
+                    let opts = null;
+                    if (typeof cwdOrOpts === "string") {
+                        cwd = cwdOrOpts;
+                        opts = maybeOpts || null;
+                    } else if (cwdOrOpts && typeof cwdOrOpts === "object") {
+                        opts = cwdOrOpts;
+                    }
+                    const stdoutTo = (opts && typeof opts.stdoutTo === "string") ? opts.stdoutTo : "";
+                    const callbackId = editor._spawnProcessStart(
+                        command,
+                        argsArr || [],
+                        cwd,
+                        stdoutTo,
+                    );
+                    const resultPromise = new Promise((resolve, reject) => {
+                        globalThis._pendingCallbacks.set(callbackId, { resolve, reject });
+                    });
+                    return {
+                        get result() { return resultPromise; },
+                        then(onFulfilled, onRejected) {
+                            return resultPromise.then(onFulfilled, onRejected);
+                        },
+                        catch(onRejected) {
+                            return resultPromise.catch(onRejected);
+                        }
+                    };
+                };
                 // spawnHostProcess gets a bespoke wrapper (instead of
                 // `_wrapAsyncThenable`) because its `ProcessHandle`
                 // exposes a real `kill()` that forwards to

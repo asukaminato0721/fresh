@@ -59,6 +59,33 @@ pub trait ProcessSpawner: Send + Sync {
         args: Vec<String>,
         cwd: Option<String>,
     ) -> Result<SpawnResult, SpawnError>;
+
+    /// Spawn a process, piping stdout directly to a file instead of
+    /// buffering it in memory. Default impl buffers and writes; concrete
+    /// implementations should override when a streaming path exists.
+    ///
+    /// `SpawnResult.stdout` is empty on success — the bytes are on disk
+    /// at `stdout_to` instead. `stderr` and `exit_code` work as usual.
+    async fn spawn_to_file(
+        &self,
+        command: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        stdout_to: std::path::PathBuf,
+    ) -> Result<SpawnResult, SpawnError> {
+        // Fallback: collect in memory then write. Concrete impls override
+        // to pipe directly.
+        let result = self.spawn(command, args, cwd).await?;
+        if result.exit_code == 0 || !result.stdout.is_empty() {
+            std::fs::write(&stdout_to, result.stdout.as_bytes())
+                .map_err(|e| SpawnError::Process(format!("write {:?}: {}", stdout_to, e)))?;
+        }
+        Ok(SpawnResult {
+            stdout: String::new(),
+            stderr: result.stderr,
+            exit_code: result.exit_code,
+        })
+    }
 }
 
 /// Local process spawner using tokio
@@ -91,6 +118,89 @@ impl ProcessSpawner for LocalProcessSpawner {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             exit_code: output.status.code().unwrap_or(-1),
+        })
+    }
+
+    /// Streaming override: pipe child stdout straight into `stdout_to`
+    /// via `tokio::io::copy`. The 43 MB stdout of `git show` for the
+    /// bun-rust-rewrite commit never lands in a single `String`.
+    async fn spawn_to_file(
+        &self,
+        command: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        stdout_to: std::path::PathBuf,
+    ) -> Result<SpawnResult, SpawnError> {
+        use std::process::Stdio;
+        use tokio::io::AsyncWriteExt;
+
+        let mut cmd = tokio::process::Command::new(&command);
+        cmd.args(&args);
+        cmd.hide_window();
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        if let Some(ref dir) = cwd {
+            cmd.current_dir(dir);
+        }
+
+        // Ensure the parent dir exists so the open below doesn't ENOENT.
+        if let Some(parent) = stdout_to.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+        }
+
+        let mut file = tokio::fs::File::create(&stdout_to)
+            .await
+            .map_err(|e| SpawnError::Process(format!("create {:?}: {}", stdout_to, e)))?;
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| SpawnError::Process(e.to_string()))?;
+
+        let mut child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| SpawnError::Process("child stdout missing".to_string()))?;
+        let mut child_stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| SpawnError::Process("child stderr missing".to_string()))?;
+
+        // Copy stdout to file and drain stderr concurrently. Both ends
+        // must be drained or the child can stall on a full pipe.
+        let stdout_task = tokio::spawn(async move {
+            let res = tokio::io::copy(&mut child_stdout, &mut file).await;
+            // Best-effort flush + sync so a reader opening the file
+            // immediately after the spawn resolves sees all bytes.
+            let _ = file.flush().await;
+            let _ = file.sync_all().await;
+            res
+        });
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let res = tokio::io::copy(&mut child_stderr, &mut buf).await;
+            res.map(|_| buf)
+        });
+
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| SpawnError::Process(format!("wait: {}", e)))?;
+
+        let _ = stdout_task
+            .await
+            .map_err(|e| SpawnError::Process(format!("stdout task: {}", e)))?
+            .map_err(|e| SpawnError::Process(format!("stdout copy: {}", e)))?;
+        let stderr_bytes = stderr_task
+            .await
+            .map_err(|e| SpawnError::Process(format!("stderr task: {}", e)))?
+            .map_err(|e| SpawnError::Process(format!("stderr drain: {}", e)))?;
+
+        Ok(SpawnResult {
+            stdout: String::new(),
+            stderr: String::from_utf8_lossy(&stderr_bytes).to_string(),
+            exit_code: status.code().unwrap_or(-1),
         })
     }
 }
@@ -154,6 +264,18 @@ impl ProcessSpawner for RemoteProcessSpawner {
             stderr: String::from_utf8_lossy(&stderr).to_string(),
             exit_code,
         })
+    }
+
+    async fn spawn_to_file(
+        &self,
+        _command: String,
+        _args: Vec<String>,
+        _cwd: Option<String>,
+        _stdout_to: std::path::PathBuf,
+    ) -> Result<SpawnResult, SpawnError> {
+        Err(SpawnError::Process(
+            "stdoutTo is not supported for remote processes".to_string(),
+        ))
     }
 }
 

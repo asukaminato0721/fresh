@@ -2532,8 +2532,13 @@ interface EditorAPI {
 	unmountFloatingWidget(panelId: number): boolean;
 	/**
 	* Spawn a process (async, returns request_id)
+	* 
+	* Optional 4th argument `stdoutTo: string` pipes the child's stdout
+	* directly into the named file instead of buffering it. The
+	* resolved `SpawnResult.stdout` is empty in that case; the bytes
+	* land on disk for `openFile` to pick up as a file-backed buffer.
 	*/
-	spawnProcess(command: string, args: string[], cwd?: string): ProcessHandle<SpawnResult>;
+	spawnProcess(command: string, args: string[], cwd?: string, stdoutTo?: string): ProcessHandle<SpawnResult>;
 	/**
 	* Spawn a process on the host regardless of the active authority.
 	* 
