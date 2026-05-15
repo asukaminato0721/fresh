@@ -358,6 +358,9 @@ impl Editor {
             PluginCommand::ClearFolds { buffer_id } => {
                 self.handle_clear_folds(buffer_id);
             }
+            PluginCommand::SetFoldingRanges { buffer_id, ranges } => {
+                self.handle_set_folding_ranges(buffer_id, ranges);
+            }
 
             // ==================== Soft Break Commands ====================
             PluginCommand::AddSoftBreak {

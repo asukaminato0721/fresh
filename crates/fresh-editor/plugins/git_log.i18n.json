@@ -6,12 +6,6 @@
     "cmd.git_log_close_desc": "Close the git log panel",
     "cmd.git_log_refresh": "Git Log: Refresh",
     "cmd.git_log_refresh_desc": "Refresh the git log",
-    "cmd.git_log_fold_all_files": "Git Log: Fold All Files",
-    "cmd.git_log_fold_all_files_desc": "Collapse each file's diff in the detail panel",
-    "cmd.git_log_fold_all_hunks": "Git Log: Fold All Hunks",
-    "cmd.git_log_fold_all_hunks_desc": "Collapse each hunk in the detail panel",
-    "cmd.git_log_unfold_all": "Git Log: Unfold All",
-    "cmd.git_log_unfold_all_desc": "Expand all folds in the detail panel",
 
     "status.already_open": "Git log already open",
     "status.loading": "Loading git log...",

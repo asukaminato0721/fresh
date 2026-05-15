@@ -2822,6 +2822,55 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    /// Publish a set of toggleable fold ranges on the buffer. Same
+    /// shape an LSP `foldingRange` response would take. Unlike
+    /// `addFold`, this does *not* pre-collapse anything — the
+    /// standard fold-toggle keybinding finds the range under the
+    /// cursor and collapses or expands it on demand. Replacing call
+    /// replaces the prior set.
+    ///
+    /// `ranges` is a JS array of objects shaped
+    /// `{ startLine, endLine, kind? }` (lines are 0-indexed).
+    /// `kind` is one of `"comment"`, `"imports"`, `"region"` per
+    /// the LSP spec; omitted/unknown values are accepted as plain
+    /// folds.
+    pub fn set_folding_ranges<'js>(
+        &self,
+        _ctx: rquickjs::Ctx<'js>,
+        buffer_id: u32,
+        ranges_arr: Vec<rquickjs::Object<'js>>,
+    ) -> rquickjs::Result<bool> {
+        let mut ranges: Vec<lsp_types::FoldingRange> = Vec::with_capacity(ranges_arr.len());
+        for obj in ranges_arr {
+            let start_line: u32 = obj.get("startLine").unwrap_or(0);
+            let end_line: u32 = obj.get("endLine").unwrap_or(start_line);
+            let kind = obj
+                .get::<_, String>("kind")
+                .ok()
+                .and_then(|s| match s.as_str() {
+                    "comment" => Some(lsp_types::FoldingRangeKind::Comment),
+                    "imports" => Some(lsp_types::FoldingRangeKind::Imports),
+                    "region" => Some(lsp_types::FoldingRangeKind::Region),
+                    _ => None,
+                });
+            ranges.push(lsp_types::FoldingRange {
+                start_line,
+                end_line,
+                start_character: None,
+                end_character: None,
+                kind,
+                collapsed_text: None,
+            });
+        }
+        Ok(self
+            .command_sender
+            .send(PluginCommand::SetFoldingRanges {
+                buffer_id: BufferId(buffer_id as usize),
+                ranges,
+            })
+            .is_ok())
+    }
+
     // === Soft Breaks ===
 
     /// Add a soft break point for marker-based line wrapping

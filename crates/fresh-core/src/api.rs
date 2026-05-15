@@ -2232,6 +2232,21 @@ pub enum PluginCommand {
     /// Clear every collapsed fold range on the buffer.
     ClearFolds { buffer_id: BufferId },
 
+    /// Publish a set of fold ranges on the buffer in the same shape
+    /// LSP `textDocument/foldingRange` populates. The ranges are
+    /// stored as **toggleable** — the standard `toggle_fold` keybinding
+    /// finds them via `state.folding_ranges` and collapses/expands on
+    /// demand. Unlike `AddFold`, this does not pre-collapse anything.
+    ///
+    /// Designed for plugins that derive structural folds from buffer
+    /// content (e.g. git-log's per-file / per-hunk diff structure)
+    /// without driving an LSP. Replacing call replaces the prior set.
+    SetFoldingRanges {
+        buffer_id: BufferId,
+        #[ts(type = "any")]
+        ranges: Vec<lsp_types::FoldingRange>,
+    },
+
     /// Add a soft break point for marker-based line wrapping.
     /// The break is stored as a marker that auto-adjusts on buffer edits,
     /// eliminating the flicker caused by async view_transform round-trips.

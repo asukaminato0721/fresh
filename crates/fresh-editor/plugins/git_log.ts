@@ -829,120 +829,89 @@ registerHandler("git_log_q", git_log_q);
 // =============================================================================
 // Folding by file and hunk
 //
-// The host's fold API is "addFold(start, end)" — it immediately
-// collapses the range. There's no "register an unfolded range that's
-// toggleable" primitive, so we expose explicit commands the user
-// invokes from the command palette (or via mode keybinding) to fold
-// or unfold per-file / per-hunk. clearFolds undoes everything.
+// Publishes structural fold ranges into the buffer's `folding_ranges`
+// via `setFoldingRanges` — the same channel an LSP `foldingRange`
+// response uses. Nothing is pre-collapsed; the user toggles a range
+// with the standard fold keybinding (`za` etc.), which finds the
+// matching range under the cursor.
 //
-// Pairs nicely with diff highlighting: scan the buffer once, find
-// each `diff --git` and each `@@` header, compute the byte range
-// from end-of-header to start-of-next-header (or EOF), apply.
+// The diff structure gives us two natural fold levels:
+//   * per-file:  each `diff --git a/X b/Y` section
+//   * per-hunk:  each `@@ -A,B +C,D @@` block within a file
+// We publish both; the toggle-fold key picks the innermost containing
+// range at the cursor's line.
+//
+// Computed once after `pollUntilSpawnDone` settles — re-running on
+// every refresh would churn the marker list for no benefit (the diff
+// structure is monotonic-append until exit).
 // =============================================================================
 
-interface FoldRange {
-  /** End-of-header byte: the line bearing the header stays visible. */
-  start: number;
-  /** First byte past the folded range — exclusive. */
-  end: number;
+interface DiffFoldRange {
+  startLine: number;
+  endLine: number;
 }
 
-/**
- * Walk the buffer and return the byte ranges that should be folded
- * for "fold everything below each per-file header". Each range
- * starts immediately after the `\n` of the `diff --git a/X b/Y` line
- * and ends at the byte before the next `diff --git`'s position (or
- * at total bytes for the last file).
- */
-async function computeFileFoldRanges(bufferId: number): Promise<FoldRange[]> {
-  const total = editor.getBufferLength(bufferId);
-  if (total === 0) return [];
-  const text = await editor.getBufferText(bufferId, 0, total);
-  if (!text) return [];
+/** Walk the buffer text and return (file-level, hunk-level) fold
+ *  ranges. Lines are 0-indexed, both endpoints inclusive — the LSP
+ *  shape. The "fold header" is the line at `startLine`; everything up
+ *  through `endLine` collapses under it. */
+function computeDiffFoldRanges(text: string): {
+  files: DiffFoldRange[];
+  hunks: DiffFoldRange[];
+} {
+  const lines = text.split("\n");
+  const files: DiffFoldRange[] = [];
+  const hunks: DiffFoldRange[] = [];
 
-  const ranges: FoldRange[] = [];
-  let byte = 0;
-  let pendingStart: number | null = null;
-  for (const line of text.split("\n")) {
-    const lineLen = line.length;
-    if (line.startsWith("diff --git ")) {
-      if (pendingStart !== null) {
-        ranges.push({ start: pendingStart, end: byte });
-      }
-      pendingStart = byte + lineLen + 1; // past the header's \n
+  let fileStart: number | null = null;
+  let hunkStart: number | null = null;
+
+  const closeHunk = (endLine: number) => {
+    if (hunkStart !== null && endLine > hunkStart) {
+      hunks.push({ startLine: hunkStart, endLine });
     }
-    byte += lineLen + 1;
-  }
-  if (pendingStart !== null && pendingStart < total) {
-    ranges.push({ start: pendingStart, end: total });
-  }
-  return ranges;
-}
-
-/**
- * Same shape, one entry per `@@ ... @@` hunk header. A "hunk" ends
- * at the next hunk header within the same file, or at the next file's
- * `diff --git` header, or at EOF.
- */
-async function computeHunkFoldRanges(bufferId: number): Promise<FoldRange[]> {
-  const total = editor.getBufferLength(bufferId);
-  if (total === 0) return [];
-  const text = await editor.getBufferText(bufferId, 0, total);
-  if (!text) return [];
-
-  const ranges: FoldRange[] = [];
-  let byte = 0;
-  let pendingStart: number | null = null;
-  for (const line of text.split("\n")) {
-    const lineLen = line.length;
-    const isHunk = line.startsWith("@@ ");
-    const isFile = line.startsWith("diff --git ");
-    if (isHunk || isFile) {
-      if (pendingStart !== null) {
-        ranges.push({ start: pendingStart, end: byte });
-        pendingStart = null;
-      }
-      if (isHunk) {
-        pendingStart = byte + lineLen + 1; // past the @@ header's \n
-      }
+    hunkStart = null;
+  };
+  const closeFile = (endLine: number) => {
+    closeHunk(endLine);
+    if (fileStart !== null && endLine > fileStart) {
+      files.push({ startLine: fileStart, endLine });
     }
-    byte += lineLen + 1;
+    fileStart = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.startsWith("diff --git ")) {
+      closeFile(i - 1);
+      fileStart = i;
+    } else if (l.startsWith("@@ ")) {
+      closeHunk(i - 1);
+      hunkStart = i;
+    }
   }
-  if (pendingStart !== null && pendingStart < total) {
-    ranges.push({ start: pendingStart, end: total });
-  }
-  return ranges;
+  closeFile(lines.length - 1);
+  return { files, hunks };
 }
 
-async function git_log_fold_all_files(): Promise<void> {
-  if (state.detailBufferId === null) return;
-  const bid = state.detailBufferId;
-  const ranges = await computeFileFoldRanges(bid);
-  if (ranges.length === 0) {
-    editor.setStatus(editor.t("status.no_commits")); // reuse a benign message
-    return;
-  }
-  for (const r of ranges) {
-    editor.addFold(bid, r.start, r.end, "…");
-  }
-}
-registerHandler("git_log_fold_all_files", git_log_fold_all_files);
+async function publishDiffFoldRanges(bufferId: number): Promise<void> {
+  const total = editor.getBufferLength(bufferId);
+  if (total === 0) return;
+  const text = await editor.getBufferText(bufferId, 0, total);
+  if (!text) return;
 
-async function git_log_fold_all_hunks(): Promise<void> {
-  if (state.detailBufferId === null) return;
-  const bid = state.detailBufferId;
-  const ranges = await computeHunkFoldRanges(bid);
-  for (const r of ranges) {
-    editor.addFold(bid, r.start, r.end, "…");
-  }
-}
-registerHandler("git_log_fold_all_hunks", git_log_fold_all_hunks);
+  const { files, hunks } = computeDiffFoldRanges(text);
 
-function git_log_unfold_all(): void {
-  if (state.detailBufferId === null) return;
-  editor.clearFolds(state.detailBufferId);
+  // Merge — the host accepts a single array. "region" kind tags both
+  // levels generically; the LSP spec also defines comment/imports
+  // kinds which don't apply to diffs.
+  const ranges = [...files, ...hunks].map((r) => ({
+    startLine: r.startLine,
+    endLine: r.endLine,
+    kind: "region",
+  }));
+  editor.setFoldingRanges(bufferId, ranges);
 }
-registerHandler("git_log_unfold_all", git_log_unfold_all);
 
 // =============================================================================
 // Detail panel — open file at commit
@@ -1202,23 +1171,4 @@ editor.registerCommand(
   "git_log_refresh",
   null
 );
-editor.registerCommand(
-  "%cmd.git_log_fold_all_files",
-  "%cmd.git_log_fold_all_files_desc",
-  "git_log_fold_all_files",
-  null,
-);
-editor.registerCommand(
-  "%cmd.git_log_fold_all_hunks",
-  "%cmd.git_log_fold_all_hunks_desc",
-  "git_log_fold_all_hunks",
-  null,
-);
-editor.registerCommand(
-  "%cmd.git_log_unfold_all",
-  "%cmd.git_log_unfold_all_desc",
-  "git_log_unfold_all",
-  null,
-);
-
 editor.debug("Git Log plugin initialized (modern buffer-group layout)");

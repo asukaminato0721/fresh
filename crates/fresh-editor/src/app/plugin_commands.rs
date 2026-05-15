@@ -569,6 +569,23 @@ impl Editor {
         let _ = changed;
     }
 
+    /// Handle `SetFoldingRanges` — publish a structural fold set on
+    /// the buffer in the same form an LSP `foldingRange` response
+    /// would. The standard `toggle_fold` keybinding then collapses or
+    /// expands the matching range at cursor. Nothing is pre-collapsed.
+    pub(super) fn handle_set_folding_ranges(
+        &mut self,
+        buffer_id: BufferId,
+        ranges: Vec<lsp_types::FoldingRange>,
+    ) {
+        self.active_window_mut()
+            .apply_folding_ranges_response(buffer_id, ranges);
+        #[cfg(feature = "plugins")]
+        {
+            self.plugin_render_requested = true;
+        }
+    }
+
     // ==================== Soft Break Commands ====================
 
     /// Handle AddSoftBreak command

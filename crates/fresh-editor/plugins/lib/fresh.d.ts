@@ -2044,6 +2044,21 @@ interface EditorAPI {
 	*/
 	clearFolds(bufferId: number): boolean;
 	/**
+	* Publish a set of toggleable fold ranges on the buffer. Same
+	* shape an LSP `foldingRange` response would take. Unlike
+	* `addFold`, this does *not* pre-collapse anything — the
+	* standard fold-toggle keybinding finds the range under the
+	* cursor and collapses or expands it on demand. Replacing call
+	* replaces the prior set.
+	* 
+	* `ranges` is a JS array of objects shaped
+	* `{ startLine, endLine, kind? }` (lines are 0-indexed).
+	* `kind` is one of `"comment"`, `"imports"`, `"region"` per
+	* the LSP spec; omitted/unknown values are accepted as plain
+	* folds.
+	*/
+	setFoldingRanges(bufferId: number, rangesArr: Record<string, unknown>[]): boolean;
+	/**
 	* Add a soft break point for marker-based line wrapping
 	*/
 	addSoftBreak(bufferId: number, namespace: string, position: number, indent: number): boolean;
