@@ -458,11 +458,138 @@ existing swallow-don't-leak rule.
   performs the worktree fetch / create lazily).
 - `fresh.orchestrator.sync = false` config opt-out.
 
+## Project scoping (cross-project confusion)
+
+> **Status**: Design addition, May 2026
+> **Driving bug**: After the v2 persistence change (one global
+> `<data>/orchestrator/windows.json` instead of per-cwd files),
+> launching Fresh in project B surfaces every session from every
+> project the user ever created. The picker lists them in one
+> flat, unlabeled list, and `pick_active_window_for_cwd` can boot
+> straight into yesterday's session when its `project_path`
+> matches today's cwd. Users read this as "it's combining
+> yesterday's directories/tabs into today's project."
+
+### Principles
+
+1. **Scope by default, global on demand.** Open scoped to the
+   current project. Cross-project is an explicit, always-visible
+   gesture (`⌥P` / a Scope toggle), never the landing view.
+2. **All sessions stay reachable.** The orchestrator is still the
+   one place to reach every session everywhere — scoping changes
+   what's *foregrounded*, not what's *reachable*. The scoped view
+   always shows a `── N in other projects · ⌥P ──` affordance, and
+   the filter searches globally even while scoped.
+3. **Never silently inherit a session across projects.** Booting
+   in project X lands on a clean base window for X. Do not
+   auto-activate a persisted session just because its
+   `project_path` matches the cwd; if we restore, make it a
+   visible, dismissible "Resume last session?" affordance.
+4. **Scope is legible.** Current project shows in the dialog
+   title and the editor status bar. The list is grouped by
+   project (never flat), with the current project marked. A dive
+   into another project is labeled (`Dive (switches project)`).
+5. **Consistent boundaries.** Workspaces (tabs/explorer) are
+   per-cwd but orchestrator windows are global — that mismatch is
+   what makes state feel "combined." Apply one boundary (project
+   root) uniformly to sessions, per-window plugin state, and
+   workspace.
+6. **Migrations are visible and reversible.** When the storage
+   model changes (per-cwd → global), show a one-time notice
+   rather than silently folding everyone's history together on
+   first launch.
+
+### Wireframe — current (flat, unscoped)
+
+```
+╭─ ORCHESTRATOR :: Sessions ──────────────────────────────────────╮
+│ ╭─ Sessions (4) ─────────╮ ╭─ [3] blog-redesign ──────────────╮ │
+│ │ [ + New Session  Alt+N]│ │ [ Visit ] [Details][Stop][Arch…] │ │
+│ │ [type to filter…     ] │ │                                  │ │
+│ │ [1] RUN  fresh BASE ⇄  │ │        (preview of session)      │ │
+│ │ [2] RUN  feature-login │ │                                  │ │
+│ │ [3] ACT  blog-redesign │ │                                  │ │
+│ │ [4] RUN  hotfix-2031 ⇄ │ │                                  │ │
+│ ╰────────────────────────╯ ╰──────────────────────────────────╯ │
+│  ↑↓ nav · Enter dive · Tab focus · Esc close                    │
+╰──────────────────────────────────────────────────────────────────╯
+```
+
+Launched in projB, but `fresh` / `feature-login` (projA) are
+mixed in with no project label and the count `(4)` is the global
+total.
+
+### Wireframe — new, default (scoped to current project)
+
+```
+╭─ ORCHESTRATOR :: Sessions ─ projB ──────────────────────────────╮
+│ ╭ [type to filter…      ]  Scope: ‹ current › ⌥P  searches all ╮│
+│ ╰───────────────────────────────────────────────────────────────╯│
+│ ╭─ projB · this project (2) ─╮ ╭─ [3] blog-redesign ──────────╮ │
+│ │ [ + New Session  ⌥N ]      │ │ Project: /…/projB            │ │
+│ │ ▸ [3] ACT  blog-redesign   │ │ State:   ACT       Age: 3m   │ │
+│ │   [4] RUN  hotfix-2031     │ │ ──────────────────────────── │ │
+│ │ ── 2 in other projects ─── │ │ ▸ Dive · Stop⌥S · Arch⌥A …   │ │
+│ │      press ⌥P to show      │ │                              │ │
+│ ╰────────────────────────────╯ ╰──────────────────────────────╯ │
+│  ↑↓ nav · Enter dive · ⌥P all projects · ⌥N new · Esc close     │
+╰──────────────────────────────────────────────────────────────────╯
+```
+
+### Wireframe — new, all-projects view (`⌥P`, grouped)
+
+```
+╭─ ORCHESTRATOR :: Sessions ─ all projects ───────────────────────╮
+│ ╭ [type to filter…      ]  Scope: ‹ all ›    ⌥P current only   ╮│
+│ ╰───────────────────────────────────────────────────────────────╯│
+│ ╭─ Sessions (4) ─────────────╮ ╭─ [1] fresh ──────────────────╮ │
+│ │ [ + New Session  ⌥N ]      │ │ Project: /…/projA            │ │
+│ │ ▾ projB  · current         │ │ ⚠ different project than this │ │
+│ │   [3] ACT  blog-redesign   │ │   window                     │ │
+│ │   [4] RUN  hotfix-2031     │ │ State:   RUN (BASE)  Age: 1d  │ │
+│ │ ▾ projA                    │ │ ──────────────────────────── │ │
+│ │   [1] RUN  fresh    BASE   │ │ ▸ Dive (switches project) ·… │ │
+│ │   [2] RUN  feature-login   │ │                              │ │
+│ ╰────────────────────────────╯ ╰──────────────────────────────╯ │
+│  ↑↓ nav · Enter dive · ⌥P current only · ⌥N new · Esc close     │
+╰──────────────────────────────────────────────────────────────────╯
+```
+
+### Interaction notes
+
+- **Scope toggle** (`⌥P`) flips current ↔ all and is rendered in
+  the filter row through `format_keybinding` (chord registered in
+  the `orchestrator-open` mode, same pipeline as Stop/Archive/
+  Delete). Persist the last-used scope per editor session.
+- **Filter is always global**: typing in the scoped view still
+  matches sessions in other projects and auto-reveals them under
+  their project header (so search never hides a session the user
+  is clearly looking for).
+- **Grouping** reuses the existing list widget: project headers
+  are non-selectable separator rows; the current project's group
+  sorts first and is labeled `· current`.
+- **Boot behavior** (separate from the dialog): replace the
+  cross-project auto-activate in `pick_active_window_for_cwd` with
+  "clean base window for the cwd + optional Resume affordance."
+  This is the single highest-impact fix and is independent of the
+  dialog redesign.
+
 ## Open questions
 
+- **Project scope default**: per-project default scope is the
+  recommendation, but should the very first open in a brand-new
+  project (zero sessions) auto-expand to all-projects so the list
+  isn't empty, or show an empty state with a clear `⌥P` hint?
+  Leaning toward the empty state — an empty scoped list with a
+  visible toggle teaches the model better than silently widening.
 - **Stop with no live processes**: silent no-op or status-bar
   feedback? Leaning toward status-bar — surprise-no-op feels
   broken.
+- **Diving into an archived session**: implicit unarchive
+  (today's plan), or refuse and require the user to
+  explicitly unarchive first? Implicit is more ergonomic but
+  hides the worktree move under what reads as a navigation
+  action.
 - **Diving into an archived session**: implicit unarchive
   (today's plan), or refuse and require the user to
   explicitly unarchive first? Implicit is more ergonomic but
