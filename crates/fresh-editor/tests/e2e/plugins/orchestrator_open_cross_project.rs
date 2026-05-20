@@ -1,13 +1,13 @@
-//! The Orchestrator Open dialog must list every session, regardless of
-//! which project the active window happens to point at.
+//! The Orchestrator Open dialog scopes to the current project by
+//! default, and reveals every project on the scope toggle (Alt+P).
 //!
 //! Sessions are inherently cross-project — each row can have its own
-//! `project_path` — so scoping the picker to "current project" hides
-//! exactly the rows the user came to switch into. The visible symptom
-//! is that opening the dialog, visiting a session in another project,
-//! then reopening the dialog changes the visible row count, because
-//! the dialog's notion of "current project" is recomputed from the
-//! newly-active window every time it opens.
+//! `project_path` — but surfacing all of them at once means launching
+//! the editor in project B buries the user under project A's history
+//! (the orchestration bug this scoping fixes). So the default view
+//! lists only the active window's project, with an "N in other
+//! projects" affordance, and the scope toggle brings the rest into a
+//! single grouped list. Nothing is hidden; it's just not foregrounded.
 
 use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -46,7 +46,7 @@ fn set_orch_project_path(harness: &mut EditorTestHarness, project_path: &Path) {
 }
 
 #[test]
-fn open_dialog_lists_sessions_from_all_projects() {
+fn open_dialog_scopes_to_current_project_then_reveals_all() {
     let mut harness = EditorTestHarness::with_temp_project(WIDTH, HEIGHT).unwrap();
 
     // Project A: the harness's temp project root, owned by the base
@@ -65,28 +65,51 @@ fn open_dialog_lists_sessions_from_all_projects() {
     harness.editor_mut().set_active_window(win_b);
     set_orch_project_path(&mut harness, &proj_b);
 
-    // Switch back to A so the dialog opens with currentProject = A —
-    // the case the bug repro turns on.
-    harness.editor_mut().set_active_window(WindowId(1));
+    // Active window stays in Project B — the dialog should default to
+    // B's sessions only.
     harness.render().unwrap();
 
     run_palette(&mut harness, "Orchestrator: Open");
     harness
-        .wait_until(|h| h.screen_to_string().contains("Sessions ("))
-        .expect("Orchestrator Open dialog should appear");
+        .wait_until(|h| h.screen_to_string().contains("this project"))
+        .expect("Orchestrator Open dialog should appear scoped to the current project");
 
     let screen = harness.screen_to_string();
     assert!(
         screen.contains(LABEL_B),
-        "Project B's session must be listed in the open dialog while the \
-         active window is in Project A — the picker is cross-project by \
-         design.\nScreen:\n{}",
+        "Project B's session must be listed — it's the current project.\nScreen:\n{}",
         screen,
     );
     assert!(
+        screen.contains("this project"),
+        "Scoped section must be captioned as the current project.\nScreen:\n{}",
+        screen,
+    );
+    assert!(
+        screen.contains("in other projects"),
+        "Scoped view must advertise the cross-project sessions it isn't \
+         foregrounding so nothing feels hidden.\nScreen:\n{}",
+        screen,
+    );
+
+    // Toggle scope (Alt+P) → every session, across every project.
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::ALT)
+        .unwrap();
+    harness.render().unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("all projects"))
+        .expect("scope toggle should switch the dialog to the all-projects view");
+
+    let screen = harness.screen_to_string();
+    assert!(
         screen.contains("Sessions (2)"),
-        "Header count must reflect every session, not the project-filtered \
-         subset.\nScreen:\n{}",
+        "All-projects view must count every session.\nScreen:\n{}",
+        screen,
+    );
+    assert!(
+        screen.contains(LABEL_B),
+        "Project B's session must still be listed in the all-projects view.\nScreen:\n{}",
         screen,
     );
 }

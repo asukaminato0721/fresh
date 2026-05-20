@@ -246,6 +246,17 @@ interface OpenDialogState {
   // too easy to skip over when the user's eyes are on the dialog.
   // Cleared on the next nav / filter change.
   lastError: string | null;
+  // Which sessions the list foregrounds:
+  //   - "current": only sessions belonging to the active window's
+  //     project (the default — launching in project B shouldn't
+  //     bury you under project A's sessions). A trailing affordance
+  //     row advertises how many sessions live in other projects.
+  //   - "all": every session, across every project, each row
+  //     labeled with its project so cross-project rows are obvious.
+  // Toggled with the scope key (⌥P by default). The filter input
+  // always searches globally regardless of scope, so typing a name
+  // from another project still surfaces it.
+  scope: "current" | "all";
 }
 let openDialog: OpenDialogState | null = null;
 let openPanel: FloatingWidgetPanel | null = null;
@@ -325,14 +336,88 @@ function ageString(createdAt: number): string {
 // The picker is cross-project by design — every session is a
 // candidate regardless of which project the active window
 // points at — so there is no project-scope filter here.
+// Project a session belongs to, as a comparison key. Prefer the
+// canonical `projectPath` recorded at create time; fall back to
+// the session root for sessions that predate the field (the base
+// session, externally-created windows).
+function projectKeyOf(s: AgentSession): string {
+  return s.projectPath ?? s.root;
+}
+
+// The project the user is currently "in" — the active window's
+// project. Falls back to the editor cwd when the active window
+// isn't a tracked session (shouldn't normally happen, but keeps
+// scoping well-defined).
+function currentProjectKey(): string {
+  const s = orchestratorSessions.get(editor.activeWindow());
+  return s ? projectKeyOf(s) : editor.getCwd();
+}
+
+// Short, human-readable label for a project key — the trailing
+// `parent/base` of the path, matching the new-session form's
+// `deriveProjectLabel` style.
+function projectLabel(key: string): string {
+  const base = editor.pathBasename(key);
+  const parent = editor.pathBasename(editor.pathDirname(key));
+  if (parent && parent !== base) return `${parent}/${base}`;
+  return base || key;
+}
+
+// Count sessions that do NOT belong to the current project —
+// surfaced as the "N in other projects" affordance when the
+// dialog is scoped to the current project.
+function otherProjectSessionCount(): number {
+  const cur = currentProjectKey();
+  let n = 0;
+  for (const s of orchestratorSessions.values()) {
+    if (projectKeyOf(s) !== cur) n += 1;
+  }
+  return n;
+}
+
+// Resolve the id list for the current filter + scope.
+//
+// Scope only constrains the *empty-filter* view: with no needle
+// and `scope === "current"`, the list shows just the active
+// project's sessions (current project first, by id). As soon as
+// the user types, the search goes global regardless of scope —
+// hiding a session the user is explicitly searching for would be
+// the worse surprise. `scope === "all"` always shows everything,
+// sorted by project (current project first) so rows are grouped
+// rather than interleaved.
 function filterSessions(needle: string): number[] {
   reconcileSessions();
-  const ids = Array.from(orchestratorSessions.keys()).sort((a, b) => a - b);
-  if (!needle) return ids;
+  const scope = openDialog?.scope ?? "current";
+  const cur = currentProjectKey();
+  const allIds = Array.from(orchestratorSessions.keys());
+
+  // Sort by (current-project-first, then id) so an "all" view
+  // groups the current project's sessions at the top and other
+  // projects' sessions below in a stable order.
+  const byProjectThenId = (a: number, b: number): number => {
+    const sa = orchestratorSessions.get(a)!;
+    const sb = orchestratorSessions.get(b)!;
+    const aCur = projectKeyOf(sa) === cur ? 0 : 1;
+    const bCur = projectKeyOf(sb) === cur ? 0 : 1;
+    if (aCur !== bCur) return aCur - bCur;
+    const ka = projectKeyOf(sa);
+    const kb = projectKeyOf(sb);
+    if (ka !== kb) return ka < kb ? -1 : 1;
+    return a - b;
+  };
+
+  if (!needle) {
+    const ids = allIds.slice().sort(byProjectThenId);
+    if (scope === "current") {
+      return ids.filter((id) => projectKeyOf(orchestratorSessions.get(id)!) === cur);
+    }
+    return ids;
+  }
+
   const n = needle.toLowerCase();
   type Scored = { id: number; score: number; len: number };
   const matches: Scored[] = [];
-  for (const id of ids) {
+  for (const id of allIds) {
     const s = orchestratorSessions.get(id)!;
     const label = s.label.toLowerCase();
     const root = s.root.toLowerCase();
@@ -391,6 +476,15 @@ function renderListItem(id: number, activeId: number): TextPropertyEntry {
     entries.push({
       text: " ⇄",
       style: { fg: "ui.menu_disabled_fg" },
+    });
+  }
+  // Project tag: in the "all projects" view, label every row with
+  // its project so a cross-project session is obvious at a glance
+  // rather than blending into the current project's sessions.
+  if (openDialog?.scope === "all" && projectKeyOf(s) !== currentProjectKey()) {
+    entries.push({
+      text: `  · ${projectLabel(projectKeyOf(s))}`,
+      style: { fg: "ui.menu_disabled_fg", italic: true },
     });
   }
   return styledRow(entries as Parameters<typeof styledRow>[0]);
@@ -853,6 +947,39 @@ function buildOpenSpec(): WidgetSpec {
         ],
       }
     : null;
+
+  // Scope chrome. The title and the sessions-section label both
+  // advertise what the list is currently showing so the user is
+  // never confused about which project's sessions they're looking
+  // at. When scoped to the current project, a trailing affordance
+  // row reports how many sessions live elsewhere and how to reveal
+  // them — nothing is hidden, just not foregrounded.
+  const scope = openDialog.scope;
+  const curKey = currentProjectKey();
+  const curName = projectLabel(curKey);
+  const scopeKey = editor.getKeybindingLabel("orchestrator_toggle_scope", OPEN_MODE);
+  const titleSuffix = scope === "current" ? `  —  ${curName}` : "  —  all projects";
+  const sectionLabel = scope === "current"
+    ? `${curName} · this project (${filtered.length})`
+    : `Sessions (${filtered.length})`;
+  const otherCount = otherProjectSessionCount();
+  const otherAffordance: WidgetSpec[] = scope === "current" && otherCount > 0
+    ? [
+        sessionsSeparator(),
+        {
+          kind: "raw",
+          entries: [
+            styledRow([
+              {
+                text: `${otherCount} in other projects${scopeKey ? `  ·  ${scopeKey}` : ""}`,
+                style: { fg: "ui.menu_disabled_fg", italic: true },
+              },
+            ]),
+          ],
+        },
+      ]
+    : [];
+
   return col(
     {
       kind: "raw",
@@ -861,6 +988,10 @@ function buildOpenSpec(): WidgetSpec {
           {
             text: "ORCHESTRATOR :: Sessions",
             style: { fg: "ui.popup_border_fg", bold: true },
+          },
+          {
+            text: titleSuffix,
+            style: { fg: "ui.menu_disabled_fg" },
           },
         ]),
       ],
@@ -875,7 +1006,7 @@ function buildOpenSpec(): WidgetSpec {
     // the dialog.
     row(
       labeledSection({
-        label: `Sessions (${filtered.length})`,
+        label: sectionLabel,
         widthPct: 25,
         // Sessions column: new-session button, separator,
         // filter, separator, list. The button is first so it
@@ -920,6 +1051,7 @@ function buildOpenSpec(): WidgetSpec {
             // `pendingConfirm.sessionId`).
             key: inConfirm ? undefined : "sessions",
           }),
+          ...otherAffordance,
         ),
       }),
       // Preview pane has no explicit width — picks up the
@@ -932,6 +1064,10 @@ function buildOpenSpec(): WidgetSpec {
       hintBar([
         { keys: "↑↓", label: "nav" },
         { keys: "Enter", label: "dive" },
+        {
+          keys: scopeKey || "⌥P",
+          label: scope === "current" ? "all projects" : "current only",
+        },
         { keys: "Tab", label: "focus" },
         { keys: "Esc", label: "close" },
       ]),
@@ -1032,6 +1168,11 @@ function openControlRoom(): void {
     showDetails: false,
     inFlight: null,
     lastError: null,
+    // Default to the current project's sessions so re-opening the
+    // editor in project B doesn't dump project A's whole history on
+    // the user. Cross-project sessions stay one keystroke away via
+    // the scope toggle / the "N in other projects" affordance.
+    scope: "current",
   };
   openDialog.filteredIds = filterSessions("");
   const activeIdx = openDialog.filteredIds.indexOf(activeId);
@@ -1595,7 +1736,13 @@ async function deleteConfirmedSession(): Promise<void> {
 // since OPEN_MODE doesn't claim them here.
 editor.defineMode(
   OPEN_MODE,
-  [["M-n", "orchestrator_open_new_from_picker"]],
+  [
+    ["M-n", "orchestrator_open_new_from_picker"],
+    // Scope toggle: flip the list between "current project only"
+    // and "all projects". Registered as a mode chord so it's
+    // user-rebindable and renders cross-platform (⌥P / Alt+P).
+    ["M-p", "orchestrator_toggle_scope"],
+  ],
   true,
   true,
 );
@@ -1604,6 +1751,20 @@ registerHandler("orchestrator_open_new_from_picker", () => {
   if (!openDialog) return;
   closeOpenDialog();
   openForm({ fromPicker: true });
+});
+
+registerHandler("orchestrator_toggle_scope", () => {
+  if (!openDialog) return;
+  openDialog.scope = openDialog.scope === "current" ? "all" : "current";
+  // Keep the highlighted session selected across the scope flip
+  // when it survives into the new list; otherwise fall back to the
+  // top. The filter value is untouched — toggling scope with an
+  // active filter just widens/narrows the global-search base.
+  const prevId = openDialog.filteredIds[openDialog.selectedIndex];
+  openDialog.filteredIds = filterSessions(openDialog.filter.value);
+  const nextIdx = prevId !== undefined ? openDialog.filteredIds.indexOf(prevId) : -1;
+  openDialog.selectedIndex = nextIdx >= 0 ? nextIdx : 0;
+  refreshOpenDialog();
 });
 
 // =============================================================================

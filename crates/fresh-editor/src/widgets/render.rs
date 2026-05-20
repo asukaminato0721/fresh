@@ -3111,6 +3111,19 @@ fn pad_or_truncate_cols(text: &mut String, cols: usize) {
     }
 }
 
+/// Clamp `idx` to `s.len()`, then walk it down to the nearest
+/// char boundary. Byte-unit inline overlays computed against a
+/// pre-truncation line must pass through this after the line is
+/// column-truncated, so they can never index inside a multi-byte
+/// char (the panic the span splitter raises on `text[a..b]`).
+fn snap_down_to_char_boundary(s: &str, idx: usize) -> usize {
+    let mut i = idx.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Horizontal-zip pass for a Row that contains ≥1 multi-line
 /// (Block) child. Each block has already been rendered with its
 /// per-column budget (`block_width`); this helper walks the
@@ -3250,7 +3263,6 @@ fn zip_row_blocks(
                         if line_text.ends_with('\n') {
                             line_text.pop();
                         }
-                        let original_byte_len = line_text.len();
                         pad_or_truncate_cols(&mut line_text, block_w);
                         let padded_byte_len = line_text.len();
                         text.push_str(&line_text);
@@ -3273,16 +3285,22 @@ fn zip_row_blocks(
                             });
                         }
                         for overlay in &line.inline_overlays {
-                            // Overlays whose end exceeds the
-                            // truncated byte length get clamped to
-                            // the truncation point.
-                            let new_end = overlay.end.min(original_byte_len);
-                            if overlay.start >= original_byte_len {
+                            // `pad_or_truncate_cols` may have cut the
+                            // line (and appended a multi-byte `…`), so
+                            // an overlay computed against the original
+                            // line can now point past — or *inside* — a
+                            // char of the truncated text. Clamp both
+                            // ends to the truncated length and snap to a
+                            // char boundary; otherwise the downstream
+                            // span splitter slices mid-char and panics.
+                            let start = snap_down_to_char_boundary(&line_text, overlay.start);
+                            let end = snap_down_to_char_boundary(&line_text, overlay.end);
+                            if start >= end {
                                 continue;
                             }
                             overlays.push(InlineOverlay {
-                                start: overlay.start + byte_shift,
-                                end: new_end + byte_shift,
+                                start: start + byte_shift,
+                                end: end + byte_shift,
                                 style: overlay.style.clone(),
                                 properties: overlay.properties.clone(),
                                 unit: overlay.unit,
@@ -5342,6 +5360,53 @@ mod tests {
         // Bottom border is a plain run.
         assert!(out.entries[2].text.starts_with("╰"));
         assert!(out.entries[2].text.ends_with("╯\n"));
+    }
+
+    #[test]
+    fn zip_row_blocks_keeps_overlays_on_char_boundaries() {
+        // Regression for the orchestrator picker panic: a two-pane
+        // `row(labeledSection, labeledSection)` whose left label is
+        // long and contains a multi-byte `·`. The column is narrow
+        // enough that `pad_or_truncate_cols` cuts the label and
+        // appends a multi-byte `…`. Before the fix, the label's
+        // byte-unit overlay end was clamped to the *pre*-truncation
+        // length, leaving it pointing inside the `…` — and the app
+        // span splitter then sliced `text[a..b]` mid-char and
+        // panicked. Every emitted overlay offset must land on a char
+        // boundary of its row text.
+        let left = WidgetSpec::LabeledSection {
+            label: "alpha/beta · this project (2)".into(),
+            child: Box::new(make_text_input("x", -1, false, false, 4, Some("a"))),
+            width_pct: Some(40),
+            key: None,
+        };
+        let right = WidgetSpec::LabeledSection {
+            label: "preview".into(),
+            child: Box::new(make_text_input("y", -1, false, false, 4, Some("b"))),
+            width_pct: None,
+            key: None,
+        };
+        let spec = WidgetSpec::Row {
+            children: vec![left, right],
+            key: None,
+        };
+        let out = render_spec(&spec, &HashMap::new(), "", 40);
+        for e in &out.entries {
+            for o in &e.inline_overlays {
+                assert!(
+                    e.text.is_char_boundary(o.start.min(e.text.len())),
+                    "overlay start {} not on a char boundary of {:?}",
+                    o.start,
+                    e.text,
+                );
+                assert!(
+                    e.text.is_char_boundary(o.end.min(e.text.len())),
+                    "overlay end {} not on a char boundary of {:?}",
+                    o.end,
+                    e.text,
+                );
+            }
+        }
     }
 
     #[test]
