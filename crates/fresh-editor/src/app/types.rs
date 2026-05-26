@@ -1192,6 +1192,16 @@ pub(crate) struct ChromeLayout {
     /// `toolbar_widget`; a click inside one fires the matching
     /// `live_grep_toggle_<key>` action. Empty otherwise.
     pub prompt_toolbar_hits: Vec<(String, Rect)>,
+    /// Screen rect of the floating-overlay prompt's results list (issue
+    /// #2119). `None` when no overlay is open. The mouse-wheel handler reads
+    /// this to scroll the result list (without moving the selection) when the
+    /// pointer is over it.
+    pub prompt_results_area: Option<Rect>,
+    /// Screen rect of the floating-overlay prompt's preview pane (issue
+    /// #2119). `None` when no overlay is open or the overlay is too narrow to
+    /// show a preview. The mouse-wheel handler reads this to scroll the
+    /// preview (rather than the result list) when the pointer is over it.
+    pub prompt_preview_area: Option<Rect>,
     /// Settings modal layout for hit testing
     pub settings_layout: Option<crate::view::settings::SettingsLayout>,
     /// Workspace-trust dialog click layout (radios + OK/Quit) for hit testing.
@@ -1671,6 +1681,11 @@ pub struct OverlayPreviewState {
     /// tracked for cleanup and the buffer can be re-shown on the next
     /// match without reloading.
     pub blanked: bool,
+    /// The match byte-offset the preview viewport was last centred on
+    /// (issue #2119). The renderer recentres only when this changes (a new
+    /// selected result), so a mouse-wheel scroll of the preview isn't undone
+    /// by the next frame's recenter.
+    pub centered_byte: Option<usize>,
 }
 
 #[cfg(test)]

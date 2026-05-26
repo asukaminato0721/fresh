@@ -950,6 +950,8 @@ impl Editor {
         // Initialize popup/suggestion layout state (rendered after status bar below)
         self.active_chrome_mut().suggestions_area = None;
         self.active_chrome_mut().suggestions_outer_area = None;
+        self.active_chrome_mut().prompt_results_area = None;
+        self.active_chrome_mut().prompt_preview_area = None;
         self.active_window_mut().file_browser_layout = None;
 
         // Clone all immutable values before the mutable borrow
@@ -2374,6 +2376,7 @@ impl Editor {
                     view_state,
                     loaded_buffers,
                     blanked: false,
+                    centered_byte: None,
                 });
         } else {
             // Pre-compute hidden flag (immutable borrow on self.windows)
@@ -2392,6 +2395,8 @@ impl Editor {
                     // renders the *previous* file's text at the new file's
                     // scroll offset (wrong content, or blank past EOF).
                     state.buffer_id = buffer_id;
+                    // New file in the preview ⇒ force a recenter below.
+                    state.centered_byte = None;
                     if hidden_from_tabs {
                         state.loaded_buffers.insert(buffer_id);
                     }
@@ -2443,9 +2448,16 @@ impl Editor {
             // buffer's `BufferViewState`, so this targets the buffer that's
             // actually rendered.
             state.view_state.viewport.line_wrap_enabled = true;
-            state.view_state.viewport.left_column = 0;
-            state.view_state.viewport.horizontal_scroll_offset = 0;
-            state.view_state.viewport.top_byte = top_byte;
+            // Recentre the viewport only when the selected match changed
+            // (issue #2119). Re-seeding every frame would undo a mouse-wheel
+            // scroll of the preview; gating on `centered_byte` preserves the
+            // user's scroll while still recentering on a new selection.
+            if state.centered_byte != Some(byte_offset) {
+                state.view_state.viewport.left_column = 0;
+                state.view_state.viewport.horizontal_scroll_offset = 0;
+                state.view_state.viewport.top_byte = top_byte;
+                state.centered_byte = Some(byte_offset);
+            }
             // We have a live target: ensure the pane is shown.
             state.blanked = false;
         }
@@ -2541,7 +2553,11 @@ impl Editor {
         let chrome_rows: usize = 4 + toolbar_rows + usize::from(footer_visible);
         let suggestions_visible_rows = (overlay_rect.height as usize).saturating_sub(chrome_rows);
         if let Some(prompt) = self.active_window_mut().prompt.as_mut() {
-            prompt.ensure_selected_visible_within(suggestions_visible_rows);
+            // Skip when the user has wheel-scrolled the list — keeping the
+            // selection pinned in view would undo their scroll (issue #2119).
+            if !prompt.manual_scroll {
+                prompt.ensure_selected_visible_within(suggestions_visible_rows);
+            }
         }
         let Some(prompt) = self.active_window().prompt.as_ref() else {
             return;
@@ -2707,6 +2723,11 @@ impl Editor {
         } else {
             (body, None)
         };
+
+        // Cache the result/preview rects so the mouse-wheel handler can route
+        // the wheel to the pane under the pointer (issue #2119).
+        self.active_chrome_mut().prompt_results_area = Some(results_area);
+        self.active_chrome_mut().prompt_preview_area = preview_area;
 
         // The prompt input is the full-width top row of the header band.
         let input_row = Rect {

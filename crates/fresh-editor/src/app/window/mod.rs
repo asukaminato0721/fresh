@@ -1411,6 +1411,47 @@ impl Window {
             });
     }
 
+    /// Scroll the Live Grep overlay's preview pane by `delta` lines
+    /// (issue #2119). The preview lives in `overlay_preview_state` (not in
+    /// the split tree), so it needs its own scroll path rather than going
+    /// through `scroll_split_by_lines`. Returns true if a preview was present
+    /// and scrolled.
+    pub fn scroll_overlay_preview_by_lines(&mut self, delta: i32) -> bool {
+        let buffer_id = match self.overlay_preview_state.as_ref() {
+            Some(ps) if !ps.blanked => ps.buffer_id,
+            _ => return false,
+        };
+        // Gather buffer-derived inputs first so the mutable borrows below stay
+        // disjoint (buffer store vs. overlay preview state).
+        let (soft_breaks, virtual_lines) = match self.buffers.get(&buffer_id) {
+            Some(s) => (
+                s.collect_soft_break_positions(),
+                s.collect_virtual_line_positions(),
+            ),
+            None => return false,
+        };
+        let Some(state) = self.buffers.get_mut(&buffer_id) else {
+            return false;
+        };
+        let buffer = &mut state.buffer;
+        let Some(ps) = self.overlay_preview_state.as_mut() else {
+            return false;
+        };
+        let viewport = &mut ps.view_state.active_state_mut().viewport;
+        if delta < 0 {
+            viewport.scroll_up(
+                buffer,
+                &soft_breaks,
+                &virtual_lines,
+                delta.unsigned_abs() as usize,
+            );
+        } else {
+            viewport.scroll_down(buffer, &soft_breaks, &virtual_lines, delta as usize);
+        }
+        viewport.set_skip_ensure_visible();
+        true
+    }
+
     /// Clear LSP-related overlays (diagnostics, virtual texts,
     /// folding ranges, and folds) for `buffer_id`, used when LSP is
     /// being disabled for the buffer. Pure window-state mutation.

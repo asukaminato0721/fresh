@@ -37,30 +37,24 @@ impl crate::app::window::Window {
                 && row >= explorer_area.y
                 && row < explorer_area.y + explorer_area.height
             {
-                // Scroll the file explorer
+                // Scroll the file explorer's viewport. The wheel moves the
+                // view, not the selection — moving the selected entry (and
+                // letting it drag the viewport) is jumpy and surprising.
                 if let Some(explorer) = self.file_explorer.as_mut() {
                     let count = explorer.visible_count();
                     if count == 0 {
                         return Ok(());
                     }
 
-                    // Get current selected index
-                    let current_index = explorer.get_selected_index().unwrap_or(0);
-
-                    // Calculate new index based on scroll delta
-                    let new_index = if delta < 0 {
-                        // Scroll up (negative delta)
-                        current_index.saturating_sub(delta.unsigned_abs() as usize)
+                    let viewport = explorer.viewport_height.max(1);
+                    let max_scroll = count.saturating_sub(viewport);
+                    let current_offset = explorer.get_scroll_offset();
+                    let new_offset = if delta < 0 {
+                        current_offset.saturating_sub(delta.unsigned_abs() as usize)
                     } else {
-                        // Scroll down (positive delta)
-                        (current_index + delta as usize).min(count - 1)
+                        (current_offset + delta as usize).min(max_scroll)
                     };
-
-                    // Set the new selection
-                    if let Some(node_id) = explorer.get_node_at_index(new_index) {
-                        explorer.set_selected(Some(node_id));
-                        explorer.update_scroll_for_selection();
-                    }
+                    explorer.set_scroll_offset(new_offset);
                 }
                 return Ok(());
             }

@@ -209,6 +209,12 @@ pub struct Prompt {
     /// visible — selection changes inside the viewport never scroll
     /// (issue #1660).
     pub scroll_offset: usize,
+    /// When true, the user has scrolled the result list with the mouse wheel,
+    /// so the renderer must NOT pull `scroll_offset` back to keep the
+    /// selection in view (issue #2119). Reset whenever the selection moves by
+    /// keyboard or the suggestion list is rebuilt, so normal navigation
+    /// re-engages the keep-selection-visible behaviour.
+    pub manual_scroll: bool,
     /// Selection anchor position (for Shift+Arrow selection)
     /// When Some(pos), there's a selection from anchor to cursor_pos
     pub selection_anchor: Option<usize>,
@@ -283,6 +289,7 @@ impl Prompt {
             original_suggestions: None,
             selected_suggestion: None,
             scroll_offset: 0,
+            manual_scroll: false,
             selection_anchor: None,
             suggestions_set_for_input: None,
             sync_input_on_navigate: false,
@@ -320,6 +327,7 @@ impl Prompt {
             suggestions,
             selected_suggestion,
             scroll_offset: 0,
+            manual_scroll: false,
             selection_anchor: None,
             suggestions_set_for_input: None,
             sync_input_on_navigate: false,
@@ -376,6 +384,7 @@ impl Prompt {
             original_suggestions: None,
             selected_suggestion: None,
             scroll_offset: 0,
+            manual_scroll: false,
             selection_anchor,
             suggestions_set_for_input: None,
             sync_input_on_navigate: false,
@@ -532,6 +541,8 @@ impl Prompt {
     /// Select next suggestion
     pub fn select_next_suggestion(&mut self) {
         if !self.suggestions.is_empty() {
+            // Keyboard navigation re-engages keep-selection-visible scrolling.
+            self.manual_scroll = false;
             self.selected_suggestion = Some(match self.selected_suggestion {
                 Some(idx) if idx + 1 < self.suggestions.len() => idx + 1,
                 Some(_) => 0, // Wrap to start
@@ -543,12 +554,32 @@ impl Prompt {
     /// Select previous suggestion
     pub fn select_prev_suggestion(&mut self) {
         if !self.suggestions.is_empty() {
+            self.manual_scroll = false;
             self.selected_suggestion = Some(match self.selected_suggestion {
                 Some(0) => self.suggestions.len() - 1, // Wrap to end
                 Some(idx) => idx - 1,
                 None => 0,
             });
         }
+    }
+
+    /// Scroll the result list by `delta` rows without moving the selection
+    /// (mouse wheel over the Live Grep overlay results pane, issue #2119).
+    /// `visible` is the number of result rows currently on screen, used to
+    /// clamp the offset so it can't scroll past the end of the list.
+    pub fn scroll_results(&mut self, delta: i32, visible: usize) {
+        let total = self.suggestions.len();
+        if total == 0 {
+            return;
+        }
+        let max_offset = total.saturating_sub(visible.max(1));
+        let next = (self.scroll_offset as i32 + delta).clamp(0, max_offset as i32) as usize;
+        if next != self.scroll_offset {
+            self.scroll_offset = next;
+        }
+        // Latch manual scroll even when clamped at an edge, so a follow-up
+        // render doesn't immediately yank the offset back to the selection.
+        self.manual_scroll = true;
     }
 
     /// Get the currently selected suggestion value
@@ -616,6 +647,7 @@ impl Prompt {
             Some(0)
         };
         self.scroll_offset = 0;
+        self.manual_scroll = false;
     }
 
     /// Adjust `scroll_offset` so that `selected_suggestion` is inside the

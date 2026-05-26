@@ -4851,12 +4851,17 @@ impl Editor {
             let widget = crate::widgets::find_widget_by_key(&spec, &widget_key);
             match widget {
                 Some(fresh_core::api::WidgetSpec::Tree { .. }) => {
-                    self.handle_widget_tree_wheel(panel_id, &widget_key, delta);
-                    consumed = true;
+                    // Only claim the wheel if the widget actually scrolled.
+                    // A List/Tree that declares `visible_rows >= total`
+                    // (e.g. Git Log, which renders every row and relies on
+                    // its scrollable region's buffer scroll instead) has
+                    // nothing to scroll here; swallowing the event would
+                    // leave the wheel dead. Falling through lets the
+                    // underlying buffer scroll handle it.
+                    consumed |= self.handle_widget_tree_wheel(panel_id, &widget_key, delta);
                 }
                 Some(fresh_core::api::WidgetSpec::List { .. }) => {
-                    self.handle_widget_list_wheel(panel_id, &widget_key, delta);
-                    consumed = true;
+                    consumed |= self.handle_widget_list_wheel(panel_id, &widget_key, delta);
                 }
                 _ => {}
             }
@@ -4915,10 +4920,10 @@ impl Editor {
     /// selection would fall outside the new viewport, drag it to
     /// the edge so the renderer's keep-selection-visible logic
     /// doesn't snap the offset back.
-    fn handle_widget_tree_wheel(&mut self, panel_id: u64, widget_key: &str, delta: i32) {
+    fn handle_widget_tree_wheel(&mut self, panel_id: u64, widget_key: &str, delta: i32) -> bool {
         let panel = match self.widget_registry.get(panel_id) {
             Some(p) => p,
-            None => return,
+            None => return false,
         };
         let widget = crate::widgets::find_widget_by_key(&panel.spec, widget_key);
         let (visible_rows, nodes, item_keys) = match widget {
@@ -4928,10 +4933,10 @@ impl Editor {
                 item_keys,
                 ..
             }) => (*visible_rows, nodes.clone(), item_keys.clone()),
-            _ => return,
+            _ => return false,
         };
         if nodes.is_empty() {
-            return;
+            return false;
         }
         let (cur_sel, cur_scroll, expanded) = match panel.instance_states.get(widget_key) {
             Some(crate::widgets::WidgetInstanceState::Tree {
@@ -4943,14 +4948,14 @@ impl Editor {
         };
         let visible_indices = collect_visible_tree_indices(&nodes, &item_keys, &expanded);
         if visible_indices.is_empty() {
-            return;
+            return false;
         }
         let visible = visible_rows.max(1);
         let total_visible = visible_indices.len() as u32;
         let max_scroll = total_visible.saturating_sub(visible);
         let new_scroll = (cur_scroll as i32 + delta).clamp(0, max_scroll as i32) as u32;
         if new_scroll == cur_scroll {
-            return;
+            return false;
         }
         // Drag selection to stay inside the new viewport.
         let cur_pos: Option<u32> = if cur_sel >= 0 {
@@ -4979,13 +4984,15 @@ impl Editor {
             );
         }
         self.rerender_widget_panel(panel_id);
+        true
     }
 
-    /// List counterpart of `handle_widget_tree_wheel`.
-    fn handle_widget_list_wheel(&mut self, panel_id: u64, widget_key: &str, delta: i32) {
+    /// List counterpart of `handle_widget_tree_wheel`. Returns true if the
+    /// list's scroll offset actually changed (the wheel was consumed).
+    fn handle_widget_list_wheel(&mut self, panel_id: u64, widget_key: &str, delta: i32) -> bool {
         let panel = match self.widget_registry.get(panel_id) {
             Some(p) => p,
-            None => return,
+            None => return false,
         };
         let widget = crate::widgets::find_widget_by_key(&panel.spec, widget_key);
         let (visible_rows, total) = match widget {
@@ -4994,10 +5001,10 @@ impl Editor {
                 items,
                 ..
             }) => (*visible_rows, items.len() as u32),
-            _ => return,
+            _ => return false,
         };
         if total == 0 {
-            return;
+            return false;
         }
         let (cur_sel, cur_scroll) = match panel.instance_states.get(widget_key) {
             Some(crate::widgets::WidgetInstanceState::List {
@@ -5010,7 +5017,7 @@ impl Editor {
         let max_scroll = total.saturating_sub(visible);
         let new_scroll = (cur_scroll as i32 + delta).clamp(0, max_scroll as i32) as u32;
         if new_scroll == cur_scroll {
-            return;
+            return false;
         }
         let new_sel = if cur_sel < 0 {
             cur_sel
@@ -5031,6 +5038,7 @@ impl Editor {
             );
         }
         self.rerender_widget_panel(panel_id);
+        true
     }
 
     /// Right/Left arrow on a focused Tree.
