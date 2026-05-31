@@ -260,12 +260,9 @@ fn test_lsp_completion_popup() -> anyhow::Result<()> {
     ignore = "FakeLspServer uses a Bash script which is not available on Windows"
 )]
 fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
-    use crate::common::fake_lsp::FakeLspServer;
-
     let temp_dir = tempfile::tempdir()?;
-    let _fake_server = FakeLspServer::spawn_with_logging(temp_dir.path())?;
+    let _fake_server = FakeLspServer::spawn(temp_dir.path())?;
 
-    let log_file = temp_dir.path().join("inline_completion_test_log.txt");
     let test_file = temp_dir.path().join("test.rs");
     std::fs::write(&test_file, "")?;
 
@@ -277,10 +274,10 @@ fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
     config.lsp.insert(
         "rust".to_string(),
         fresh::types::LspLanguageConfig::Multi(vec![fresh::services::lsp::LspServerConfig {
-            command: FakeLspServer::logging_script_path(temp_dir.path())
+            command: FakeLspServer::script_path(temp_dir.path())
                 .to_string_lossy()
                 .to_string(),
-            args: vec![log_file.to_string_lossy().to_string()],
+            args: vec![],
             enabled: true,
             auto_start: true,
             process_limits: fresh::services::process_limits::ProcessLimits::default(),
@@ -299,39 +296,17 @@ fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
     harness.open_file(&test_file)?;
     harness.render()?;
 
-    let mut inline_completion_ready = false;
-    for _ in 0..40 {
-        harness.process_async_and_render()?;
-        harness.sleep(std::time::Duration::from_millis(50));
-        if harness
-            .editor()
-            .active_window()
-            .lsp
-            .as_ref()
-            .and_then(|lsp| lsp.inline_completion_support("rust"))
-            == Some(true)
-        {
-            inline_completion_ready = true;
-            break;
-        }
-    }
-    assert!(
-        inline_completion_ready,
-        "Expected fake LSP to advertise inline completion support"
-    );
-    std::fs::write(&log_file, "")?;
-
     harness.type_text("hel")?;
-    harness.wait_until(|h| h.screen_to_string().contains("lo_world"))?;
+    harness.wait_until(|h| {
+        let screen = h.screen_to_string();
+        screen.contains("hel") && screen.contains("lo_world")
+    })?;
 
-    let log_content = std::fs::read_to_string(&log_file)?;
-    assert!(
-        log_content.contains("textDocument/inlineCompletion"),
-        "Expected inline completion request. Log: {log_content}"
-    );
-
-    let buffer_content = harness.get_buffer_content().unwrap();
-    assert_eq!(buffer_content, "hel");
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE)?;
+    harness.wait_until(|h| {
+        let screen = h.screen_to_string();
+        screen.contains("hel") && !screen.contains("lo_world")
+    })?;
 
     Ok(())
 }
