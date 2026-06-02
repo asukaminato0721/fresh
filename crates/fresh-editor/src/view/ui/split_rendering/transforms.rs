@@ -978,12 +978,12 @@ pub(super) fn inject_virtual_lines(
     result
 }
 
-/// One inline inlay-hint cell to splice into the token stream, already
-/// padded to match the legacy render-time spacing and resolved to a wire
-/// style.
+/// One inline inlay-hint cell to splice into the token stream, with spacing
+/// policy and resolved wire style.
 struct InlineHintCell {
     text: String,
     style: Option<ViewTokenStyle>,
+    pad_with_space: bool,
 }
 
 /// Splice inline virtual text (`BeforeChar` / `AfterChar` inlay hints) into
@@ -999,11 +999,13 @@ struct InlineHintCell {
 /// pushed real text past the row edge) and clipped the end of hinted lines
 /// when scrolling.
 ///
-/// Padding mirrors the old render-time injection exactly so output is
-/// unchanged except for the bug fix:
+/// When `VirtualText::pad_with_space` is true, padding mirrors the old
+/// render-time injection exactly so normal inlay-hint output is unchanged:
 ///   - `BeforeChar`: `"{text} "`, or `" {text} "` when anchored on a
 ///     newline (an end-of-line hint).
 ///   - `AfterChar`:  `" {text}"`.
+/// Ghost text uses `pad_with_space = false`, so its suffix stays adjacent to
+/// the typed prefix.
 ///
 /// `theme` is `Some` on the draw path (so hint colours resolve) and `None`
 /// on the wrap-cache / scroll-math path, where only cell *width* matters and
@@ -1023,24 +1025,25 @@ pub fn splice_inline_virtual_text(
     }
 
     // Group by anchor byte, preserving the query's (position, priority)
-    // order. `before` stores the raw hint text — its leading-space padding
-    // depends on whether the anchor cell is a newline, decided while
-    // walking the token stream below.
-    let mut before: HashMap<usize, Vec<(String, Option<ViewTokenStyle>)>> = HashMap::new();
+    // order. `BeforeChar` leading-space padding depends on whether the anchor
+    // cell is a newline, decided while walking the token stream below.
+    let mut before: HashMap<usize, Vec<InlineHintCell>> = HashMap::new();
     let mut after: HashMap<usize, Vec<InlineHintCell>> = HashMap::new();
     for (pos, vtext) in inline {
         let style = theme.map(|t| token_style_from_ratatui(vtext.resolved_style(t)));
         match vtext.position {
             VirtualTextPosition::BeforeChar => {
-                before
-                    .entry(pos)
-                    .or_default()
-                    .push((vtext.text.clone(), style));
+                before.entry(pos).or_default().push(InlineHintCell {
+                    text: vtext.text.clone(),
+                    style,
+                    pad_with_space: vtext.pad_with_space,
+                });
             }
             VirtualTextPosition::AfterChar => {
                 after.entry(pos).or_default().push(InlineHintCell {
-                    text: format!(" {}", vtext.text),
+                    text: vtext.text.clone(),
                     style,
+                    pad_with_space: vtext.pad_with_space,
                 });
             }
             // Line-level positions are handled by `inject_virtual_lines`.
@@ -1076,8 +1079,13 @@ pub fn splice_inline_virtual_text(
                             });
                         }
                         seg_start = anchor;
-                        for (text, style) in hints {
-                            out.push(virt(format!("{text} "), style.clone()));
+                        for hint in hints {
+                            let text = if hint.pad_with_space {
+                                format!("{} ", hint.text)
+                            } else {
+                                hint.text.clone()
+                            };
+                            out.push(virt(text, hint.style.clone()));
                         }
                     }
                     seg.push(ch);
@@ -1090,7 +1098,12 @@ pub fn splice_inline_virtual_text(
                         });
                         seg_start = token_start + byte_idx;
                         for hint in hints {
-                            out.push(virt(hint.text.clone(), hint.style.clone()));
+                            let text = if hint.pad_with_space {
+                                format!(" {}", hint.text)
+                            } else {
+                                hint.text.clone()
+                            };
+                            out.push(virt(text, hint.style.clone()));
                         }
                     }
                 }
@@ -1108,20 +1121,29 @@ pub fn splice_inline_virtual_text(
                 // newline is an end-of-line hint and gets a leading space.
                 let anchor_is_newline = matches!(kind, ViewTokenWireKind::Newline);
                 if let Some(hints) = before.get(&anchor) {
-                    for (text, style) in hints {
-                        let padded = if anchor_is_newline {
-                            format!(" {text} ")
+                    for hint in hints {
+                        let text = if hint.pad_with_space {
+                            if anchor_is_newline {
+                                format!(" {} ", hint.text)
+                            } else {
+                                format!("{} ", hint.text)
+                            }
                         } else {
-                            format!("{text} ")
+                            hint.text.clone()
                         };
-                        out.push(virt(padded, style.clone()));
+                        out.push(virt(text, hint.style.clone()));
                     }
                 }
                 let after_hints = after.get(&anchor);
                 out.push(token);
                 if let Some(hints) = after_hints {
                     for hint in hints {
-                        out.push(virt(hint.text.clone(), hint.style.clone()));
+                        let text = if hint.pad_with_space {
+                            format!(" {}", hint.text)
+                        } else {
+                            hint.text.clone()
+                        };
+                        out.push(virt(text, hint.style.clone()));
                     }
                 }
             }

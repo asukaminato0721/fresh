@@ -6502,6 +6502,7 @@ fn parse_view_token_style(
         bold: s.get("bold").unwrap_or(false),
         italic: s.get("italic").unwrap_or(false),
         underline: s.get("underline").unwrap_or(false),
+        dim: s.get("dim").unwrap_or(false),
     }))
 }
 
