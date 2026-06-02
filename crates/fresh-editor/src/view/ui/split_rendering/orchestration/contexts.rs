@@ -9,7 +9,6 @@ use super::super::folding::FoldIndicator;
 use crate::primitives::highlighter::HighlightSpan;
 use crate::view::margin::LineIndicator;
 use crate::view::overlay::Overlay;
-use crate::view::virtual_text::VirtualText;
 use ratatui::style::Style;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
@@ -41,8 +40,6 @@ pub(crate) struct DecorationContext {
     pub highlight_spans: Vec<HighlightSpan>,
     pub semantic_token_spans: Vec<HighlightSpan>,
     pub viewport_overlays: Vec<(Overlay, Range<usize>)>,
-    /// Inline virtual text indexed by source byte offset.
-    pub virtual_text_lookup: HashMap<usize, Vec<VirtualText>>,
     /// Indices into `viewport_overlays` sorted by `range.start` (ascending).
     /// Used by the per-cell sweep in `render_view_lines` to advance an
     /// active set without re-scanning the full overlay list each cell.

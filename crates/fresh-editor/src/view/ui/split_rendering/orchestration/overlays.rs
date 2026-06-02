@@ -325,18 +325,10 @@ pub(crate) fn decoration_context(
     } else {
         BTreeMap::new()
     };
-    let virtual_text_lookup = state
-        .virtual_texts
-        .build_lookup(&state.marker_list, viewport_start, viewport_end)
-        .into_iter()
-        .map(|(pos, texts)| (pos, texts.into_iter().cloned().collect()))
-        .collect();
-
     DecorationContext {
         highlight_spans,
         semantic_token_spans,
         viewport_overlays,
-        virtual_text_lookup,
         overlay_position_index,
         diagnostic_lines,
         diagnostic_inline_texts,
