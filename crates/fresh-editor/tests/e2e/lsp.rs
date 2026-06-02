@@ -306,7 +306,7 @@ fn test_lsp_inline_completion_ghost_text() -> anyhow::Result<()> {
             command: FakeLspServer::script_path(temp_dir.path())
                 .to_string_lossy()
                 .to_string(),
-            args: vec![],
+            args: Some(vec![]),
             enabled: true,
             auto_start: true,
             process_limits: fresh::services::process_limits::ProcessLimits::default(),
@@ -366,7 +366,7 @@ fn test_lsp_inline_completion_tab_accepts_ghost_text() -> anyhow::Result<()> {
             command: FakeLspServer::script_path(temp_dir.path())
                 .to_string_lossy()
                 .to_string(),
-            args: vec![],
+            args: Some(vec![]),
             enabled: true,
             auto_start: true,
             process_limits: fresh::services::process_limits::ProcessLimits::default(),
@@ -424,7 +424,7 @@ fn test_lsp_inline_completion_without_popup_auto_show() -> anyhow::Result<()> {
             command: FakeLspServer::script_path(temp_dir.path())
                 .to_string_lossy()
                 .to_string(),
-            args: vec![],
+            args: Some(vec![]),
             enabled: true,
             auto_start: true,
             process_limits: fresh::services::process_limits::ProcessLimits::default(),
