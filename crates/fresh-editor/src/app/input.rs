@@ -915,8 +915,11 @@ impl Editor {
             | Action::LspReferences
             | Action::LspImplementation
             | Action::LspHover
+            | Action::CompletionAccept
+            | Action::InsertTab
             | Action::None => {
-                // Don't cancel for LSP actions or no-op
+                // Don't cancel for LSP actions, no-op, or actions that may
+                // consume the active inline-completion ghost text.
             }
             _ => {
                 // Cancel any pending LSP requests
@@ -2504,6 +2507,11 @@ impl Editor {
                 self.handle_popup_focus();
             }
             Action::CompletionAccept => {
+                if self.accept_ghost_text() {
+                    return Ok(());
+                }
+                self.active_window_mut().cancel_pending_lsp_requests();
+                self.clear_ghost_text();
                 use super::popup_actions::PopupConfirmResult;
                 if let PopupConfirmResult::EarlyReturn = self.handle_popup_confirm() {
                     return Ok(());
@@ -2511,6 +2519,14 @@ impl Editor {
             }
             Action::CompletionDismiss => {
                 self.handle_popup_cancel();
+            }
+            Action::InsertTab => {
+                if self.accept_ghost_text() {
+                    return Ok(());
+                }
+                self.active_window_mut().cancel_pending_lsp_requests();
+                self.clear_ghost_text();
+                self.apply_action_as_events(action)?;
             }
             Action::InsertChar(c) => {
                 if self.is_prompting() {

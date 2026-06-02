@@ -1049,6 +1049,9 @@ pub struct ViewTokenStyle {
     /// Whether to render with underline
     #[serde(default)]
     pub underline: bool,
+    /// Whether to render dimmed
+    #[serde(default)]
+    pub dim: bool,
 }
 
 /// Wire-format view token with optional source mapping and styling
@@ -5288,9 +5291,10 @@ mod fromjs_impls {
             // named string). rquickjs_serde struggles with the untagged
             // variant from a plain JS array, so we pin down the boolean
             // flags — enough to prove the body actually ran.
-            let got: ViewTokenStyle = eval_as("({bold: true, italic: true})");
+            let got: ViewTokenStyle = eval_as("({bold: true, italic: true, dim: true})");
             assert!(got.bold);
             assert!(got.italic);
+            assert!(got.dim);
             assert!(got.fg.is_none());
         }
 
