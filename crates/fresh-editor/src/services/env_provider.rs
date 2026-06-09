@@ -337,9 +337,15 @@ impl EnvStore {
         Ok(())
     }
 
-    /// Forget the recipe (deactivation). Absent file is success.
+    /// Forget the recipe (deactivation). A missing file is success; any other
+    /// error is logged best-effort (the result is `#[must_use]`, so it is
+    /// handled rather than discarded — the crate denies `let_underscore_must_use`).
     fn remove(&self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("env: failed to remove recipe: {e}");
+            }
+        }
     }
 }
 
