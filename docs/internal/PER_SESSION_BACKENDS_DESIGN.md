@@ -78,6 +78,16 @@ agent-resume feature landed assuming a local backend:
    instead of bypassing it. (This also fixes a born-attached remote agent's
    *seed* terminal, which has the same bypass today.)
 
+   > **Status: shipped for local + containers** (`docker exec -it [-u][-w][-e
+   > env] <id> <argv>`), the argv staying intact (no shell string). SSH and
+   > Kubernetes are stubbed (TODO): the agent must run **in the workspace
+   > dir**, and `docker exec` expresses that argv-pure via `-w <dir>`, but
+   > `kubectl exec` and `ssh` have **no cwd flag** — doing it there needs a
+   > shell hop (`sh -lc 'cd <dir> && exec <argv>'`), which trades away the
+   > argv-slot purity (acceptable for a UUID, but a real decision). Until that
+   > lands, ssh/kube command terminals fall back to running on the host
+   > (today's behaviour), no regression.
+
 2. **Backend first, then agent.** A restored remote session is **Dormant**
    (local placeholder) until reconnect, so its agent must **not** re-run on
    the placeholder. Restore order is: local sessions re-run the agent
