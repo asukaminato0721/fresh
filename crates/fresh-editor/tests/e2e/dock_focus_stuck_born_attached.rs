@@ -126,6 +126,7 @@ fn born_attached_session_does_not_wedge_source_window_typing() {
     //    active via a DIRECT active-pointer write, bypassing `set_active_window`
     //    (and its panel-mode-clear guard). A local terminal exercises the same
     //    host call the SSH path makes.
+    let born_authority = harness.editor().local_session_authority();
     let (window_b, _terminal_id, _terminal_buffer) = harness
         .editor_mut()
         .create_window_with_terminal(
@@ -134,7 +135,7 @@ fn born_attached_session_does_not_wedge_source_window_typing() {
             Some(project_root.clone()),
             Some(vec!["sh".into(), "-c".into(), "sleep 60".into()]),
             Some("agent".into()),
-            None,
+            born_authority,
         )
         .expect("create_window_with_terminal should succeed");
     harness.tick_and_render().unwrap();

@@ -183,6 +183,7 @@ fn new_session_atomic_api_seeds_terminal_as_only_tab() {
 
     let project_root = harness.project_dir().unwrap().canonicalize().unwrap();
 
+    let born_authority = harness.editor().local_session_authority();
     let (new_window, _terminal_id, terminal_buffer) = harness
         .editor_mut()
         .create_window_with_terminal(
@@ -195,7 +196,7 @@ fn new_session_atomic_api_seeds_terminal_as_only_tab() {
                 format!("printf {}; sleep 60", MARKER),
             ]),
             Some("agent".into()),
-            None,
+            born_authority,
         )
         .expect("create_window_with_terminal should succeed");
 

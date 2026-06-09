@@ -129,6 +129,19 @@ impl crate::app::Editor {
         id
     }
 
+    /// A fresh local authority for a brand-new session, sharing the
+    /// editor's live workspace-trust and env-provider handles. The
+    /// canonical backend for the Orchestrator's "New Session (Local)"
+    /// flow: callers pass this to [`Self::create_window_with_terminal`]
+    /// so a new session for a different project is born under its own
+    /// local backend rather than inheriting the active window's.
+    pub fn local_session_authority(&self) -> crate::services::authority::Authority {
+        crate::services::authority::Authority::local(
+            std::sync::Arc::clone(&self.authority.workspace_trust),
+            std::sync::Arc::clone(&self.authority.env_provider),
+        )
+    }
+
     /// Atomic "create a new window seeded with an agent terminal"
     /// entry point. Used by Orchestrator's new-session flow.
     ///
@@ -151,22 +164,22 @@ impl crate::app::Editor {
     /// `root` must be absolute; the plugin-command dispatcher
     /// validates this before reaching here.
     ///
-    /// `authority` is the backend the new session is born under. `None`
-    /// gives it a **fresh local authority** (sharing the editor's trust +
-    /// env handles) — the right default for the Orchestrator's "New
-    /// Session (Local)" flow: a new session for a *different* project must
-    /// not inherit the active window's container/SSH/k8s backend just
-    /// because that window happened to be focused when "+ New" was
-    /// clicked. `Some(a)` births the window under `a` — the born-attached
-    /// remote-session path (`create_remote_session_window`) passes the
-    /// already-connected backend so the new window's filesystem, LSP
-    /// spawner, and terminal all act remotely from birth.
+    /// `authority` is the backend the new session is born under — passed
+    /// explicitly so this primitive never guesses. The Orchestrator's "New
+    /// Session (Local)" flow hands it [`Self::local_session_authority`] (a
+    /// fresh local backend sharing the editor's trust + env handles), so a
+    /// new session for a *different* project does not inherit the active
+    /// window's container/SSH/k8s backend just because that window was
+    /// focused when "+ New" was clicked. The born-attached remote-session
+    /// path (`create_remote_session_window`) passes its already-connected
+    /// backend so the new window's filesystem, LSP spawner, and terminal all
+    /// act remotely from birth.
     ///
-    /// Either way the editor-wide authority cache is re-pointed at the
-    /// new active window via [`Self::adopt_active_window_authority`] before
-    /// returning, so the status bar, quick-open, and the 100+ `self.authority`
-    /// call sites reflect the session the user just landed on rather than
-    /// the one they left.
+    /// The editor-wide authority cache is re-pointed at the new active
+    /// window via [`Self::adopt_active_window_authority`] before returning,
+    /// so the status bar, quick-open, and the 100+ `self.authority` call
+    /// sites reflect the session the user just landed on rather than the one
+    /// they left.
     ///
     /// `resume` is the agent-resume argv to re-run instead of `command` if
     /// this session is restored (Orchestrator agent-resume).
@@ -178,7 +191,7 @@ impl crate::app::Editor {
         cwd: Option<PathBuf>,
         command: Option<Vec<String>>,
         title: Option<String>,
-        authority: Option<crate::services::authority::Authority>,
+        window_authority: crate::services::authority::Authority,
         resume: Option<Vec<String>>,
     ) -> Result<(WindowId, fresh_core::TerminalId, fresh_core::BufferId), String> {
         let id = WindowId(self.next_window_id);
@@ -189,16 +202,6 @@ impl crate::app::Editor {
         // whether the active authority actually changed and skip the
         // hook/snapshot churn when it didn't.
         let previous_authority_label = self.authority.display_label.clone();
-
-        // A new local session is born under its *own* local authority, not
-        // a clone of whatever backend the active window carries. Container
-        // / SSH / k8s sessions pass an explicit authority instead.
-        let window_authority = authority.unwrap_or_else(|| {
-            crate::services::authority::Authority::local(
-                std::sync::Arc::clone(&self.authority.workspace_trust),
-                std::sync::Arc::clone(&self.authority.env_provider),
-            )
-        });
 
         let mut resources = self.window_resources();
         // Override the inherited (active-window) authority with the one
@@ -774,7 +777,7 @@ impl crate::app::Editor {
             Some(root),
             command,
             None,
-            Some(authority),
+            authority,
             None,
         ) {
             Ok((window_id, _terminal, _buffer)) => {

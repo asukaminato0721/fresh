@@ -255,10 +255,12 @@ fn new_local_session_is_born_with_its_own_local_authority() -> anyhow::Result<()
         "Container:dc"
     );
 
-    // Orchestrator "New Session (Local)" for a different project. The
-    // dispatcher passes `None`, so the window is born local.
+    // Orchestrator "New Session (Local)" for a different project — the
+    // dispatcher hands `create_window_with_terminal` a fresh local
+    // authority, so the window is born local.
     let proj_b = temp.path().join("projB");
     std::fs::create_dir_all(&proj_b)?;
+    let born_authority = harness.editor().local_session_authority();
     let (new_win, _terminal, _buffer) = harness
         .editor_mut()
         .create_window_with_terminal(
@@ -267,7 +269,7 @@ fn new_local_session_is_born_with_its_own_local_authority() -> anyhow::Result<()
             Some(proj_b.clone()),
             Some(vec!["sh".into(), "-c".into(), "sleep 60".into()]),
             Some("agent".into()),
-            None,
+            born_authority,
         )
         .map_err(anyhow::Error::msg)?;
 
