@@ -270,6 +270,7 @@ fn new_local_session_is_born_with_its_own_local_authority() -> anyhow::Result<()
             Some(vec!["sh".into(), "-c".into(), "sleep 60".into()]),
             Some("agent".into()),
             born_authority,
+            None,
         )
         .map_err(anyhow::Error::msg)?;
 

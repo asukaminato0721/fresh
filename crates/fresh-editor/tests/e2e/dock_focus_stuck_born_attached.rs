@@ -136,6 +136,7 @@ fn born_attached_session_does_not_wedge_source_window_typing() {
             Some(vec!["sh".into(), "-c".into(), "sleep 60".into()]),
             Some("agent".into()),
             born_authority,
+            None,
         )
         .expect("create_window_with_terminal should succeed");
     harness.tick_and_render().unwrap();
