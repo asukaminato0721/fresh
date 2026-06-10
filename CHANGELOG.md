@@ -1,8 +1,48 @@
 # Release Notes
 
-## 0.3.12
+## 0.4.0
 
 For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
+
+### Features
+
+* **Review Diff, reworked**: a file sidebar with per-file status, change counts, and comment badges, grouped by directory; an in-panel side-by-side view that keeps the sidebar; a multi-line comments panel, with commenting available anywhere in the diff; a watch mode (`W`) that reloads the diff on save; reviewing a git stash; split/stack/auto layout toggles, a `/` file filter, and reworked keyboard navigation (Tab focus model, cross-file `n`/`p`).
+* **Workspace trust & environments**: a first-class, clickable `{trust}` element now leads the status bar; virtualenvs activate without a prompt, shell envs get a single combined trust-and-activate prompt, and env pills in the status bar are clickable. Changing the trust level resets only the active session instead of the whole editor.
+* **Per-session backends**: each session now owns its environment, trust level, and backend (local / SSH / Kubernetes / devcontainer). Remote sessions survive a restart and reconnect when activated; restored agent sessions re-run their agent instead of coming back as a blank terminal, and the New Session dialog gained an agent-command dropdown.
+* **Terminal**: send the selection (or current line) to the terminal (#1871, requested by @aquasync); Ctrl+Click or Ctrl+hover opens file paths from terminal output, including scrollback; the shell working directory is tracked via OSC 7.
+* **Configurable indentation rules** per language via `[languages.<id>.indent]`, including VS Code-style regex rules. 14 indent-only tree-sitter grammars were replaced by these rules, shrinking the binary by ~18 MB.
+* **GDScript** language support (#2238, by @richiehowelll).
+* **`lsp_enabled` master switch** to disable all LSP features globally (#1770, requested by @XhstormR).
+* **`auto_read_only` option** to turn off automatic read-only mode for foreign files (#2048).
+* **Occurrence highlighting toggle** with configuration (#2154, by @masmu), and the current-line highlight now hides while text is selected (#2153, by @masmu).
+* **Clear Search action** and a plugin API exposing the active search state (#2152, by @masmu).
+* **File Explorer slot override API** for plugins: icons, status, and name color (#2241, by @Agrejus).
+* **'+' new-tab button** in the tab bar, with a New Terminal / New File popup.
+* A **color-transition animation** on theme switch, and a **wave animation** — available as a command and as an optional idle screensaver.
+
+### Improvements
+
+* **Live Diff**: word-level highlighting inside changed line pairs (#1949, requested by @masapu).
+* **Status bar**: configurable separator with dedicated theme keys; the default separator is now padding-only and the default left side leads with `{trust}`.
+* **Orchestrator dock**: seamless-tab look for the active session, a hover-only overlay scrollbar, a stable session order, keyboard-navigable project dropdown, and clicking an inactive worktree opens it without an extra confirmation.
+* **File Explorer**: natural-order filename sorting (#2073, requested by @mandolyte).
+* `q` closes the *Keyboard Shortcuts* and *Fresh Manual* viewers (#2165).
+* Undoing a format-on-save or trim rewrite keeps the view in place (#2027, requested by @SolarLune).
+
+### Bug Fixes
+
+* Windows: the TUI attaches to the parent process's stdio instead of failing in `-gui` builds (#2276, reported and fixed by @mokurin000 in #2277).
+* Right-side status bar elements render with configurable separators (#2088, reported and fixed by @PavelLoparev), and cursor column numbers are grapheme-correct (#2090, reported and fixed by @PavelLoparev).
+* Scroll panels compute focus offsets from the render width when a scrollbar is present (#2175, by @masmu).
+* Restored windows no longer show a blank editor pane from an orphaned split leaf (#2267).
+* Paste reaches Settings/dialog text fields instead of the buffer behind them, and buffer pastes work again after closing the dialog (#2246).
+* Tab bar scroll re-anchors after closing many tabs, keeping the surviving tab visible (#2229, reported by @dmknght).
+* LSP code actions now include diagnostics context, so diagnostic-based fixes appear (#2212).
+* Devcontainer CLI detection works when the CLI is installed via Bun on Windows (#2201, reported by @steve-price-immybot).
+* `install.sh` / AUR `fresh-editor-bin` packaging fixed (#2249, reported by @asukaminato0721; #2250, reported by @bandrefilipe).
+* Focusing a restored terminal tab activates terminal mode.
+
+## 0.3.12
 
 ### Features
 
