@@ -239,4 +239,6 @@ pub mod vi_mode_bugs;
 pub mod visual_regression;
 pub mod warning_indicators;
 #[cfg(feature = "plugins")]
+pub mod widget_panel_ownership;
+#[cfg(feature = "plugins")]
 pub mod workspace;

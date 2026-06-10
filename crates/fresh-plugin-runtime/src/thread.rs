@@ -102,8 +102,14 @@ pub enum PluginRequest {
         response: oneshot::Sender<Result<()>>,
     },
 
-    /// Run a hook (fire-and-forget, no response needed)
-    RunHook { hook_name: String, args: HookArgs },
+    /// Run a hook (fire-and-forget, no response needed). When `target`
+    /// is set, only that plugin's handlers run — used for events that
+    /// belong to one plugin, like a panel's `widget_event`.
+    RunHook {
+        hook_name: String,
+        args: HookArgs,
+        target: Option<String>,
+    },
 
     /// Check if any handlers are registered for a hook
     HasHookHandlers {
@@ -675,6 +681,20 @@ impl PluginThreadHandle {
             fire_and_forget(sender.send(PluginRequest::RunHook {
                 hook_name: hook_name.to_string(),
                 args,
+                target: None,
+            }));
+        }
+    }
+
+    /// Run a hook in a single plugin's context only (non-blocking,
+    /// fire-and-forget). Handlers registered by other plugins are
+    /// skipped.
+    pub fn run_hook_for_plugin(&self, plugin: &str, hook_name: &str, args: HookArgs) {
+        if let Some(sender) = self.request_sender.as_ref() {
+            fire_and_forget(sender.send(PluginRequest::RunHook {
+                hook_name: hook_name.to_string(),
+                args,
+                target: Some(plugin.to_string()),
             }));
         }
     }
@@ -1076,6 +1096,7 @@ async fn run_hook_internal_rc(
     runtime: Rc<RefCell<QuickJsBackend>>,
     hook_name: &str,
     args: &HookArgs,
+    target: Option<&str>,
 ) -> Result<()> {
     // Convert HookArgs to serde_json::Value using hook_args_to_json which produces flat JSON
     // (not enum-tagged JSON from serde's default Serialize)
@@ -1089,7 +1110,10 @@ async fn run_hook_internal_rc(
 
     // Emit to TypeScript handlers
     let emit_start = std::time::Instant::now();
-    runtime.borrow_mut().emit(hook_name, &json_data).await?;
+    runtime
+        .borrow_mut()
+        .emit_to(hook_name, &json_data, target)
+        .await?;
     tracing::trace!(
         hook = hook_name,
         emit_ms = emit_start.elapsed().as_millis(),
@@ -1173,7 +1197,11 @@ async fn handle_request(
             ))));
         }
 
-        PluginRequest::RunHook { hook_name, args } => {
+        PluginRequest::RunHook {
+            hook_name,
+            args,
+            target,
+        } => {
             // Fire-and-forget hook execution
             let hook_start = std::time::Instant::now();
             // Use info level for prompt hooks to aid debugging
@@ -1182,7 +1210,10 @@ async fn handle_request(
             } else {
                 tracing::trace!(hook = %hook_name, "RunHook request received");
             }
-            if let Err(e) = run_hook_internal_rc(Rc::clone(&runtime), &hook_name, &args).await {
+            if let Err(e) =
+                run_hook_internal_rc(Rc::clone(&runtime), &hook_name, &args, target.as_deref())
+                    .await
+            {
                 let error_msg = format!("Plugin error in '{}': {}", hook_name, e);
                 tracing::error!("{}", error_msg);
                 // Surface the error to the UI

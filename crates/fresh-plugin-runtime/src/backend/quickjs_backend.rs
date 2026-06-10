@@ -7514,6 +7514,18 @@ impl QuickJsBackend {
 
     /// Emit an event to all registered handlers
     pub async fn emit(&mut self, event_name: &str, event_data: &serde_json::Value) -> Result<bool> {
+        self.emit_to(event_name, event_data, None).await
+    }
+
+    /// Emit an event to registered handlers. When `target` is set, only
+    /// handlers registered by that plugin run — events owned by a single
+    /// plugin (a panel's `widget_event`) are never broadcast to others.
+    pub async fn emit_to(
+        &mut self,
+        event_name: &str,
+        event_data: &serde_json::Value,
+        target: Option<&str>,
+    ) -> Result<bool> {
         tracing::trace!("emit: event '{}' with data: {:?}", event_name, event_data);
 
         self.services
@@ -7528,6 +7540,9 @@ impl QuickJsBackend {
         if let Some(handler_pairs) = handlers {
             let plugin_contexts = self.plugin_contexts.borrow();
             for handler in &handler_pairs {
+                if target.is_some_and(|t| t != handler.plugin_name) {
+                    continue;
+                }
                 let Some(context) = plugin_contexts.get(&handler.plugin_name) else {
                     continue;
                 };
@@ -8377,6 +8392,58 @@ mod tests {
             }
             _ => panic!("Expected SetStatus from event handler, got {:?}", cmd),
         }
+    }
+
+    #[tokio::test]
+    async fn test_emit_to_targets_single_plugin() {
+        // Two plugins register handlers for the same event. A targeted
+        // emit must run only the named plugin's handler; an untargeted
+        // emit reaches both.
+        let (mut backend, rx) = create_test_backend();
+        for name in ["alpha", "beta"] {
+            backend
+                .execute_js(
+                    &format!(
+                        r#"
+                const editor = getEditor();
+                globalThis.onWidget = function(data) {{
+                    editor.setStatus("{name} got " + data.panel_id);
+                }};
+                editor.on("widget_event", "onWidget");
+            "#
+                    ),
+                    &format!("{name}.js"),
+                )
+                .unwrap();
+        }
+        while rx.try_recv().is_ok() {}
+
+        let event_data: serde_json::Value = serde_json::json!({ "panel_id": 7 });
+        backend
+            .emit_to("widget_event", &event_data, Some("beta"))
+            .await
+            .unwrap();
+        match rx.try_recv().unwrap() {
+            PluginCommand::SetStatus { message } => assert_eq!(message, "beta got 7"),
+            cmd => panic!("Expected SetStatus, got {:?}", cmd),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "targeted emit must not reach the other plugin"
+        );
+
+        backend
+            .emit_to("widget_event", &event_data, None)
+            .await
+            .unwrap();
+        let mut got: Vec<String> = Vec::new();
+        while let Ok(cmd) = rx.try_recv() {
+            if let PluginCommand::SetStatus { message } = cmd {
+                got.push(message);
+            }
+        }
+        got.sort();
+        assert_eq!(got, vec!["alpha got 7", "beta got 7"]);
     }
 
     #[tokio::test]

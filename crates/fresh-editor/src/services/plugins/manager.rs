@@ -255,6 +255,21 @@ impl PluginManager {
         }
     }
 
+    /// Run a hook in one plugin's context only (fire-and-forget).
+    /// Handlers registered by other plugins are skipped.
+    pub fn run_hook_for_plugin(&self, plugin: &str, hook_name: &str, args: super::hooks::HookArgs) {
+        #[cfg(feature = "plugins")]
+        {
+            if let Some(ref manager) = self.inner {
+                manager.run_hook_for_plugin(plugin, hook_name, args);
+            }
+        }
+        #[cfg(not(feature = "plugins"))]
+        {
+            let _ = (plugin, hook_name, args);
+        }
+    }
+
     /// Deliver a response to a pending async plugin operation.
     pub fn deliver_response(&self, response: super::api::PluginResponse) {
         #[cfg(feature = "plugins")]

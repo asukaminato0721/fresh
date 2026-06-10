@@ -84,9 +84,9 @@ pub(super) fn translate_plugin_animation_kind(
 }
 
 impl Editor {
-    /// Deliver a `widget_event` hook for the panel identified by
-    /// `panel_key`. Panel ids are plugin-local, so the event carries the
-    /// bare id and is routed by the panel's owning plugin.
+    /// Deliver a `widget_event` hook to the plugin owning `panel_key` —
+    /// and to that plugin only. Panel ids are plugin-local, so the event
+    /// carries the bare id; no other plugin ever sees it.
     pub(crate) fn fire_widget_event(
         &self,
         panel_key: &crate::widgets::PanelKey,
@@ -98,7 +98,8 @@ impl Editor {
         if !pm.has_hook_handlers("widget_event") {
             return;
         }
-        pm.run_hook(
+        pm.run_hook_for_plugin(
+            &panel_key.plugin,
             "widget_event",
             fresh_core::hooks::HookArgs::WidgetEvent {
                 panel_id: panel_key.id,

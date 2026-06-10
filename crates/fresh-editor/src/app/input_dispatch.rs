@@ -765,6 +765,8 @@ impl Editor {
         };
         #[cfg(feature = "plugins")]
         {
+            // The overlay toolbar isn't a registry panel — it has no
+            // owner to target, so this broadcasts with panel_id 0.
             let pm = self.plugin_manager.read().unwrap();
             if pm.has_hook_handlers("widget_event") {
                 pm.run_hook(
