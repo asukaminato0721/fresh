@@ -1121,6 +1121,121 @@ mod tests {
         assert!(rows >= 1);
     }
 
+    /// Property test for `count_visual_rows_for_text_with_soft_breaks`:
+    /// deterministic fuzz over multi-byte / grapheme-cluster texts,
+    /// geometries, and adversarial break lists (mid-char, mid-cluster,
+    /// out-of-range, unsorted, duplicates).  Deterministic LCG, so
+    /// reproducible without a proptest dep.
+    ///
+    /// Properties:
+    ///   1. never panics, result >= 1, and is deterministic;
+    ///   2. rows are bounded above by chars + indents + breaks + 1
+    ///      (each counted row contains at least one char);
+    ///   3. with a *well-formed* break list (sorted, in-range, on char
+    ///      boundaries), rows >= breaks + 1 — every segment occupies
+    ///      at least one row.
+    #[test]
+    fn soft_break_row_count_properties() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as usize
+        };
+        // Building blocks: wrap-relevant ASCII, 1..4-byte scalars, and
+        // multi-scalar grapheme clusters (combining marks, ZWJ
+        // sequences, regional-indicator flags, variation selectors),
+        // plus zero-width and RTL scalars.  Adjacent picks can also
+        // merge into larger clusters (e.g. emoji + skin tone).
+        let palette: &[&str] = &[
+            "a",
+            "b",
+            "c",
+            " ",
+            " ",
+            "\t",
+            "-",
+            "\u{e9}",                                      // é, 2-byte
+            "\u{5d0}",                                     // א, RTL Hebrew
+            "\u{2014}",                                    // —, 3-byte
+            "\u{4e16}",                                    // 世, wide CJK
+            "\u{1f680}",                                   // 🚀, 4-byte
+            "e\u{301}",                                    // e + combining acute
+            "\u{928}\u{93f}",                              // Devanagari नि
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}", // ZWJ family
+            "\u{1f1ee}\u{1f1f1}",                          // regional-indicator flag
+            "\u{1f44d}\u{1f3fb}",                          // thumbs-up + skin tone
+            "\u{2764}\u{fe0f}",                            // heart + VS16
+            "\u{200d}",                                    // lone zero-width joiner
+            "\u{200b}",                                    // zero-width space
+        ];
+
+        for _iter in 0..2000 {
+            let n_pieces = next() % 60;
+            let text: String = (0..n_pieces)
+                .map(|_| palette[next() % palette.len()])
+                .collect();
+            let line_start = next() % 5000;
+            let width = 2 + next() % 119;
+            let gutter = next() % 11;
+            let hanging = next() % 2 == 0;
+
+            // Adversarial breaks: positions roam past both ends of the
+            // line, indents are occasionally huge, order is unsorted.
+            let n_breaks = next() % 8;
+            let breaks: Vec<(usize, u16)> = (0..n_breaks)
+                .map(|_| {
+                    let pos = (line_start + next() % (text.len() + 10)).saturating_sub(5);
+                    let indent = if next() % 10 == 0 {
+                        500
+                    } else {
+                        (next() % 12) as u16
+                    };
+                    (pos, indent)
+                })
+                .collect();
+
+            let rows = count_visual_rows_for_text_with_soft_breaks(
+                &text, line_start, &breaks, width, gutter, hanging,
+            );
+            let again = count_visual_rows_for_text_with_soft_breaks(
+                &text, line_start, &breaks, width, gutter, hanging,
+            );
+            assert_eq!(
+                rows, again,
+                "non-deterministic: text={text:?} breaks={breaks:?}"
+            );
+            assert!(rows >= 1, "zero rows: text={text:?} breaks={breaks:?}");
+            let indent_sum: usize = breaks.iter().map(|&(_, i)| i as usize).sum();
+            let bound = (text.chars().count() + indent_sum + breaks.len() + 1) as u32;
+            assert!(
+                rows <= bound,
+                "rows={rows} > bound={bound}: text={text:?} breaks={breaks:?} \
+                 width={width} gutter={gutter} hanging={hanging}",
+            );
+
+            // Well-formed list: distinct sorted char boundaries inside
+            // the line.  Lower bound: each segment is >= 1 row.
+            let mut good: Vec<(usize, u16)> = Vec::new();
+            for (b, _) in text.char_indices() {
+                if b > 0 && next() % 4 == 0 {
+                    good.push((line_start + b, (next() % 8) as u16));
+                }
+            }
+            good.sort_unstable();
+            let rows = count_visual_rows_for_text_with_soft_breaks(
+                &text, line_start, &good, width, gutter, hanging,
+            );
+            assert!(
+                rows as usize >= good.len() + 1,
+                "rows={rows} < segments={}: text={text:?} breaks={good:?} \
+                 width={width} gutter={gutter} hanging={hanging}",
+                good.len() + 1,
+            );
+        }
+    }
+
     // -------------------------------------------------------------------
     // Layer 3 (partial): shadow-model property test.
     //
