@@ -1937,6 +1937,11 @@
           "const": "inlay_hints"
         },
         {
+          "description": "Code lens annotations and commands (exclusive)",
+          "type": "string",
+          "const": "code_lens"
+        },
+        {
           "description": "Folding ranges (exclusive)",
           "type": "string",
           "const": "folding_range"
