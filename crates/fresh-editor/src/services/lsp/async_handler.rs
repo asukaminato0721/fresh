@@ -100,6 +100,7 @@ fn is_informational_method(method: &str) -> bool {
     matches!(
         method,
         "textDocument/hover"
+            | "textDocument/codeLens"
             | "textDocument/completion"
             | "textDocument/signatureHelp"
             | "textDocument/definition"
@@ -368,6 +369,8 @@ fn create_client_capabilities() -> ClientCapabilities {
         CodeActionClientCapabilities, CodeActionKindLiteralSupport, CodeActionLiteralSupport,
         CompletionClientCapabilities, CompletionItemCapability,
         CompletionItemCapabilityResolveSupport, DiagnosticClientCapabilities, DiagnosticTag,
+        CodeLensClientCapabilities, CodeLensWorkspaceClientCapabilities,
+        CompletionClientCapabilities, DiagnosticClientCapabilities, DiagnosticTag,
         DiagnosticWorkspaceClientCapabilities, DocumentFormattingClientCapabilities,
         DocumentHighlightClientCapabilities, DocumentRangeFormattingClientCapabilities,
         DocumentSymbolClientCapabilities, DynamicRegistrationClientCapabilities,
@@ -423,6 +426,9 @@ fn create_client_capabilities() -> ClientCapabilities {
             // all open docs of the language; servers only send them because we
             // advertise refresh support here (sinelaw/fresh#2195 §2).
             inlay_hint: Some(InlayHintWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
+            code_lens: Some(CodeLensWorkspaceClientCapabilities {
                 refresh_support: Some(true),
             }),
             semantic_tokens: Some(SemanticTokensWorkspaceClientCapabilities {
@@ -553,6 +559,9 @@ fn create_client_capabilities() -> ClientCapabilities {
             inlay_hint: Some(InlayHintClientCapabilities {
                 dynamic_registration: Some(true),
                 ..Default::default()
+            }),
+            code_lens: Some(CodeLensClientCapabilities {
+                dynamic_registration: Some(true),
             }),
             diagnostic: Some(DiagnosticClientCapabilities {
                 dynamic_registration: Some(true),
@@ -725,6 +734,12 @@ fn extract_capability_summary(caps: &ServerCapabilities) -> ServerCapabilitySumm
             lsp_types::OneOf::Left(v) => *v,
             lsp_types::OneOf::Right(_) => true,
         }),
+        code_lens: caps.code_lens_provider.is_some(),
+        code_lens_resolve: caps
+            .code_lens_provider
+            .as_ref()
+            .and_then(|p| p.resolve_provider)
+            .unwrap_or(false),
         folding_ranges: bool_or_options(&caps.folding_range_provider, |p| match p {
             lsp_types::FoldingRangeProviderCapability::Simple(v) => *v,
             _ => true,
@@ -885,6 +900,9 @@ enum LspCommand {
         end_line: u32,
         end_char: u32,
     },
+
+    /// Request code lenses for a document
+    CodeLens { request_id: u64, uri: Uri },
 
     /// Request folding ranges for a document
     FoldingRange { request_id: u64, uri: Uri },
@@ -2571,6 +2589,88 @@ impl LspState {
         }
     }
 
+    fn supports_code_lens_resolve(&self) -> bool {
+        self.capabilities
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|caps| caps.code_lens_provider.as_ref())
+            .and_then(|provider| provider.resolve_provider)
+            .unwrap_or(false)
+    }
+
+    /// Handle code lens request (LSP 3.17)
+    async fn handle_code_lens(
+        &self,
+        request_id: u64,
+        uri: Uri,
+        pending: &PendingRequests,
+    ) -> Result<(), String> {
+        use lsp_types::CodeLensParams;
+
+        tracing::trace!("LSP: code lens request for {}", uri.as_str());
+
+        let params = CodeLensParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        };
+
+        match self
+            .send_request_sequential::<_, Option<Vec<lsp_types::CodeLens>>>(
+                "textDocument/codeLens",
+                Some(params),
+                pending,
+            )
+            .await
+        {
+            Ok(lenses) => {
+                let mut lenses = lenses.unwrap_or_default();
+                if self.supports_code_lens_resolve() {
+                    for lens in &mut lenses {
+                        if lens.command.is_none() {
+                            match self
+                                .send_request_sequential::<_, lsp_types::CodeLens>(
+                                    "codeLens/resolve",
+                                    Some(lens.clone()),
+                                    pending,
+                                )
+                                .await
+                            {
+                                Ok(resolved) => *lens = resolved,
+                                Err(e) => {
+                                    tracing::debug!("Code lens resolve failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let uri_string = uri.as_str().to_string();
+                tracing::trace!(
+                    "LSP: received {} code lenses for {}",
+                    lenses.len(),
+                    uri_string
+                );
+                let _ = self.async_tx.send(AsyncMessage::LspCodeLens {
+                    request_id,
+                    uri: uri_string,
+                    lenses,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                tracing::debug!("Code lens request failed: {}", e);
+                let _ = self.async_tx.send(AsyncMessage::LspCodeLens {
+                    request_id,
+                    uri: uri.as_str().to_string(),
+                    lenses: Vec::new(),
+                });
+                Err(e)
+            }
+        }
+    }
+
     /// Handle folding range request
     async fn handle_folding_ranges(
         &self,
@@ -3606,6 +3706,21 @@ impl LspTask {
                         });
                     }
                 }
+                LspCommand::CodeLens { request_id, uri } => {
+                    if initialized {
+                        tracing::info!("Processing CodeLens request for {}", uri.as_str());
+                        spawn_request!(state, pending, |s, p| s
+                            .handle_code_lens(request_id, uri, &p)
+                            .await);
+                    } else {
+                        tracing::trace!("LSP not initialized, cannot get code lenses");
+                        let _ = state.async_tx.send(AsyncMessage::LspCodeLens {
+                            request_id,
+                            uri: uri.as_str().to_string(),
+                            lenses: Vec::new(),
+                        });
+                    }
+                }
                 LspCommand::FoldingRange { request_id, uri } => {
                     if initialized {
                         tracing::info!("Processing FoldingRange request for {}", uri.as_str());
@@ -4327,6 +4442,16 @@ async fn handle_message_dispatch(
                         language
                     );
                     let _ = async_tx.send(AsyncMessage::LspInlayHintRefresh {
+                        language: language.to_string(),
+                    });
+                    null_response(request.id)
+                }
+                "workspace/codeLens/refresh" => {
+                    tracing::info!(
+                        "LSP ({}) requested code-lens refresh (workspace/codeLens/refresh)",
+                        language
+                    );
+                    let _ = async_tx.send(AsyncMessage::LspCodeLensRefresh {
                         language: language.to_string(),
                     });
                     null_response(request.id)
@@ -5158,6 +5283,13 @@ impl LspHandle {
             .map_err(|_| "Failed to send inlay_hints command".to_string())
     }
 
+    /// Request code lenses for a document.
+    pub fn code_lens(&self, request_id: u64, uri: Uri) -> Result<(), String> {
+        self.command_tx
+            .try_send(LspCommand::CodeLens { request_id, uri })
+            .map_err(|_| "Failed to send code_lens command".to_string())
+    }
+
     /// Request folding ranges for a document
     pub fn folding_ranges(&self, request_id: u64, uri: Uri) -> Result<(), String> {
         self.command_tx
@@ -5550,6 +5682,11 @@ mod tests {
             "document_symbol must advertise dynamicRegistration"
         );
         assert_eq!(
+            td.code_lens.as_ref().and_then(|c| c.dynamic_registration),
+            Some(true),
+            "code_lens must advertise dynamicRegistration"
+        );
+        assert_eq!(
             caps.workspace
                 .as_ref()
                 .and_then(|w| w.symbol.as_ref())
@@ -5560,10 +5697,9 @@ mod tests {
     }
 
     #[test]
-    fn advertises_inlay_hint_and_semantic_tokens_refresh_support() {
+    fn advertises_lsp_workspace_refresh_support() {
         // A server only sends `workspace/inlayHint/refresh` (and the semantic
-        // tokens equivalent) when the client advertised refresh support; we now
-        // handle both, so both must be advertised (sinelaw/fresh#2195 §2).
+        // tokens/codeLens equivalents) when the client advertised refresh support.
         let caps = create_client_capabilities();
         let workspace = caps.workspace.as_ref().expect("workspace caps must be set");
 
@@ -5574,6 +5710,11 @@ mod tests {
                 .and_then(|c| c.refresh_support),
             Some(true),
             "workspace.inlayHint.refreshSupport must be advertised"
+        );
+        assert_eq!(
+            workspace.code_lens.as_ref().and_then(|c| c.refresh_support),
+            Some(true),
+            "workspace.codeLens.refreshSupport must be advertised"
         );
         assert_eq!(
             workspace
