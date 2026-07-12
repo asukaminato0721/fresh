@@ -367,10 +367,9 @@ impl LspClientState {
 fn create_client_capabilities() -> ClientCapabilities {
     use lsp_types::{
         CodeActionClientCapabilities, CodeActionKindLiteralSupport, CodeActionLiteralSupport,
+        CodeLensClientCapabilities, CodeLensWorkspaceClientCapabilities,
         CompletionClientCapabilities, CompletionItemCapability,
         CompletionItemCapabilityResolveSupport, DiagnosticClientCapabilities, DiagnosticTag,
-        CodeLensClientCapabilities, CodeLensWorkspaceClientCapabilities,
-        CompletionClientCapabilities, DiagnosticClientCapabilities, DiagnosticTag,
         DiagnosticWorkspaceClientCapabilities, DocumentFormattingClientCapabilities,
         DocumentHighlightClientCapabilities, DocumentRangeFormattingClientCapabilities,
         DocumentSymbolClientCapabilities, DynamicRegistrationClientCapabilities,
