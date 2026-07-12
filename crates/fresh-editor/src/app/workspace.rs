@@ -403,6 +403,9 @@ impl Editor {
         if let Some(enable_inlay_hints) = overrides.enable_inlay_hints {
             self.config_mut().editor.enable_inlay_hints = enable_inlay_hints;
         }
+        if let Some(enable_code_lens) = overrides.enable_code_lens {
+            self.config_mut().editor.enable_code_lens = enable_code_lens;
+        }
         // `overrides.menu_bar_hidden` is a legacy field — kept for serde
         // compatibility with workspaces written by older builds, but no
         // longer applied: menu bar visibility is now a global preference.
@@ -2351,6 +2354,7 @@ impl crate::app::window::Window {
             line_wrap: Some(cfg.line_wrap),
             syntax_highlighting: Some(cfg.syntax_highlighting),
             enable_inlay_hints: Some(cfg.enable_inlay_hints),
+            enable_code_lens: Some(cfg.enable_code_lens),
             mouse_enabled: Some(self.mouse_enabled),
             menu_bar_hidden: None,
         };
