@@ -43,6 +43,8 @@ Fresh includes a visual Theme Editor for creating and customizing themes:
    - Press `Enter` on any color field to edit it
    - Enter a hex color (`#RRGGBB`) or named color (e.g., `red`, `blue`)
    - Colors are applied immediately as you edit
+   - Each syntax color has an `Attributes` row accepting comma-separated text
+     attributes: `bold`, `italic`, `underlined`, `dim`, and `reversed`
 
 4. **Theme Editor Shortcuts**:
    | Action | Key |
@@ -80,14 +82,17 @@ Themes are stored as JSON files. You can also edit them directly at `~/.config/f
     "selection_bg": [38, 79, 120]
   },
   "syntax": {
-    "keyword": [86, 156, 214],
+    "keyword": { "color": [86, 156, 214], "modifier": ["bold"] },
     "string": [206, 145, 120],
-    "comment": [106, 153, 85]
+    "comment": { "color": [106, 153, 85], "modifier": ["italic"] }
   }
 }
 ```
 
 Colors are specified as `[R, G, B]` arrays with values from 0-255.
+A syntax category is either a bare color or an object bundling that color with
+a `modifier` list of `bold`, `italic`, `underlined`, `dim`, or `reversed`. Use
+a bare color (or omit `modifier`) for normal text.
 
 Only `name` is required. Any section or field you omit is filled in from a
 **base theme** (see [Inheritance](#inheritance) below), so a partial theme
@@ -129,4 +134,3 @@ from the matching built-in.
 ## Inspecting Theme Colors
 
 Use "Inspect Theme at Cursor" from the command palette to see which theme colors apply at the cursor position. You can also `Ctrl+Right-Click` on any text to see theme info in a popup.
-
