@@ -311,7 +311,7 @@ impl VirtualTextManager {
             "add_with_theme_keys_in_namespace requires BeforeChar or AfterChar"
         );
 
-        let marker_id = marker_list.create(position, false);
+        let marker_id = marker_list.create(position);
 
         let id = VirtualTextId(self.next_id);
         self.next_id += 1;
