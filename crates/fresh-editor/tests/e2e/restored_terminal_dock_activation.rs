@@ -64,6 +64,7 @@ fn spawn_session_terminal(window: &mut fresh::app::window::Window, argv: &[&str]
             focus: true,
             persistent: false,
             command: Some(argv.clone()),
+            environment: Vec::new(),
             title: None,
         })
         .expect("session terminal should spawn");

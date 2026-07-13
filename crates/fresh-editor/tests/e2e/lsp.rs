@@ -3803,6 +3803,39 @@ fn test_inlay_hints_render_on_screen() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// CodeLens uses a full virtual line, so exercise the final render pipeline
+/// rather than only inspecting VirtualTextManager's internal state.
+#[test]
+fn test_code_lens_renders_on_screen() -> anyhow::Result<()> {
+    use lsp_types::{CodeLens, Command, Position, Range};
+
+    let mut harness = EditorTestHarness::new(80, 24)?;
+    harness.type_text("fn main() {}\n")?;
+
+    let lens = CodeLens {
+        range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+        command: Some(Command::new(
+            "Run".to_string(),
+            "fresh.test".to_string(),
+            None,
+        )),
+        data: None,
+    };
+    let state = harness.editor_mut().active_state_mut();
+    let buffer_len = state.buffer.len();
+    state.marker_list.adjust_for_insert(0, buffer_len);
+    fresh::app::Editor::apply_code_lens_to_state(state, &[lens]);
+
+    harness.render()?;
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("  Run"),
+        "expected CodeLens virtual line on screen:\n{screen}"
+    );
+    assert!(screen.contains("fn main() {}"));
+    Ok(())
+}
+
 /// Test that virtual text positions update when buffer is edited
 #[test]
 fn test_inlay_hints_position_tracking() -> anyhow::Result<()> {

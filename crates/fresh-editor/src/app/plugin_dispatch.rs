@@ -3836,6 +3836,7 @@ impl Editor {
                 focus: focus.unwrap_or(true),
                 persistent,
                 command,
+                environment: Vec::new(),
                 title: title.filter(|t| !t.is_empty()),
             })
         };

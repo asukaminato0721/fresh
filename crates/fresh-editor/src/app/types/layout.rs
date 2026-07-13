@@ -21,6 +21,8 @@ pub struct ViewLineMapping {
     /// the cursor on a position whose `line_end_byte` was inherited
     /// from the previous source row.
     pub is_plugin_virtual: bool,
+    /// Namespace of the virtual text that generated this visual row.
+    pub virtual_text_namespace: Option<String>,
 }
 
 impl ViewLineMapping {

@@ -95,6 +95,9 @@ pub struct PluginTerminalSpec {
     pub focus: bool,
     pub persistent: bool,
     pub command: Option<Vec<String>>,
+    /// Extra environment variables for the spawned command. These override
+    /// the activated project environment.
+    pub environment: Vec<(String, String)>,
     pub title: Option<String>,
 }
 
@@ -198,6 +201,17 @@ impl Window {
         persistent: bool,
         command_override: Option<Vec<String>>,
     ) -> Option<TerminalId> {
+        self.spawn_terminal_session_with_environment(cwd, persistent, command_override, &[])
+    }
+
+    /// Spawn a terminal command with caller-provided environment overrides.
+    pub fn spawn_terminal_session_with_environment(
+        &mut self,
+        cwd: Option<PathBuf>,
+        persistent: bool,
+        command_override: Option<Vec<String>>,
+        environment: &[(String, String)],
+    ) -> Option<TerminalId> {
         let (cols, rows) = self.get_terminal_dimensions();
 
         // Per-window async bridge — terminal output flows back through
@@ -238,11 +252,36 @@ impl Window {
         // container rather than on the host (see `Authority::terminal_command`).
         // Empty argv falls back to the interactive shell.
         let wrapper = match command_override {
-            Some(argv) if !argv.is_empty() => self.authority().terminal_command(&argv),
+            Some(mut argv) if !argv.is_empty() => {
+                let initial = self.authority().terminal_command(&argv);
+                if initial.manages_cwd && !environment.is_empty() {
+                    // For SSH/container backends CommandBuilder's environment
+                    // belongs to the local transport process. Put the overrides
+                    // inside the backend command so the runnable receives them.
+                    let mut remote_argv = Vec::with_capacity(environment.len() + argv.len() + 1);
+                    remote_argv.push("env".to_string());
+                    remote_argv.extend(
+                        environment
+                            .iter()
+                            .map(|(key, value)| format!("{key}={value}")),
+                    );
+                    remote_argv.append(&mut argv);
+                    self.authority().terminal_command(&remote_argv)
+                } else {
+                    initial
+                }
+            }
             _ => self.resolved_terminal_wrapper(),
         };
         let wrapper = self.apply_remote_terminal_env(wrapper);
-        let env_delta = self.terminal_env_delta(&wrapper);
+        let mut env_delta = self.terminal_env_delta(&wrapper);
+        if !wrapper.manages_cwd {
+            for (key, value) in environment {
+                env_delta.set.retain(|(existing, _)| existing != key);
+                env_delta.unset.retain(|existing| existing != key);
+                env_delta.set.push((key.clone(), value.clone()));
+            }
+        }
         match self.terminal_manager.spawn(
             cols,
             rows,
@@ -394,6 +433,7 @@ impl Window {
             focus,
             persistent,
             command,
+            environment,
             title,
         } = spec;
         // Derive the auto-title from the command's executable name
@@ -412,7 +452,7 @@ impl Window {
         });
         let resolved_title = title.or(auto_title);
         let terminal_id = self
-            .spawn_terminal_session(cwd, persistent, command)
+            .spawn_terminal_session_with_environment(cwd, persistent, command, &environment)
             .ok_or_else(|| "Failed to spawn terminal".to_string())?;
 
         // Register the leader pid with this window's process_groups
