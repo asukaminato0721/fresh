@@ -197,11 +197,22 @@ fn rust_analyzer_code_lens_task(command: &lsp_types::Command) -> Result<CodeLens
 }
 
 fn code_lens_command_at_column(
+    state: &crate::state::EditorState,
     lenses: &[lsp_types::CodeLens],
     line: u32,
     display_column: usize,
 ) -> Option<lsp_types::Command> {
-    let mut column = 2; // Matches the leading padding in the rendered virtual line.
+    let has_commands = lenses.iter().any(|lens| {
+        lens.range.start.line == line
+            && lens
+                .command
+                .as_ref()
+                .is_some_and(|command| !command.title.trim().is_empty())
+    });
+    if !has_commands {
+        return None;
+    }
+    let mut column = code_lens_line_indent(state, line);
     for command in lenses
         .iter()
         .filter(|lens| lens.range.start.line == line)
@@ -215,6 +226,21 @@ fn code_lens_command_at_column(
         column = end + 3; // " | "
     }
     None
+}
+
+fn code_lens_line_indent(state: &crate::state::EditorState, line: u32) -> usize {
+    let line_bytes = state.buffer.get_line(line as usize).unwrap_or_default();
+    let line_text = String::from_utf8_lossy(&line_bytes);
+    let tab_size = state.buffer_settings.tab_size.max(1);
+    let mut column = 0;
+    for ch in line_text.chars() {
+        match ch {
+            ' ' => column += 1,
+            '\t' => column += tab_size - (column % tab_size),
+            _ => break,
+        }
+    }
+    column
 }
 
 impl Editor {
@@ -1570,7 +1596,7 @@ impl Editor {
             return;
         }
 
-        let mut by_line: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        let mut by_line: BTreeMap<u32, (usize, Vec<String>)> = BTreeMap::new();
         for lens in lenses {
             let Some(command) = &lens.command else {
                 continue;
@@ -1578,10 +1604,12 @@ impl Editor {
             if command.title.trim().is_empty() {
                 continue;
             }
-            by_line
+            let indent = code_lens_line_indent(state, lens.range.start.line);
+            let (line_indent, titles) = by_line
                 .entry(lens.range.start.line)
-                .or_default()
-                .push(command.title.clone());
+                .or_insert_with(|| (indent, Vec::new()));
+            *line_indent = (*line_indent).min(indent);
+            titles.push(command.title.clone());
         }
 
         let style = Style::default()
@@ -1589,8 +1617,8 @@ impl Editor {
             .add_modifier(Modifier::ITALIC);
         let fg_theme_key = Some("editor.line_number_fg".to_string());
 
-        for (line, titles) in by_line {
-            let mut text = "  ".to_string();
+        for (line, (indent, titles)) in by_line {
+            let mut text = " ".repeat(indent);
             let mut text_overlays = Vec::with_capacity(titles.len());
             for (index, title) in titles.iter().enumerate() {
                 if index > 0 {
@@ -3655,7 +3683,7 @@ impl Editor {
             .and_then(|mapping| mapping.first_source_byte())?;
         let line = state.buffer.position_to_line_col(source_byte).0 as u32;
         let lenses = self.active_window().code_lenses.get(&buffer_id)?;
-        code_lens_command_at_column(lenses, line, click_target.text_col)
+        code_lens_command_at_column(state, lenses, line, click_target.text_col)
     }
 
     pub(crate) fn execute_code_lens(&mut self, index: usize) {
@@ -4357,11 +4385,11 @@ mod tests {
         }
     }
 
-    fn make_code_lens(line: u32, title: &str) -> CodeLens {
+    fn make_indented_code_lens(line: u32, character: u32, title: &str) -> CodeLens {
         CodeLens {
             range: Range {
-                start: Position { line, character: 0 },
-                end: Position { line, character: 0 },
+                start: Position { line, character },
+                end: Position { line, character },
             },
             command: Some(Command {
                 title: title.to_string(),
@@ -4484,7 +4512,10 @@ mod tests {
             state.marker_list.adjust_for_insert(0, state.buffer.len());
         }
 
-        let lenses = vec![make_code_lens(0, "Run Test"), make_code_lens(0, "Debug")];
+        let lenses = vec![
+            make_indented_code_lens(0, 3, "Run Test"),
+            make_indented_code_lens(0, 3, "Debug"),
+        ];
         Editor::apply_code_lens_to_state(&mut state, &lenses);
 
         let lines =
@@ -4493,7 +4524,7 @@ mod tests {
                 .query_lines_in_range(&state.marker_list, 0, state.buffer.len());
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].1.position, VirtualTextPosition::LineAbove);
-        assert_eq!(lines[0].1.text, "  Run Test | Debug");
+        assert_eq!(lines[0].1.text, "Run Test | Debug");
         assert_eq!(lines[0].1.text_overlays.len(), 2);
         assert!(lines[0]
             .1
@@ -4504,6 +4535,29 @@ mod tests {
             lines[0].1.fg_theme_key.as_deref(),
             Some("editor.line_number_fg")
         );
+    }
+
+    #[test]
+    fn test_code_lens_aligns_with_indented_symbol() {
+        let mut state = EditorState::new(
+            80,
+            24,
+            crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
+            test_fs(),
+        );
+        state.buffer = Buffer::from_str_test("impl Demo {\n\tfn run() {}\n}\n");
+        state.buffer_settings.tab_size = 4;
+        state.marker_list.adjust_for_insert(0, state.buffer.len());
+
+        let lenses = vec![make_indented_code_lens(1, 4, "Run")];
+        Editor::apply_code_lens_to_state(&mut state, &lenses);
+
+        let lines =
+            state
+                .virtual_texts
+                .query_lines_in_range(&state.marker_list, 0, state.buffer.len());
+        assert_eq!(lines[0].1.text, "    Run");
+        assert_eq!(lines[0].1.text_overlays[0].start, 4);
     }
 
     #[test]
@@ -4569,19 +4623,34 @@ mod tests {
 
     #[test]
     fn code_lens_title_hit_test_ignores_padding_and_separator() {
-        let lenses = vec![make_code_lens(3, "Run"), make_code_lens(3, "Debug")];
+        let mut state = EditorState::new(
+            80,
+            24,
+            crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
+            test_fs(),
+        );
+        state.buffer = Buffer::from_str_test("a\nb\nc\n    fn run() {}\n");
+        state.marker_list.adjust_for_insert(0, state.buffer.len());
+        let lenses = vec![
+            make_indented_code_lens(3, 7, "Run"),
+            make_indented_code_lens(3, 7, "Debug"),
+        ];
 
-        assert!(code_lens_command_at_column(&lenses, 3, 0).is_none());
+        assert!(code_lens_command_at_column(&state, &lenses, 3, 3).is_none());
         assert_eq!(
-            code_lens_command_at_column(&lenses, 3, 2).unwrap().title,
+            code_lens_command_at_column(&state, &lenses, 3, 4)
+                .unwrap()
+                .title,
             "Run"
         );
-        assert!(code_lens_command_at_column(&lenses, 3, 5).is_none());
+        assert!(code_lens_command_at_column(&state, &lenses, 3, 7).is_none());
         assert_eq!(
-            code_lens_command_at_column(&lenses, 3, 8).unwrap().title,
+            code_lens_command_at_column(&state, &lenses, 3, 10)
+                .unwrap()
+                .title,
             "Debug"
         );
-        assert!(code_lens_command_at_column(&lenses, 2, 2).is_none());
+        assert!(code_lens_command_at_column(&state, &lenses, 2, 4).is_none());
     }
 
     #[test]

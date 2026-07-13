@@ -3809,30 +3809,72 @@ fn test_inlay_hints_render_on_screen() -> anyhow::Result<()> {
 fn test_code_lens_renders_on_screen() -> anyhow::Result<()> {
     use lsp_types::{CodeLens, Command, Position, Range};
 
-    let mut harness = EditorTestHarness::new(80, 24)?;
-    harness.type_text("fn main() {}\n")?;
+    fn display_column(line: &str, needle: &str) -> Option<usize> {
+        line.find(needle)
+            .map(|byte| unicode_width::UnicodeWidthStr::width(&line[..byte]))
+    }
 
-    let lens = CodeLens {
-        range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-        command: Some(Command::new(
-            "Run".to_string(),
-            "fresh.test".to_string(),
-            None,
-        )),
-        data: None,
-    };
+    let mut harness = EditorTestHarness::new(80, 24)?;
+    harness
+        .type_text("#[cfg(test)]\nmod tests {\n    #[test]\n    fn emit_isolated_demo() {}\n}\n")?;
+
+    let lenses = [
+        CodeLens {
+            // rust-analyzer points at the symbol, not its source indentation.
+            range: Range::new(Position::new(1, 4), Position::new(1, 4)),
+            command: Some(Command::new(
+                "▶︎ Run Tests".to_string(),
+                "fresh.test".to_string(),
+                None,
+            )),
+            data: None,
+        },
+        CodeLens {
+            range: Range::new(Position::new(3, 7), Position::new(3, 7)),
+            command: Some(Command::new(
+                "▶︎ Run Test".to_string(),
+                "fresh.test".to_string(),
+                None,
+            )),
+            data: None,
+        },
+    ];
     let state = harness.editor_mut().active_state_mut();
     let buffer_len = state.buffer.len();
     state.marker_list.adjust_for_insert(0, buffer_len);
-    fresh::app::Editor::apply_code_lens_to_state(state, &[lens]);
+    fresh::app::Editor::apply_code_lens_to_state(state, &lenses);
 
     harness.render()?;
     let screen = harness.screen_to_string();
-    assert!(
-        screen.contains("  Run"),
-        "expected CodeLens virtual line on screen:\n{screen}"
+    let module_lens_column = screen
+        .lines()
+        .find(|line| line.contains("▶︎ Run Tests"))
+        .and_then(|line| display_column(line, "▶︎"))
+        .expect("rendered module CodeLens column");
+    let module_column = screen
+        .lines()
+        .find(|line| line.contains("mod tests {"))
+        .and_then(|line| display_column(line, "mod tests {"))
+        .expect("rendered module column");
+    assert_eq!(
+        module_lens_column, module_column,
+        "module CodeLens must align with the source indentation:\n{screen}"
     );
-    assert!(screen.contains("fn main() {}"));
+
+    let function_lens_column = screen
+        .lines()
+        .find(|line| line.contains("▶︎ Run Test") && !line.contains("▶︎ Run Tests"))
+        .and_then(|line| display_column(line, "▶︎"))
+        .expect("rendered function CodeLens column");
+    let function_column = screen
+        .lines()
+        .find(|line| line.contains("fn emit_isolated_demo() {}"))
+        .and_then(|line| display_column(line, "fn emit_isolated_demo() {}"))
+        .expect("rendered function column");
+    assert_eq!(
+        function_lens_column, function_column,
+        "function CodeLens must align with the source indentation:\n{screen}"
+    );
     Ok(())
 }
 
