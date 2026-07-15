@@ -33,6 +33,7 @@
     "code-tour.ts",
     "csharp_support.ts",
     "css-lsp.ts",
+    "dap.ts",
     "dart-lsp.ts",
     "dashboard.ts",
     "devcontainer.ts",
