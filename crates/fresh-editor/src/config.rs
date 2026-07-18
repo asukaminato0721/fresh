@@ -6522,8 +6522,15 @@ impl Config {
         languages.insert(
             "starlark".to_string(),
             LanguageConfig {
-                extensions: vec!["bzl".to_string(), "star".to_string()],
-                filenames: vec!["BUILD".to_string(), "WORKSPACE".to_string()],
+                extensions: vec!["bzl".to_string(), "star".to_string(), "bazel".to_string()],
+                filenames: vec![
+                    "BUILD".to_string(),
+                    "BUILD.bazel".to_string(),
+                    "MODULE.bazel".to_string(),
+                    "REPO.bazel".to_string(),
+                    "WORKSPACE".to_string(),
+                    "WORKSPACE.bazel".to_string(),
+                ],
                 grammar: "Starlark".to_string(),
                 comment_prefix: Some("#".to_string()),
                 auto_indent: true,

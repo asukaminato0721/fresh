@@ -533,10 +533,16 @@ impl GrammarRegistry {
 
         // Starlark/Bazel
         let starlark_scope = "source.starlark".to_string();
-        map.insert("BUILD".to_string(), starlark_scope.clone());
-        map.insert("BUILD.bazel".to_string(), starlark_scope.clone());
-        map.insert("WORKSPACE".to_string(), starlark_scope.clone());
-        map.insert("WORKSPACE.bazel".to_string(), starlark_scope.clone());
+        for filename in [
+            "BUILD",
+            "BUILD.bazel",
+            "MODULE.bazel",
+            "REPO.bazel",
+            "WORKSPACE",
+            "WORKSPACE.bazel",
+        ] {
+            map.insert(filename.to_string(), starlark_scope.clone());
+        }
         map.insert("Tiltfile".to_string(), starlark_scope);
 
         // Justfile (various casings)
@@ -854,6 +860,7 @@ impl GrammarRegistry {
             ("pot", "Gettext PO"),
             ("pbxproj", "Xcode Project"),
             ("xcodeproj", "Xcode Project"),
+            ("bazel", "Starlark"),
             ("ts", "TypeScript"),
             ("js", "JavaScript"),
             ("py", "Python"),
@@ -2276,6 +2283,43 @@ mod tests {
         assert_eq!(entry.display_name, "Smali");
         assert!(entry.engines.syntect.is_some());
         assert!(entry.engines.tree_sitter.is_none());
+    }
+
+    #[test]
+    fn test_bazel_files_resolve_to_starlark_grammar() {
+        let syntax = SyntaxDefinition::load_from_str(STARLARK_GRAMMAR, true, Some("Starlark"))
+            .expect("Starlark grammar should parse");
+        for extension in ["bzl", "star", "bazel"] {
+            assert!(
+                syntax.file_extensions.iter().any(|ext| ext == extension),
+                "Starlark grammar should declare .{extension}"
+            );
+        }
+
+        let registry = GrammarRegistry::default();
+        for path in [
+            "defs.bzl",
+            "BUILD",
+            "BUILD.bazel",
+            "MODULE.bazel",
+            "REPO.bazel",
+            "WORKSPACE",
+            "WORKSPACE.bazel",
+        ] {
+            let entry = registry
+                .find_by_path(Path::new(path), None)
+                .unwrap_or_else(|| panic!("{path} should resolve"));
+            assert_eq!(entry.display_name, "Starlark", "for {path}");
+            assert!(entry.engines.syntect.is_some(), "for {path}");
+        }
+
+        assert_eq!(
+            registry
+                .find_by_name("bazel")
+                .expect("Bazel alias should resolve")
+                .display_name,
+            "Starlark"
+        );
     }
 
     #[test]

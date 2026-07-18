@@ -220,6 +220,7 @@ test_highlighting_works!(test_highlight_earthfile, "Earthfile", 2);
 test_highlighting_works!(test_highlight_tiltfile, "Tiltfile", 2);
 test_highlighting_works!(test_highlight_justfile, "justfile", 2);
 test_highlighting_works!(test_highlight_bazel, "BUILD.bazel", 2);
+test_highlighting_works!(test_highlight_bazel_module, "MODULE.bazel", 2);
 test_highlighting_works!(test_highlight_gomod, "go.mod", 2);
 test_highlighting_works!(test_highlight_yarn_lock, "yarn.lock", 2);
 test_highlighting_works!(test_highlight_clang_format, ".clang-format", 2);
