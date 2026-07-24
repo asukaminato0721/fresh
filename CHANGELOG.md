@@ -5,6 +5,7 @@
 ### Features
 
 * **`Run Agent…` command — start a coding agent from anywhere** - a new command-palette command opens a compact picker to launch any of the starting processes the New-Workspace dialogue offers (a bare terminal or an agent: `claude`, `codex`, `opencode`, `aider`) without the full dialogue. Choose whether it runs in your **current workspace** (a terminal in the window you're already in, alongside your open buffers — no new worktree) or a **new workspace** (a fresh worktree + window), toggle auto mode, and optionally hand it a first prompt; the picker remembers your last choice. Either way the launch reuses the dialogue's exact logic — session-id pinning, auto-mode flags, Fresh-CLI system-prompt injection, the `FRESH_CMD_TOKEN` capability, and environment — so an agent started this way is indistinguishable from a dialogue-launched one.
+* **File Explorer sticky parents** - scrolling inside a nested folder now keeps its expanded ancestor folders stacked at the top of the sidebar, matching VS Code (#2705).
 
 ### Bug Fixes
 
