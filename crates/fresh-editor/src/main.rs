@@ -51,7 +51,7 @@ struct Cli {
     #[arg(long, num_args = 1.., value_name = "COMMAND", allow_hyphen_values = true)]
     cmd: Vec<String>,
 
-    /// Files to open (supports file:line:col, ranges, and @"message" syntax)
+    /// Files to open (supports +LINE FILE, file:line:col, ranges, and @"message" syntax)
     #[arg(value_name = "FILES")]
     files: Vec<String>,
 
@@ -465,7 +465,7 @@ impl From<Cli> for Args {
         let no_init = cli.no_init || safe;
 
         Args {
-            files,
+            files: normalize_vim_line_args(files),
             stdin: cli.stdin,
             no_plugins,
             no_init,
@@ -499,6 +499,31 @@ impl From<Cli> for Args {
             web: cli.web,
         }
     }
+}
+
+/// Translate Vim-style `+LINE FILE` arguments into Fresh's existing
+/// `FILE:LINE` syntax. Keeping a dangling or non-numeric `+...` argument
+/// unchanged lets it continue to work as a literal filename.
+fn normalize_vim_line_args(files: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(files.len());
+    let mut files = files.into_iter().peekable();
+
+    while let Some(arg) = files.next() {
+        let line = arg
+            .strip_prefix('+')
+            .filter(|digits| !digits.is_empty())
+            .and_then(|digits| digits.parse::<usize>().ok());
+
+        match (line, files.peek()) {
+            (Some(line), Some(_)) => {
+                let file = files.next().expect("peeked file argument");
+                normalized.push(format!("{file}:{line}"));
+            }
+            _ => normalized.push(arg),
+        }
+    }
+
+    normalized
 }
 
 /// Parsed file location from CLI argument in file:line:col format
@@ -4030,6 +4055,10 @@ fn build_localized_after_help() -> String {
         t("cli.file_syntax.line")
     ));
     out.push_str(&format!(
+        "  +10 file.txt                  {}\n",
+        t("cli.file_syntax.line")
+    ));
+    out.push_str(&format!(
         "  file.txt:10:5                {}\n",
         t("cli.file_syntax.line_col")
     ));
@@ -5198,6 +5227,43 @@ mod tests {
         assert_eq!(locs[2].path, PathBuf::from("file3.cpp"));
         assert_eq!(locs[2].line, Some(20));
         assert_eq!(locs[2].column, Some(5));
+    }
+
+    #[test]
+    fn test_vim_line_argument_opens_following_file_at_line() {
+        let cli = Cli::try_parse_from(["fresh", "+42", "foo.txt"]).unwrap();
+        let args: Args = cli.into();
+
+        assert_eq!(args.files, ["foo.txt:42"]);
+        let loc = parse_file_location(&args.files[0]);
+        assert_eq!(loc.path, PathBuf::from("foo.txt"));
+        assert_eq!(loc.line, Some(42));
+        assert_eq!(loc.column, None);
+    }
+
+    #[test]
+    fn test_vim_line_arguments_support_multiple_files() {
+        let files = vec![
+            "+10".to_string(),
+            "one.txt".to_string(),
+            "+20".to_string(),
+            "two.txt".to_string(),
+            "three.txt".to_string(),
+        ];
+
+        assert_eq!(
+            normalize_vim_line_args(files),
+            ["one.txt:10", "two.txt:20", "three.txt"]
+        );
+    }
+
+    #[test]
+    fn test_non_numeric_or_dangling_plus_argument_remains_a_filename() {
+        assert_eq!(
+            normalize_vim_line_args(vec!["+notes".to_string(), "file.txt".to_string()]),
+            ["+notes", "file.txt"]
+        );
+        assert_eq!(normalize_vim_line_args(vec!["+42".to_string()]), ["+42"]);
     }
 
     #[test]
