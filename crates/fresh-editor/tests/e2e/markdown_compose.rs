@@ -362,6 +362,168 @@ fn test_markdown_compose_toggle() {
     // the "Markdown: Toggle Compose" command
 }
 
+/// Issue #2625: reStructuredText files should be eligible for compose mode.
+///
+/// RST uses different markup from Markdown, so its compose view has a dedicated
+/// parser for section adornments, inline markup, roles, links, directives,
+/// lists, and grid tables.
+#[test]
+fn test_rst_compose_toggle_renders_rst_syntax() {
+    use crate::common::harness::{copy_plugin, copy_plugin_lib};
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let project_root = temp_dir.path().join("project");
+    std::fs::create_dir(&project_root).unwrap();
+    let plugins_dir = project_root.join("plugins");
+    std::fs::create_dir(&plugins_dir).unwrap();
+    copy_plugin(&plugins_dir, "markdown_compose");
+    copy_plugin_lib(&plugins_dir);
+
+    let rst_path = project_root.join("guide.rst");
+    std::fs::write(
+        &rst_path,
+        "Compose for RST\n===============\n\n\
+         This has **strong text**, *emphasis*, ``literal spans``, an \
+         `embedded link <https://example.com>`_, and :ref:`cross references`.\n\n\
+         - A deliberately long list item keeps a hanging indent when it wraps \
+         inside the centered compose page instead of returning to column zero.\n\n\
+         :Author: Fresh contributors\n\n\
+         .. note:: Compose renders directives without their source marker.\n\n\
+         +----------+----------+\n\
+         | Name     | Value    |\n\
+         +==========+==========+\n\
+         | compose  | enabled  |\n\
+         +----------+----------+\n",
+    )
+    .unwrap();
+
+    let mut harness =
+        EditorTestHarness::with_config_and_working_dir(100, 30, Default::default(), project_root)
+            .unwrap();
+    harness.open_file(&rst_path).unwrap();
+    harness.render().unwrap();
+
+    // Source mode starts with the line-number separator.
+    assert!(
+        harness
+            .screen_to_string()
+            .lines()
+            .any(|line| line.contains("Compose for RST") && line.contains('│')),
+        "RST should start in source mode with line numbers:\n{}",
+        harness.screen_to_string(),
+    );
+
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+    harness.type_text("Markdown: Toggle Compose").unwrap();
+    harness.wait_for_screen_contains("Toggle Compose").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.wait_for_prompt_closed().unwrap();
+    harness
+        .wait_until_stable(|h| {
+            let screen = h.screen_to_string();
+            screen.contains("Markdown Compose: ON")
+                && screen.contains("literal spans")
+                && screen.contains("cross")
+                && screen.contains("references")
+                && screen.contains("┌")
+                && screen.contains("Note: Compose renders directives")
+        })
+        .unwrap();
+
+    let compose_screen = harness.screen_to_string();
+    assert!(
+        compose_screen
+            .lines()
+            .filter(|line| {
+                line.contains("Compose for RST")
+                    || line.contains("literal spans")
+                    || line.contains("cross references")
+            })
+            .all(|line| !line.contains('│')),
+        "RST compose mode should hide line numbers:\n{compose_screen}",
+    );
+    assert!(
+        !compose_screen.contains("===============")
+            && !compose_screen.contains("**strong text**")
+            && !compose_screen.contains("*emphasis*")
+            && !compose_screen.contains("``literal spans``")
+            && !compose_screen.contains(":ref:`cross references`")
+            && !compose_screen.contains(":Author:")
+            && !compose_screen.contains(".. note::")
+            && !compose_screen.contains("+----------+"),
+        "RST compose mode should conceal source syntax:\n{compose_screen}",
+    );
+    assert!(
+        compose_screen.contains("strong text")
+            && compose_screen.contains("emphasis")
+            && compose_screen.contains("literal spans")
+            && compose_screen.contains("embedded link — https://example.com")
+            && compose_screen.contains("cross")
+            && compose_screen.contains("references")
+            && compose_screen.contains("Author: Fresh contributors")
+            && compose_screen.contains("┌──────────┬──────────┐")
+            && compose_screen.contains("│ Name     │ Value    │")
+            && compose_screen.contains("└──────────┴──────────┘"),
+        "RST compose mode should render inline constructs and grid tables:\n{compose_screen}",
+    );
+    assert!(
+        compose_screen
+            .lines()
+            .any(|line| line.starts_with("  page instead of returning")),
+        "Wrapped RST list continuations should keep a hanging indent:\n{compose_screen}",
+    );
+
+    // Like Markdown compose, moving the cursor into a concealed span should
+    // reveal that span's source markers without rebuilding the whole view.
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.type_text("4").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .send_key_repeat(KeyCode::Right, KeyModifiers::NONE, 10)
+        .unwrap();
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("**strong text**"))
+        .unwrap();
+
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+    harness.type_text("Markdown: Toggle Compose").unwrap();
+    harness.wait_for_screen_contains("Toggle Compose").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.wait_for_prompt_closed().unwrap();
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("Markdown Compose: OFF"))
+        .unwrap();
+
+    assert!(
+        harness
+            .screen_to_string()
+            .lines()
+            .any(|line| line.contains("Compose for RST") && line.contains('│')),
+        "Disabling compose should restore RST source-mode line numbers:\n{}",
+        harness.screen_to_string(),
+    );
+    harness.assert_screen_contains("**strong text**");
+    harness.assert_screen_contains("``literal spans``");
+    harness.assert_screen_contains(":ref:`cross references`");
+    harness.assert_screen_contains("+----------+----------+");
+    harness.assert_no_plugin_errors();
+}
+
 /// Test that plugin doesn't crash on empty buffer
 #[test]
 fn test_empty_buffer_handling() {

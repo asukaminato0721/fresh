@@ -21,6 +21,7 @@ Keyboard and mouse input is now parsed by our own `fresh-input-parser` crate ins
 * **Classic Mac (CR) line endings** are now fully supported (#2736, requested by @720720).
 * **`.editorconfig` support** - `indent_style`/`indent_size`/`tab_width` are picked up automatically (#959, requested by @nyurik).
 * **Save All** - save every modified buffer at once from the File menu (#2289, requested by @alspaughb).
+* **reStructuredText compose mode** - `.rst` and `.rest` files get the same syntax-aware compose experience as Markdown, including rendered section headings, inline markup, links, roles, directives, hanging list indents, and grid tables (#2625, requested by @asukaminato0721).
 
 ### Bug Fixes
 

@@ -23,8 +23,8 @@ const config: MarkdownConfig = {
 };
 
 // When true, compose/preview mode is automatically enabled for all open and
-// newly opened markdown buffers.  Toggled by the "Toggle Compose/Preview
-// (All Files)" command.  Persisted across sessions via global plugin state.
+// newly opened supported markup buffers. Toggled by the "Toggle Compose/Preview
+// (All Files)" command. Persisted across sessions via global plugin state.
 function getGlobalComposeEnabled(): boolean {
   return (editor.getGlobalState("globalComposeEnabled") as boolean) ?? false;
 }
@@ -125,6 +125,10 @@ const TABLE_BORDER_NS = "md-tb";
 // Marks are emitted for every batch — including batches with no headings —
 // so a line that stops being a heading loses its mark.
 const HEADING_MARKER_NS = "md-headings";
+const RST_SYNTAX_NS = "rst-syntax";
+const RST_EMPHASIS_NS = "rst-emphasis";
+const RST_WRAP_NS = "rst-wrap";
+const RST_HEADING_MARKER_NS = "rst-headings";
 
 // Heading level → marker color. Theme keys resolve at render time, so the
 // marks follow theme changes like the emphasis overlays do.
@@ -610,6 +614,18 @@ function isMarkdownFile(path: string): boolean {
   return path.endsWith('.md') || path.endsWith('.markdown');
 }
 
+// reStructuredText uses different inline, heading, and table syntax from
+// Markdown. It still benefits from compose mode's centered page, hidden line
+// numbers, and native wrapping, but must not go through the Markdown-specific
+// conceal/table pipeline below.
+function isRstFile(path: string): boolean {
+  return path.endsWith('.rst') || path.endsWith('.rest');
+}
+
+function isComposeFile(path: string): boolean {
+  return isMarkdownFile(path) || isRstFile(path);
+}
+
 
 // Enable full compose mode for a buffer (explicit toggle or restore from session).
 // Idempotent: safe to call when already in compose mode (re-applies line numbers,
@@ -617,7 +633,7 @@ function isMarkdownFile(path: string): boolean {
 // ViewMode::Compose but the plugin hasn't applied its settings yet).
 function enableMarkdownCompose(bufferId: number): void {
   const info = editor.getBufferInfo(bufferId);
-  if (!info || !isMarkdownFile(info.path)) return;
+  if (!info || !isComposeFile(info.path)) return;
 
   // Tell Rust side this buffer is in compose mode (idempotent)
   editor.setViewMode(bufferId, "compose");
@@ -662,6 +678,10 @@ function disableMarkdownCompose(bufferId: number): void {
     editor.clearConcealNamespace(bufferId, "md-syntax");
     editor.clearSoftBreakNamespace(bufferId, "md-wrap");
     editor.clearScrollbarMarkers(bufferId, HEADING_MARKER_NS);
+    editor.clearNamespace(bufferId, RST_EMPHASIS_NS);
+    editor.clearConcealNamespace(bufferId, RST_SYNTAX_NS);
+    editor.clearSoftBreakNamespace(bufferId, RST_WRAP_NS);
+    editor.clearScrollbarMarkers(bufferId, RST_HEADING_MARKER_NS);
 
     editor.refreshLines(bufferId);
     editor.debug(`Markdown compose disabled for buffer ${bufferId}`);
@@ -675,8 +695,9 @@ function markdownToggleCompose() : void {
 
   if (!info) return;
 
-  // Only work with markdown files
-  if (!info.path.endsWith('.md') && !info.path.endsWith('.markdown')) {
+  // Compose rendering uses a dedicated syntax-aware pipeline for both
+  // Markdown and reStructuredText.
+  if (!isComposeFile(info.path)) {
     editor.setStatus(editor.t("status.not_markdown_file"));
     return;
   }
@@ -693,14 +714,15 @@ function markdownToggleCompose() : void {
 }
 registerHandler("markdownToggleCompose", markdownToggleCompose);
 
-// Toggle compose/preview mode for ALL open (and future) markdown buffers.
+// Toggle compose/preview mode for ALL open (and future) supported markup
+// buffers.
 function markdownToggleComposeAll(): void {
   const newValue = !getGlobalComposeEnabled();
   setGlobalComposeEnabled(newValue);
 
   const buffers = editor.listBuffers();
   for (const buf of buffers) {
-    if (!isMarkdownFile(buf.path)) continue;
+    if (!isComposeFile(buf.path)) continue;
 
     if (newValue) {
       enableMarkdownCompose(buf.id);
@@ -1475,6 +1497,494 @@ function processLineConceals(
   }
 }
 
+// =============================================================================
+// reStructuredText compose rendering
+// =============================================================================
+
+type RstInlineType = "literal" | "strong" | "emphasis" | "link" | "role";
+
+interface RstInlineSpan {
+  type: RstInlineType;
+  matchStart: number;
+  matchEnd: number;
+  contentStart: number;
+  contentEnd: number;
+  concealRanges: Array<{start: number; end: number; replacement: string | null}>;
+  linkUrl?: string;
+}
+
+/**
+ * Detect the inline constructs that RST renders rather than displaying
+ * literally. More specific forms are claimed first so their punctuation is not
+ * subsequently reinterpreted as emphasis or a simple named reference.
+ */
+function findRstInlineSpans(text: string): RstInlineSpan[] {
+  const spans: RstInlineSpan[] = [];
+
+  function overlaps(start: number, end: number): boolean {
+    return spans.some((span) => start < span.matchEnd && end > span.matchStart);
+  }
+
+  function collect(
+    re: RegExp,
+    make: (match: RegExpExecArray) => RstInlineSpan,
+  ): void {
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(text)) !== null) {
+      const span = make(match);
+      if (!overlaps(span.matchStart, span.matchEnd)) spans.push(span);
+    }
+  }
+
+  // Inline literals: ``verbatim text``.
+  collect(/``([^`\n]+)``/g, (m) => {
+    const start = m.index;
+    const end = start + m[0].length;
+    return {
+      type: "literal",
+      matchStart: start,
+      matchEnd: end,
+      contentStart: start + 2,
+      contentEnd: end - 2,
+      concealRanges: [
+        { start, end: start + 2, replacement: null },
+        { start: end - 2, end, replacement: null },
+      ],
+    };
+  });
+
+  // Embedded URI: `Fresh <https://sinelaw.github.io/fresh/>`_.
+  collect(/`([^`<\n]+?)\s*<([^>\n]+)>`(__?)/g, (m) => {
+    const start = m.index;
+    const end = start + m[0].length;
+    const labelStart = start + 1;
+    const labelEnd = labelStart + m[1].length;
+    return {
+      type: "link",
+      matchStart: start,
+      matchEnd: end,
+      contentStart: labelStart,
+      contentEnd: labelEnd,
+      concealRanges: [
+        { start, end: start + 1, replacement: null },
+        { start: labelEnd, end, replacement: ` — ${m[2]}` },
+      ],
+      linkUrl: m[2],
+    };
+  });
+
+  // Prefix roles: :ref:`target`, :doc:`guide`, :class:`Widget`, ...
+  collect(/:([A-Za-z][\w.-]*):`([^`\n]+)`/g, (m) => {
+    const start = m.index;
+    const end = start + m[0].length;
+    const contentStart = start + m[1].length + 3;
+    return {
+      type: "role",
+      matchStart: start,
+      matchEnd: end,
+      contentStart,
+      contentEnd: end - 1,
+      concealRanges: [
+        { start, end: contentStart, replacement: null },
+        { start: end - 1, end, replacement: null },
+      ],
+    };
+  });
+
+  // Postfix roles: `value`:code:.
+  collect(/`([^`\n]+)`:([A-Za-z][\w.-]*):/g, (m) => {
+    const start = m.index;
+    const end = start + m[0].length;
+    const contentStart = start + 1;
+    const contentEnd = contentStart + m[1].length;
+    return {
+      type: "role",
+      matchStart: start,
+      matchEnd: end,
+      contentStart,
+      contentEnd,
+      concealRanges: [
+        { start, end: start + 1, replacement: null },
+        { start: contentEnd, end, replacement: null },
+      ],
+    };
+  });
+
+  // Named and anonymous references: `target`_ / `target`__.
+  collect(/`([^`\n]+)`(__?)/g, (m) => {
+    const start = m.index;
+    const end = start + m[0].length;
+    return {
+      type: "link",
+      matchStart: start,
+      matchEnd: end,
+      contentStart: start + 1,
+      contentEnd: end - m[2].length - 1,
+      concealRanges: [
+        { start, end: start + 1, replacement: null },
+        { start: end - m[2].length - 1, end, replacement: null },
+      ],
+    };
+  });
+
+  // Strong must be claimed before emphasis because both use '*'.
+  collect(/\*\*([^*\n]+)\*\*/g, (m) => {
+    const start = m.index;
+    const end = start + m[0].length;
+    return {
+      type: "strong",
+      matchStart: start,
+      matchEnd: end,
+      contentStart: start + 2,
+      contentEnd: end - 2,
+      concealRanges: [
+        { start, end: start + 2, replacement: null },
+        { start: end - 2, end, replacement: null },
+      ],
+    };
+  });
+  collect(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, (m) => {
+    const start = m.index;
+    const end = start + m[0].length;
+    return {
+      type: "emphasis",
+      matchStart: start,
+      matchEnd: end,
+      contentStart: start + 1,
+      contentEnd: end - 1,
+      concealRanges: [
+        { start, end: start + 1, replacement: null },
+        { start: end - 1, end, replacement: null },
+      ],
+    };
+  });
+
+  spans.sort((a, b) => a.matchStart - b.matchStart);
+  return spans;
+}
+
+/** Return the repeated punctuation character used by an RST section
+ * adornment, or null for an ordinary line. */
+function rstAdornmentChar(content: string): string | null {
+  const text = content.trim();
+  if (text.length < 3) return null;
+  const ch = text[0];
+  if (/[\p{L}\p{N}\s]/u.test(ch)) return null;
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] !== ch) return null;
+  }
+  return ch;
+}
+
+function rstHeadingLevel(adornment: string): number {
+  switch (adornment) {
+    case "=": return 1;
+    case "-": return 2;
+    case "~": return 3;
+    case "^": return 4;
+    case "\"": return 5;
+    default: return 3;
+  }
+}
+
+function rstGridBorder(content: string): boolean {
+  return /^\+(?:[-=]+\+)+$/.test(content.trim());
+}
+
+function rstGridRow(content: string): boolean {
+  const text = content.trim();
+  return text.startsWith("|") && text.endsWith("|");
+}
+
+/** Convert an RST grid table's existing ASCII frame to box drawing. The source
+ * already owns all column widths, so unlike Markdown tables no table model or
+ * padding pass is needed. */
+function processRstGridTableLine(
+  bufferId: number,
+  content: string,
+  byteStart: number,
+  byteEnd: number,
+  previous: LineInfoLike | undefined,
+  next: LineInfoLike | undefined,
+): boolean {
+  if (!rstGridBorder(content) && !rstGridRow(content)) return false;
+
+  const scopeEnd = byteEnd + 1;
+  if (rstGridRow(content)) {
+    for (let i = 0; i < content.length; i++) {
+      if (content[i] !== "|") continue;
+      editor.addConceal(
+        bufferId, RST_SYNTAX_NS,
+        charToByte(content, i, byteStart),
+        charToByte(content, i + 1, byteStart),
+        "│",
+      );
+    }
+    return true;
+  }
+
+  const previousIsRow = previous !== undefined && rstGridRow(previous.content);
+  const nextIsRow = next !== undefined && rstGridRow(next.content);
+  const left = !previousIsRow && nextIsRow ? "┌" : previousIsRow && !nextIsRow ? "└" : "├";
+  const middle = !previousIsRow && nextIsRow ? "┬" : previousIsRow && !nextIsRow ? "┴" : "┼";
+  const right = !previousIsRow && nextIsRow ? "┐" : previousIsRow && !nextIsRow ? "┘" : "┤";
+  const plusPositions: number[] = [];
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === "+") plusPositions.push(i);
+  }
+  for (let i = 0; i < content.length; i++) {
+    let replacement: string | null = null;
+    if (content[i] === "-" || content[i] === "=") replacement = "─";
+    if (content[i] === "+") {
+      const plusIndex = plusPositions.indexOf(i);
+      replacement = plusIndex === 0
+        ? left
+        : plusIndex === plusPositions.length - 1 ? right : middle;
+    }
+    if (replacement === null) continue;
+    editor.addConceal(
+      bufferId, RST_SYNTAX_NS,
+      charToByte(content, i, byteStart),
+      charToByte(content, i + 1, byteStart),
+      replacement,
+      "unless-cursor-in", byteStart, scopeEnd,
+    );
+  }
+  return true;
+}
+
+function processRstLineConceals(
+  bufferId: number,
+  line: LineInfoLike,
+  previous: LineInfoLike | undefined,
+  next: LineInfoLike | undefined,
+  isHeading: boolean,
+): void {
+  const { content, byte_start: byteStart, byte_end: byteEnd } = line;
+  editor.clearConcealsInRangeForNamespace(
+    bufferId, RST_SYNTAX_NS, byteStart, byteEnd,
+  );
+  editor.clearOverlaysInRangeForNamespace(
+    bufferId, RST_EMPHASIS_NS, byteStart, byteEnd,
+  );
+
+  const trimmed = content.trim();
+  const leading = content.length - content.trimStart().length;
+  const visibleEnd = content.replace(/[\r\n]+$/, "").length;
+  const scopeEnd = byteEnd + 1;
+
+  if (rstAdornmentChar(content) !== null) {
+    if (visibleEnd > leading) {
+      editor.addConceal(
+        bufferId, RST_SYNTAX_NS,
+        charToByte(content, leading, byteStart),
+        charToByte(content, visibleEnd, byteStart),
+        null,
+        "unless-cursor-in", byteStart, scopeEnd,
+      );
+    }
+    return;
+  }
+
+  if (isHeading) {
+    editor.addOverlay(
+      bufferId, RST_EMPHASIS_NS,
+      charToByte(content, leading, byteStart),
+      charToByte(content, visibleEnd, byteStart),
+      { bold: true, fg: "syntax.keyword" },
+    );
+  }
+
+  if (processRstGridTableLine(bufferId, content, byteStart, byteEnd, previous, next)) {
+    if (rstGridBorder(content)) return;
+  }
+
+  // Directives, comments and hyperlink targets are document machinery. Keep
+  // them one cursor movement away for editing, but remove them from the
+  // composed reading view. Images get the same compact banner treatment as
+  // Markdown images.
+  const image = trimmed.match(/^\.\.\s+(?:image|figure)::\s+(.+)$/);
+  if (image) {
+    editor.addConceal(
+      bufferId, RST_SYNTAX_NS, byteStart, byteEnd,
+      `Image — ${image[1]}`,
+      "unless-cursor-in", byteStart, scopeEnd,
+    );
+    return;
+  }
+  if (/^\.\.\s+_[^:]+:\s+\S/.test(trimmed)) {
+    editor.addConceal(
+      bufferId, RST_SYNTAX_NS, byteStart, byteEnd, null,
+      "unless-cursor-in", byteStart, scopeEnd,
+    );
+    return;
+  }
+  const directive = trimmed.match(/^\.\.\s+([A-Za-z][\w-]*)::(?:\s+(.*))?$/);
+  if (directive) {
+    const label = directive[1]
+      .split("-")
+      .map((part) => part.length ? part[0].toUpperCase() + part.slice(1) : part)
+      .join(" ");
+    const replacement = directive[2] ? `${label}: ${directive[2]}` : label;
+    editor.addConceal(
+      bufferId, RST_SYNTAX_NS, byteStart, byteEnd, replacement,
+      "unless-cursor-in", byteStart, scopeEnd,
+    );
+    editor.addOverlay(
+      bufferId, RST_EMPHASIS_NS, byteStart, byteEnd,
+      { bold: true, fg: "syntax.keyword" },
+    );
+    return;
+  }
+
+  // Field lists: ":Author: Fresh" reads as "Author: Fresh" with the field
+  // name emphasized. Reveal the leading colon while editing the marker.
+  const field = content.match(/^(\s*):([^:\n]+):(\s+)/);
+  if (field) {
+    const markerStart = field[1].length;
+    const nameStart = markerStart + 1;
+    const nameEnd = nameStart + field[2].length;
+    editor.addConceal(
+      bufferId, RST_SYNTAX_NS,
+      charToByte(content, markerStart, byteStart),
+      charToByte(content, markerStart + 1, byteStart),
+      null,
+      "unless-cursor-in",
+      charToByte(content, markerStart, byteStart),
+      charToByte(content, nameEnd + 1, byteStart),
+    );
+    editor.addOverlay(
+      bufferId, RST_EMPHASIS_NS,
+      charToByte(content, nameStart, byteStart),
+      charToByte(content, nameEnd, byteStart),
+      { bold: true, fg: "syntax.keyword" },
+    );
+  }
+
+  for (const span of findRstInlineSpans(content)) {
+    const byteContentStart = charToByte(content, span.contentStart, byteStart);
+    const byteContentEnd = charToByte(content, span.contentEnd, byteStart);
+    const byteMatchStart = charToByte(content, span.matchStart, byteStart);
+    const byteMatchEnd = charToByte(content, span.matchEnd, byteStart);
+
+    switch (span.type) {
+      case "literal":
+        editor.addOverlay(
+          bufferId, RST_EMPHASIS_NS, byteContentStart, byteContentEnd,
+          { fg: "syntax.constant" },
+        );
+        break;
+      case "strong":
+        editor.addOverlay(
+          bufferId, RST_EMPHASIS_NS, byteContentStart, byteContentEnd,
+          { bold: true },
+        );
+        break;
+      case "emphasis":
+        editor.addOverlay(
+          bufferId, RST_EMPHASIS_NS, byteContentStart, byteContentEnd,
+          { italic: true },
+        );
+        break;
+      case "link":
+        editor.addOverlay(
+          bufferId, RST_EMPHASIS_NS, byteContentStart, byteContentEnd,
+          {
+            fg: "syntax.link",
+            underline: true,
+            ...(span.linkUrl ? { url: span.linkUrl } : {}),
+          },
+        );
+        break;
+      case "role":
+        editor.addOverlay(
+          bufferId, RST_EMPHASIS_NS, byteContentStart, byteContentEnd,
+          { fg: "syntax.type" },
+        );
+        break;
+    }
+
+    for (const range of span.concealRanges) {
+      editor.addConceal(
+        bufferId, RST_SYNTAX_NS,
+        charToByte(content, range.start, byteStart),
+        charToByte(content, range.end, byteStart),
+        range.replacement,
+        "unless-cursor-in", byteMatchStart, byteMatchEnd + 1,
+      );
+    }
+  }
+}
+
+function rstHangingIndent(content: string): number {
+  const list = content.match(
+    /^(\s*)(?:(?:[-+*])|(?:#\.|\d+[.)]|\([0-9A-Za-z#]+\)))\s+/,
+  );
+  if (list) return editor.stringWidth(list[0]);
+  const field = content.match(/^(\s*):[^:\n]+:\s+/);
+  if (field) return Math.max(0, editor.stringWidth(field[0]) - 1);
+  const lineBlock = content.match(/^(\s*)\|\s+/);
+  if (lineBlock) return editor.stringWidth(lineBlock[0]);
+  return editor.stringWidth(content.slice(0, content.length - content.trimStart().length));
+}
+
+function processRstLineSoftBreaks(
+  bufferId: number,
+  line: LineInfoLike,
+  isHeading: boolean,
+): void {
+  const { content, byte_start: byteStart, byte_end: byteEnd } = line;
+  editor.clearSoftBreaksInRange(bufferId, byteStart, byteEnd);
+
+  const viewport = editor.getViewport();
+  if (!viewport) return;
+  const width = effectiveComposeWidth(viewport.width);
+  const trimmed = content.trim();
+  if (
+    trimmed.length === 0 ||
+    isHeading ||
+    rstAdornmentChar(content) !== null ||
+    rstGridBorder(content) ||
+    rstGridRow(content) ||
+    trimmed.startsWith(".. ")
+  ) return;
+
+  const charWidths = new Array<number>(content.length).fill(1);
+  for (const span of findRstInlineSpans(content)) {
+    for (const range of span.concealRanges) {
+      for (let i = range.start; i < range.end && i < charWidths.length; i++) {
+        charWidths[i] = 0;
+      }
+      if (range.replacement !== null && range.start < charWidths.length) {
+        charWidths[range.start] = editor.stringWidth(range.replacement);
+      }
+    }
+  }
+
+  const hangingIndent = rstHangingIndent(content);
+  const wrapBudget = Math.max(1, width - 2);
+  let column = 0;
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === " " && column > 0 && charWidths[i] > 0) {
+      let nextWordWidth = 0;
+      for (let j = i + 1; j < content.length; j++) {
+        if ((content[j] === " " || content[j] === "\n") && charWidths[j] > 0) break;
+        nextWordWidth += charWidths[j];
+      }
+      if (column + 1 + nextWordWidth > wrapBudget && nextWordWidth > 0) {
+        editor.addSoftBreak(
+          bufferId, RST_WRAP_NS,
+          charToByte(content, i, byteStart),
+          hangingIndent,
+        );
+        column = hangingIndent;
+        continue;
+      }
+    }
+    column += charWidths[i];
+  }
+}
+
 
 // Track viewport width per buffer for resize detection
 let lastViewportWidth = 0;
@@ -1771,6 +2281,85 @@ function computeRowWidths(bufferId: number, lines: LineInfoLike[]): boolean {
 // Register hooks
 editor.on("lines_changed", (data) => {
   if (!isComposingInAnySplit(data.buffer_id)) return;
+
+  const info = editor.getBufferInfo(data.buffer_id);
+  if (!info) return;
+
+  // reStructuredText has its own compose pipeline. It shares the page layout
+  // with Markdown but parses RST headings, inline constructs, directives,
+  // lists and grid tables into dedicated namespaces.
+  if (isRstFile(info.path)) {
+    const byLineNumber = new Map<number, LineInfoLike>();
+    for (const line of data.lines) byLineNumber.set(line.line_number, line);
+
+    const headingMarkers = [];
+    for (const line of data.lines) {
+      const previous = byLineNumber.get(line.line_number - 1);
+      const next = byLineNumber.get(line.line_number + 1);
+      const nextAdornment = next ? rstAdornmentChar(next.content) : null;
+      const isHeading =
+        line.content.trim().length > 0 &&
+        rstAdornmentChar(line.content) === null &&
+        nextAdornment !== null;
+
+      // Clear stale Markdown decorations, for example after Save As from .md
+      // to .rst, without touching decorations owned by other plugins.
+      clearRowBorders(data.buffer_id, line.byte_start, line.byte_end);
+      editor.clearConcealsInRangeForNamespace(
+        data.buffer_id, "md-syntax", line.byte_start, line.byte_end,
+      );
+      editor.clearOverlaysInRangeForNamespace(
+        data.buffer_id, "md-emphasis", line.byte_start, line.byte_end,
+      );
+      editor.clearSoftBreaksInRange(data.buffer_id, line.byte_start, line.byte_end);
+
+      processRstLineConceals(data.buffer_id, line, previous, next, isHeading);
+      processRstLineSoftBreaks(data.buffer_id, line, isHeading);
+
+      if (isHeading && nextAdornment !== null) {
+        const level = rstHeadingLevel(nextAdornment);
+        headingMarkers.push({
+          position: line.byte_start,
+          color: headingMarkerColor(level),
+          priority: 10 - level,
+        });
+      }
+    }
+    if (data.lines.length > 0) {
+      const batchStart = data.lines[0].byte_start;
+      const batchEnd = data.lines[data.lines.length - 1].byte_end;
+      editor.setScrollbarMarkersInRange(
+        data.buffer_id, HEADING_MARKER_NS,
+        batchStart, Math.max(batchEnd, batchStart + 1), [],
+      );
+      editor.setScrollbarMarkersInRange(
+        data.buffer_id, RST_HEADING_MARKER_NS,
+        batchStart, Math.max(batchEnd, batchStart + 1), headingMarkers,
+      );
+    }
+    return;
+  }
+
+  // Clear stale RST decorations when a buffer changes extension from RST to
+  // Markdown and then rebuild the Markdown view below.
+  for (const line of data.lines) {
+    editor.clearConcealsInRangeForNamespace(
+      data.buffer_id, RST_SYNTAX_NS, line.byte_start, line.byte_end,
+    );
+    editor.clearOverlaysInRangeForNamespace(
+      data.buffer_id, RST_EMPHASIS_NS, line.byte_start, line.byte_end,
+    );
+    editor.clearSoftBreaksInRange(data.buffer_id, line.byte_start, line.byte_end);
+  }
+  if (data.lines.length > 0) {
+    const batchStart = data.lines[0].byte_start;
+    const batchEnd = data.lines[data.lines.length - 1].byte_end;
+    editor.setScrollbarMarkersInRange(
+      data.buffer_id, RST_HEADING_MARKER_NS,
+      batchStart, Math.max(batchEnd, batchStart + 1), [],
+    );
+  }
+
   // Cursor reveal/conceal decisions are NOT made here: every emitted
   // decoration carries an activation scope and the renderer evaluates it
   // per frame against each split's own cursors. This handler runs only
@@ -1933,7 +2522,7 @@ editor.on("buffer_activated", (data) => {
   const bufferId = data.buffer_id;
 
   const info = editor.getBufferInfo(bufferId);
-  if (!info || !isMarkdownFile(info.path)) return;
+  if (!info || !isComposeFile(info.path)) return;
 
   if (info.view_mode === "compose") {
     // Restore config.composeWidth from the persisted session value
@@ -1945,7 +2534,7 @@ editor.on("buffer_activated", (data) => {
     enableMarkdownCompose(bufferId);
   } else if (getGlobalComposeEnabled()) {
     // Global compose/preview mode is active — auto-enable for newly opened
-    // markdown buffers that aren't already in compose mode.
+    // supported markup buffers that aren't already in compose mode.
     enableMarkdownCompose(bufferId);
   }
 });
