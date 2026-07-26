@@ -248,7 +248,7 @@ Smart editing for Markdown files (provided by the built-in `markdown_source` plu
 
 ### Compose Mode
 
-"Markdown: Toggle Compose" from the command palette enables a distraction-free mode that conceals markup (`**`, `*`, `[]()`), applies soft line breaks at a configurable width, and renders tables. Use "Markdown: Set Compose Width" to adjust the width. Open the same file in a vertical split to see source and composed views side by side.
+"Markdown: Toggle Compose" from the command palette enables a distraction-free mode that conceals markup (`**`, `*`, `[]()`), applies soft line breaks at a configurable width, and renders tables. The same command supports reStructuredText (`.rst` and `.rest`) through a dedicated syntax-aware compose view: section adornments, emphasis, strong text, inline literals, links, roles, directives, lists, field lists, and grid tables are rendered while their source markup stays one cursor movement away for editing. Use "Markdown: Set Compose Width" to adjust the width. Open the same file in a vertical split to see source and composed views side by side.
 
 ## Shell Integration
 
