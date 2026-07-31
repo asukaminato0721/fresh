@@ -6,6 +6,7 @@ use crate::view::file_tree::{
     FileExplorerSlotOverrideCache, FileTreeView, NodeId,
 };
 use crate::view::theme::Theme;
+use crate::view::ui::scrollbar::{render_scrollbar, ScrollbarColors, ScrollbarState};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -352,6 +353,49 @@ impl FileExplorerRenderer {
                 Some(bg_key),
                 "File Explorer",
             );
+        }
+
+        // The node renderer already leaves the final inner column unused.
+        // Paint the scrollbar there when the tree overflows, keeping the
+        // resize border at the panel's right edge and preserving all existing
+        // filename width.
+        let max_scroll = view.max_scroll_offset();
+        if max_scroll > 0 && area.width >= 3 && area.height >= 3 {
+            let scrollbar_area = Rect::new(area.x + area.width - 2, area.y + 1, 1, area.height - 2);
+            // Sticky ancestor rows reduce the ordinary scrolling window, so
+            // max_scroll can be larger than `visible_count - viewport_height`.
+            // Model an equivalent virtual item count to keep the thumb's
+            // travel aligned with the view's actual scroll range.
+            let scrollbar_state = ScrollbarState::new(
+                max_scroll.saturating_add(viewport_height_pre),
+                viewport_height_pre,
+                view.get_scroll_offset().min(max_scroll),
+            );
+            let (thumb_start, thumb_end) = render_scrollbar(
+                frame,
+                scrollbar_area,
+                &scrollbar_state,
+                &ScrollbarColors::from_theme(theme),
+            );
+            for row in 0..scrollbar_area.height {
+                let is_thumb = (row as usize) >= thumb_start && (row as usize) < thumb_end;
+                rec.run(
+                    scrollbar_area.x,
+                    scrollbar_area.y + row,
+                    1,
+                    Some(if is_thumb {
+                        "ui.scrollbar_thumb_fg"
+                    } else {
+                        "ui.scrollbar_track_fg"
+                    }),
+                    Some("editor.bg"),
+                    if is_thumb {
+                        "Scrollbar Thumb"
+                    } else {
+                        "Scrollbar Track"
+                    },
+                );
+            }
         }
 
         // Render close button "×" at the right side of the title bar
