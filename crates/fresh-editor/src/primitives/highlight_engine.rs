@@ -314,6 +314,10 @@ struct TextMateCache {
 struct CachedSpan {
     range: Range<usize>,
     category: crate::primitives::highlighter::HighlightCategory,
+    /// Optional independent background category. Embedded source tokens in
+    /// unified diffs keep their language category for the foreground while
+    /// inheriting Inserted/Deleted from the host diff row.
+    background_category: Option<crate::primitives::highlighter::HighlightCategory>,
 }
 
 /// Declares how a host syntax delimits embedded-language regions whose
@@ -337,6 +341,18 @@ struct EmbeddingSpecDef {
     /// JS is the standard approximation). `None` = keep the host's own
     /// styling for such regions (Markdown's raw-code look).
     default_language: Option<&'static str>,
+    /// How content rows are presented to the embedded parser.
+    content_mode: EmbeddedContentMode,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EmbeddedContentMode {
+    /// Parse the complete region-content line (Markdown, Vue).
+    WholeLine,
+    /// Parse unified-diff source rows after removing their one-byte patch
+    /// marker. Diff metadata stays host-styled and does not advance the
+    /// source parser.
+    UnifiedDiff,
 }
 
 /// A host may declare several region kinds (Vue: `<script>` and
@@ -348,18 +364,28 @@ const EMBEDDING_SPECS: &[EmbeddingSpecDef] = &[
         region_scope: "markup.raw.code-fence",
         language_scope: "constant.other.language-name",
         default_language: None,
+        content_mode: EmbeddedContentMode::WholeLine,
     },
     EmbeddingSpecDef {
         host_syntax: "Vue",
         region_scope: "meta.embedded.block.script",
         language_scope: "constant.other.language-name",
         default_language: Some("js"),
+        content_mode: EmbeddedContentMode::WholeLine,
     },
     EmbeddingSpecDef {
         host_syntax: "Vue",
         region_scope: "meta.embedded.block.style",
         language_scope: "constant.other.language-name",
         default_language: Some("css"),
+        content_mode: EmbeddedContentMode::WholeLine,
+    },
+    EmbeddingSpecDef {
+        host_syntax: "Fresh Diff",
+        region_scope: "meta.embedded.block.diff",
+        language_scope: "constant.other.language-name",
+        default_language: None,
+        content_mode: EmbeddedContentMode::UnifiedDiff,
     },
 ];
 
@@ -374,6 +400,7 @@ struct EmbeddingSpec {
     region_scope: syntect::parsing::Scope,
     language_scope: syntect::parsing::Scope,
     default_language: Option<&'static str>,
+    content_mode: EmbeddedContentMode,
 }
 
 impl EmbeddingSpec {
@@ -386,6 +413,7 @@ impl EmbeddingSpec {
                     region_scope: syntect::parsing::Scope::new(d.region_scope).ok()?,
                     language_scope: syntect::parsing::Scope::new(d.language_scope).ok()?,
                     default_language: d.default_language,
+                    content_mode: d.content_mode,
                 })
             })
             .collect()
@@ -474,6 +502,28 @@ struct PreparedLine {
     /// Whether the original line ended with `\n` (true for every line
     /// except the streaming tail).
     ends_with_newline: bool,
+}
+
+/// Prepare one unified-diff source row for its embedded language parser.
+///
+/// Added, removed, and context rows carry a one-byte patch marker that is
+/// not part of the source language. File headers (`+++` / `---`) and all
+/// other diff metadata return `None` so they retain host-grammar styling
+/// without advancing the embedded parser.
+fn prepare_unified_diff_content(prepared: &PreparedLine) -> Option<PreparedLine> {
+    let bytes = prepared.line_for_syntect.as_bytes();
+    let marker = *bytes.first()?;
+    if !matches!(marker, b'+' | b'-' | b' ') {
+        return None;
+    }
+    if bytes.starts_with(b"+++") || bytes.starts_with(b"---") {
+        return None;
+    }
+    Some(PreparedLine {
+        line_for_syntect: prepared.line_for_syntect.get(1..)?.to_string(),
+        line_content_len: prepared.line_content_len.saturating_sub(1),
+        ends_with_newline: prepared.ends_with_newline,
+    })
 }
 
 /// Longest logical line highlighted in full. Beyond this, only the
@@ -831,7 +881,7 @@ impl TextMateEngine {
         snapshot: &mut ParseSnapshot,
         prepared: &PreparedLine,
         current_offset: usize,
-        mut on_span: impl FnMut(usize, usize, HighlightCategory),
+        mut on_span: impl FnMut(usize, usize, HighlightCategory, Option<HighlightCategory>),
     ) -> bool {
         if self.embedding.is_empty() {
             return self
@@ -841,25 +891,27 @@ impl TextMateEngine {
                     prepared,
                     current_offset,
                     &[],
-                    on_span,
+                    |start, end, category| on_span(start, end, category, None),
                 )
                 .0;
         }
 
         let was_in = self.active_region_spec(&snapshot.scopes);
-        // Watch for a language token only on lines that could open a
-        // region. Copy the (deduplicated) language scopes to the stack so
-        // no borrow of self outlives the parse call below.
+        // Watch for a language token on every line. Most hosts only emit one
+        // while opening a region; a unified diff can close one file region
+        // and open the next on the same `diff --git` line, leaving the same
+        // region scope active at both line boundaries. Seeing the new token
+        // is what lets us retarget the child parser in that case.
+        // Copy the (deduplicated) language scopes to the stack so no borrow
+        // of self outlives the parse call below.
         let mut watch_buf = [self.embedding[0].language_scope; MAX_WATCH_SCOPES];
         let mut watch_len = 0;
-        if was_in.is_none() {
-            for spec in &self.embedding {
-                if watch_len < MAX_WATCH_SCOPES
-                    && !watch_buf[..watch_len].contains(&spec.language_scope)
-                {
-                    watch_buf[watch_len] = spec.language_scope;
-                    watch_len += 1;
-                }
+        for spec in &self.embedding {
+            if watch_len < MAX_WATCH_SCOPES
+                && !watch_buf[..watch_len].contains(&spec.language_scope)
+            {
+                watch_buf[watch_len] = spec.language_scope;
+                watch_len += 1;
             }
         }
 
@@ -893,28 +945,101 @@ impl TextMateEngine {
         // neither arises for the current hosts.
         if let (Some(i), Some(j)) = (was_in, now_in) {
             if i == j {
+                // A host may replace one same-kind region with another on a
+                // single line (unified diff file headers). A newly scoped
+                // language token restarts the child for the new region; the
+                // transition line itself remains host-styled.
+                if language_range.is_some() {
+                    snapshot.embedded =
+                        self.embedded_state_for_region(prepared, current_offset, language_range, j);
+                    for &(start, end, category) in &host_spans {
+                        on_span(start, end, category, None);
+                    }
+                    self.host_span_scratch = host_spans;
+                    return true;
+                }
                 // Region content line.
                 if snapshot.embedded.is_some() {
                     let mut embedded = snapshot
                         .embedded
                         .take()
                         .expect("checked embedded.is_some() above");
+                    let stripped;
+                    let (child_line, child_offset) = match self.embedding[i].content_mode {
+                        EmbeddedContentMode::WholeLine => (Some(prepared), current_offset),
+                        EmbeddedContentMode::UnifiedDiff => {
+                            stripped = prepare_unified_diff_content(prepared);
+                            (stripped.as_ref(), current_offset + 1)
+                        }
+                    };
+                    // Metadata and hunk-header rows inside a diff region stay
+                    // host-styled and do not disturb the source parser state.
+                    let Some(child_line) = child_line else {
+                        for &(start, end, category) in &host_spans {
+                            on_span(start, end, category, None);
+                        }
+                        snapshot.embedded = Some(embedded);
+                        self.host_span_scratch = host_spans;
+                        return true;
+                    };
                     let mut child_spans = std::mem::take(&mut self.child_span_scratch);
                     child_spans.clear();
                     let (child_ok, _) = self.parse_line_into_spans(
                         &mut embedded.state,
                         &mut embedded.scopes,
-                        prepared,
-                        current_offset,
+                        child_line,
+                        child_offset,
                         &[],
                         |start, end, category| child_spans.push((start, end, category)),
                     );
                     // On a child parse error, fall back to the host's
                     // raw styling for the line rather than leaving it
                     // unstyled.
-                    let chosen = if child_ok { &child_spans } else { &host_spans };
-                    for &(start, end, category) in chosen {
-                        on_span(start, end, category);
+                    if child_ok {
+                        let background_category = match self.embedding[i].content_mode {
+                            EmbeddedContentMode::UnifiedDiff => host_spans
+                                .iter()
+                                .map(|&(_, _, category)| category)
+                                .find(|category| {
+                                    matches!(
+                                        category,
+                                        HighlightCategory::Inserted | HighlightCategory::Deleted
+                                    )
+                                }),
+                            EmbeddedContentMode::WholeLine => None,
+                        };
+                        // Preserve the diff marker's host category while
+                        // source syntax owns the remainder of the row.
+                        for &(start, end, category) in &host_spans {
+                            let clipped_end = end.min(child_offset);
+                            if start < clipped_end {
+                                on_span(start, clipped_end, category, None);
+                            }
+                        }
+                        let mut covered_to = child_offset;
+                        for &(start, end, category) in &child_spans {
+                            if let Some(bg_category) = background_category {
+                                if covered_to < start {
+                                    // Source grammars commonly leave plain
+                                    // identifiers/whitespace unscoped. Emit
+                                    // host-category spans for those gaps so
+                                    // the diff background remains continuous.
+                                    on_span(covered_to, start, bg_category, None);
+                                }
+                            }
+                            on_span(start, end, category, background_category);
+                            covered_to = covered_to.max(end);
+                        }
+                        if let Some(bg_category) = background_category {
+                            let content_end = child_offset + child_line.line_content_len;
+                            if covered_to < content_end {
+                                on_span(covered_to, content_end, bg_category, None);
+                            }
+                        }
+                    } else {
+                        for &(start, end, category) in &host_spans {
+                            on_span(start, end, category, None);
+                        }
                     }
                     snapshot.embedded = Some(embedded);
                     self.child_span_scratch = child_spans;
@@ -927,7 +1052,7 @@ impl TextMateEngine {
         }
 
         for &(start, end, category) in &host_spans {
-            on_span(start, end, category);
+            on_span(start, end, category, None);
         }
         match (was_in, now_in) {
             (None, Some(j)) => {
@@ -1007,9 +1132,16 @@ impl TextMateEngine {
             return *cached;
         }
         let plain = self.syntax_set.find_syntax_plain_text();
-        let resolved = self
-            .syntax_set
-            .find_syntax_by_token(token)
+        // Region tokens are usually short language names (`rust`, `ts`).
+        // Diff regions instead provide a target path (`src/main.rs`), so
+        // also try its basename and extension. This covers extensionless
+        // grammar tokens such as Makefile as well as ordinary source files.
+        let basename = token.rsplit(['/', '\\']).next().unwrap_or(token);
+        let extension = basename.rsplit_once('.').map(|(_, ext)| ext);
+        let resolved = std::iter::once(token)
+            .chain((basename != token).then_some(basename))
+            .chain(extension)
+            .find_map(|candidate| self.syntax_set.find_syntax_by_token(candidate))
             .filter(|found| !std::ptr::eq(*found, plain))
             .and_then(|found| {
                 self.syntax_set
@@ -1143,7 +1275,10 @@ impl TextMateEngine {
             .map(|span| HighlightSpan {
                 range: span.range.clone(),
                 color: highlight_color(span.category, theme),
-                bg: highlight_bg(span.category, theme),
+                bg: span
+                    .background_category
+                    .and_then(|category| highlight_bg(category, theme))
+                    .or_else(|| highlight_bg(span.category, theme)),
                 category: Some(span.category),
             })
             .collect()
@@ -1228,7 +1363,7 @@ impl TextMateEngine {
                     &mut snapshot,
                     &prepared,
                     current_offset,
-                    |byte_start, byte_end, category| {
+                    |byte_start, byte_end, category, background_category| {
                         if !collect_spans {
                             return;
                         }
@@ -1237,6 +1372,7 @@ impl TextMateEngine {
                             new_spans.push(CachedSpan {
                                 range: clamped_start..byte_end,
                                 category,
+                                background_category,
                             });
                         }
                     },
@@ -1391,10 +1527,11 @@ impl TextMateEngine {
                     &mut windowed,
                     &window,
                     window_offset,
-                    |byte_start, byte_end, category| {
+                    |byte_start, byte_end, category, background_category| {
                         new_spans.push(CachedSpan {
                             range: byte_start..byte_end,
                             category,
+                            background_category,
                         });
                     },
                 );
@@ -1406,10 +1543,11 @@ impl TextMateEngine {
                     &mut snapshot,
                     &prepared,
                     current_offset,
-                    |byte_start, byte_end, category| {
+                    |byte_start, byte_end, category, background_category| {
                         new_spans.push(CachedSpan {
                             range: byte_start..byte_end,
                             category,
+                            background_category,
                         });
                     },
                 );
@@ -1469,11 +1607,17 @@ impl TextMateEngine {
             unsafe_spans
                 .into_iter()
                 .filter(|s| s.range.start < viewport_end && s.range.end > viewport_start)
-                .map(|s| HighlightSpan {
-                    range: s.range,
-                    color: highlight_color(s.category, theme),
-                    bg: highlight_bg(s.category, theme),
-                    category: Some(s.category),
+                .map(|s| {
+                    let bg = s
+                        .background_category
+                        .and_then(|category| highlight_bg(category, theme))
+                        .or_else(|| highlight_bg(s.category, theme));
+                    HighlightSpan {
+                        range: s.range,
+                        color: highlight_color(s.category, theme),
+                        bg,
+                        category: Some(s.category),
+                    }
                 }),
         );
         result
@@ -1549,7 +1693,7 @@ impl TextMateEngine {
                     &mut windowed,
                     &window,
                     window_offset,
-                    |byte_start, byte_end, category| {
+                    |byte_start, byte_end, category, background_category| {
                         if !collect_spans {
                             return;
                         }
@@ -1558,6 +1702,7 @@ impl TextMateEngine {
                             spans.push(CachedSpan {
                                 range: clamped_start..byte_end,
                                 category,
+                                background_category,
                             });
                         }
                     },
@@ -1568,7 +1713,7 @@ impl TextMateEngine {
                     &mut snapshot,
                     &prepared,
                     current_offset,
-                    |byte_start, byte_end, category| {
+                    |byte_start, byte_end, category, background_category| {
                         if !collect_spans {
                             return;
                         }
@@ -1577,6 +1722,7 @@ impl TextMateEngine {
                             spans.push(CachedSpan {
                                 range: clamped_start..byte_end,
                                 category,
+                                background_category,
                             });
                         }
                     },
@@ -1646,10 +1792,14 @@ impl TextMateEngine {
             .filter(|span| span.range.start < viewport_end && span.range.end > viewport_start)
             .map(|span| {
                 let cat = span.category;
+                let bg = span
+                    .background_category
+                    .and_then(|category| highlight_bg(category, theme))
+                    .or_else(|| highlight_bg(cat, theme));
                 HighlightSpan {
                     range: span.range,
                     color: highlight_color(cat, theme),
-                    bg: highlight_bg(cat, theme),
+                    bg,
                     category: Some(cat),
                 }
             })
@@ -1711,7 +1861,7 @@ impl TextMateEngine {
         None
     }
 
-    /// Merge adjacent spans with same category
+    /// Merge adjacent spans with the same foreground and background categories.
     fn merge_adjacent_spans(spans: &mut Vec<CachedSpan>) {
         if spans.len() < 2 {
             return;
@@ -1720,6 +1870,7 @@ impl TextMateEngine {
         let mut write_idx = 0;
         for read_idx in 1..spans.len() {
             if spans[write_idx].category == spans[read_idx].category
+                && spans[write_idx].background_category == spans[read_idx].background_category
                 && spans[write_idx].range.end == spans[read_idx].range.start
             {
                 spans[write_idx].range.end = spans[read_idx].range.end;
@@ -2267,6 +2418,69 @@ mod tests {
             engine.category_at_position(content.find("fn answer").unwrap()),
             Some(HighlightCategory::Keyword),
             "category lookups must agree with the returned spans"
+        );
+    }
+
+    /// Unified diffs select a source grammar from each target path and parse
+    /// hunk rows without their one-byte patch marker.
+    #[test]
+    fn test_diff_embeds_target_file_syntax() {
+        let registry =
+            GrammarRegistry::load(&crate::primitives::grammar::LocalGrammarLoader::embedded_only());
+        let mut engine = HighlightEngine::for_file(Path::new("commit.diff"), None, &registry);
+        assert_eq!(engine.backend_name(), "textmate");
+        assert_eq!(engine.syntax_name(), Some("Fresh Diff"));
+
+        let content = "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1 +1 @@
+-pub fn old() -> u32 { 1 }
++pub fn new() -> u32 { 2 }
+diff --git a/tools/check.py b/tools/check.py
+--- a/tools/check.py
++++ b/tools/check.py
+@@ -1 +1 @@
+-def old():
++def new():
+";
+        let buffer = Buffer::from_str(content, 0, test_fs());
+        let theme = Theme::load_builtin(theme::THEME_LIGHT).unwrap();
+        let spans = engine.highlight_viewport(&buffer, 0, buffer.len(), &theme, 0);
+
+        let category_at = |needle: &str| {
+            let position = content.find(needle).unwrap();
+            spans
+                .iter()
+                .find(|span| span.range.start <= position && position < span.range.end)
+                .and_then(|span| span.category)
+        };
+
+        assert_eq!(
+            category_at("pub fn new"),
+            Some(HighlightCategory::Keyword),
+            "Rust added lines must retain Rust token colors"
+        );
+        assert_eq!(
+            category_at("def new"),
+            Some(HighlightCategory::Keyword),
+            "the next file header must switch the embedded parser to Python"
+        );
+        let added_marker = content.find("+pub fn new").unwrap();
+        assert_eq!(
+            spans
+                .iter()
+                .find(|span| span.range.start <= added_marker && added_marker < span.range.end)
+                .and_then(|span| span.category),
+            Some(HighlightCategory::Inserted),
+            "the patch marker itself must retain diff styling"
+        );
+        assert_eq!(
+            category_at("@@ -1"),
+            Some(HighlightCategory::Changed),
+            "hunk headers stay styled by the host diff grammar"
         );
     }
 
