@@ -2076,7 +2076,7 @@ fn test_home_key_goes_to_visual_line_start() {
     panic!("Home key never reached physical line start after many presses; final pos={prev_pos}");
 }
 
-/// Test Alt+Shift+Up/Down (block select) works with line wrapping enabled
+/// Test Ctrl+Alt+Shift+Up/Down (block select) works with line wrapping enabled
 /// Note: Block selection moves by logical lines (not visual lines) to maintain
 /// consistent block anchor semantics
 #[test]
@@ -2113,9 +2113,12 @@ fn test_block_select_with_line_wrap_enabled() {
     let start_pos = harness.cursor_position();
     eprintln!("Before block select down: pos={}", start_pos);
 
-    // Press Alt+Shift+Down for block select
+    // Press Ctrl+Alt+Shift+Down for block select
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 

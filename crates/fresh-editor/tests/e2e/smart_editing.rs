@@ -1122,7 +1122,7 @@ fn test_jump_through_multiple_errors() {
 // Block/Rectangular Selection Tests
 // =============================================================================
 
-/// Test that block selection starts with Alt+Shift+Right
+/// Test that block selection starts with Ctrl+Alt+Shift+Right
 #[test]
 fn test_block_selection_start() {
     let temp_dir = TempDir::new().unwrap();
@@ -1135,9 +1135,12 @@ fn test_block_selection_start() {
     // Cursor starts at position 0
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
 
-    // Start block selection with Alt+Shift+Right
+    // Start block selection with Ctrl+Alt+Shift+Right
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -1178,9 +1181,12 @@ fn test_block_selection_vertical() {
         .send_key(KeyCode::Right, KeyModifiers::NONE)
         .unwrap();
 
-    // Start block selection with Alt+Shift+Down
+    // Start block selection with Ctrl+Alt+Shift+Down
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -1217,15 +1223,24 @@ fn test_block_selection_rectangle() {
 
     // Extend block selection right twice (columns 1-3)
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
 
     // Extend block selection down once (lines 0-1)
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -1276,9 +1291,12 @@ fn test_block_selection_left() {
         .send_key(KeyCode::Right, KeyModifiers::NONE)
         .unwrap();
 
-    // Start block selection with Alt+Shift+Left
+    // Start block selection with Ctrl+Alt+Shift+Left
     harness
-        .send_key(KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Left,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -1306,9 +1324,12 @@ fn test_block_selection_up() {
     harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
     harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
 
-    // Start block selection with Alt+Shift+Up
+    // Start block selection with Ctrl+Alt+Shift+Up
     harness
-        .send_key(KeyCode::Up, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Up,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 

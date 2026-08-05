@@ -309,7 +309,7 @@ fn blog_showcase_editing_line_move() {
     s.finalize().unwrap();
 }
 
-/// Block selection: Alt+Shift+Arrow for rectangular selection
+/// Block selection: Ctrl+Alt+Shift+Arrow for rectangular selection
 #[test]
 #[ignore]
 fn blog_showcase_editing_block_selection() {
@@ -328,7 +328,7 @@ fn blog_showcase_editing_block_selection() {
     let mut s = BlogShowcase::new(
         "editing/block-selection",
         "Block Selection",
-        "Rectangular column editing with Alt+Shift+Arrow.",
+        "Rectangular column editing with Ctrl+Alt+Shift+Arrow.",
     );
 
     hold(&mut h, &mut s, 4, 100);
@@ -343,16 +343,22 @@ fn blog_showcase_editing_block_selection() {
 
     // Block select down 6 rows and right 3 chars
     for _ in 0..6 {
-        h.send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
-            .unwrap();
+        h.send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
+        .unwrap();
         h.render().unwrap();
-        snap(&mut h, &mut s, Some("Alt+Shift+↓"), 100);
+        snap(&mut h, &mut s, Some("Ctrl+Alt+Shift+↓"), 100);
     }
     for _ in 0..2 {
-        h.send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
-            .unwrap();
+        h.send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
+        .unwrap();
         h.render().unwrap();
-        snap(&mut h, &mut s, Some("Alt+Shift+→"), 100);
+        snap(&mut h, &mut s, Some("Ctrl+Alt+Shift+→"), 100);
     }
     hold(&mut h, &mut s, 5, 100);
 

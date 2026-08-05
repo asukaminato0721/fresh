@@ -394,11 +394,17 @@ fn test_clear_mark_clears_block_selection() {
 
     // Block select (creates a mark mode selection spanning lines)
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     for _ in 0..2 {
         harness
-            .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Right,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
     }
     harness.render().unwrap();

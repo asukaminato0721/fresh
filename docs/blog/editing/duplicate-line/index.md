@@ -5,7 +5,7 @@ outline: false
 
 # Duplicate Line
 
-Duplicate the current line with a single command.
+Duplicate the current line or selected lines with **Alt+Shift+Up/Down**.
 
 <div class="showcase-demo">
   <img src="./showcase.gif" alt="Duplicate Line demo" />

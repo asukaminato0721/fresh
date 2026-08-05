@@ -282,11 +282,17 @@ fn test_block_copy_is_rectangular_past_short_line() {
     }
     for _ in 0..2 {
         harness
-            .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Down,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
     }
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness
         .send_key(KeyCode::Char('c'), KeyModifiers::CONTROL)
@@ -312,11 +318,17 @@ fn test_block_copy_stays_ragged_when_off() {
     }
     for _ in 0..2 {
         harness
-            .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Down,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
     }
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness
         .send_key(KeyCode::Char('c'), KeyModifiers::CONTROL)
@@ -340,7 +352,10 @@ fn test_block_insert_pads_short_lines() {
     harness.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
     for _ in 0..2 {
         harness
-            .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Down,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
     }
     harness.type_text("X").unwrap();
@@ -365,11 +380,17 @@ fn test_block_rectangle_renders_past_short_line() {
     }
     for _ in 0..2 {
         harness
-            .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Down,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
     }
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
