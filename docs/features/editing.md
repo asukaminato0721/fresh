@@ -117,8 +117,8 @@ Selected line breaks are drawn too: every line break inside the selection highli
 
 | Shortcut | Action |
 |----------|--------|
-| `Alt+Shift+↑/↓` | Block select up/down |
-| `Alt+Shift+←/→` | Block select left/right |
+| `Ctrl+Alt+Shift+↑/↓` | Block select up/down |
+| `Ctrl+Alt+Shift+←/→` | Block select left/right |
 
 ### Mark Mode
 
@@ -141,6 +141,7 @@ Drop a selection anchor and extend the selection as you move, without holding `S
 | `Shift+Tab` | Dedent |
 | `Ctrl+/` | Toggle comment |
 | `Ctrl+T` | Transpose characters |
+| `Alt+Shift+↑/↓` | Duplicate line or selected lines up/down |
 
 ### Deletion
 

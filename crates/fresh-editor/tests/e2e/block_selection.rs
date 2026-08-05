@@ -1,7 +1,7 @@
 use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
 
-/// Test basic block selection with Alt+Shift+Down creates visible selection
+/// Test basic block selection with Ctrl+Alt+Shift+Down creates visible selection
 #[test]
 fn test_block_select_down_basic() {
     let mut harness = EditorTestHarness::new(80, 24).unwrap();
@@ -26,16 +26,19 @@ fn test_block_select_down_basic() {
     // Before block selection - should have no selection
     harness.assert_no_selection();
 
-    // Press Alt+Shift+Down for block selection
+    // Press Ctrl+Alt+Shift+Down for block selection
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
     // After block selection - should have a selection
     assert!(
         harness.has_selection(),
-        "Should have selection after Alt+Shift+Down"
+        "Should have selection after Ctrl+Alt+Shift+Down"
     );
 }
 
@@ -63,35 +66,44 @@ fn test_block_select_multiple_consecutive() {
 
     // First block select down
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
     assert!(
         harness.has_selection(),
-        "Should have selection after first Alt+Shift+Down"
+        "Should have selection after first Ctrl+Alt+Shift+Down"
     );
 
     // Second block select down - should extend selection
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
     assert!(
         harness.has_selection(),
-        "Should still have selection after second Alt+Shift+Down"
+        "Should still have selection after second Ctrl+Alt+Shift+Down"
     );
 
     // Third block select down
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
     assert!(
         harness.has_selection(),
-        "Should still have selection after third Alt+Shift+Down"
+        "Should still have selection after third Ctrl+Alt+Shift+Down"
     );
 }
 
@@ -109,7 +121,10 @@ fn test_block_select_then_escape() {
 
     // Start block selection
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -125,7 +140,7 @@ fn test_block_select_then_escape() {
 /// Test block selection in all four directions
 #[test]
 fn test_block_select_all_directions() {
-    // Test Alt+Shift+Down
+    // Test Ctrl+Alt+Shift+Down
     {
         let mut harness = EditorTestHarness::new(80, 24).unwrap();
         harness.type_text("aaaa\nbbbb\ncccc").unwrap();
@@ -137,17 +152,20 @@ fn test_block_select_all_directions() {
             .unwrap();
 
         harness
-            .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Down,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
         harness.render().unwrap();
 
         assert!(
             harness.has_selection(),
-            "Alt+Shift+Down should create selection"
+            "Ctrl+Alt+Shift+Down should create selection"
         );
     }
 
-    // Test Alt+Shift+Up
+    // Test Ctrl+Alt+Shift+Up
     {
         let mut harness = EditorTestHarness::new(80, 24).unwrap();
         harness.type_text("aaaa\nbbbb\ncccc").unwrap();
@@ -159,17 +177,20 @@ fn test_block_select_all_directions() {
             .unwrap();
 
         harness
-            .send_key(KeyCode::Up, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Up,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
         harness.render().unwrap();
 
         assert!(
             harness.has_selection(),
-            "Alt+Shift+Up should create selection"
+            "Ctrl+Alt+Shift+Up should create selection"
         );
     }
 
-    // Test Alt+Shift+Right
+    // Test Ctrl+Alt+Shift+Right
     {
         let mut harness = EditorTestHarness::new(80, 24).unwrap();
         harness.type_text("aaaa\nbbbb\ncccc").unwrap();
@@ -178,17 +199,20 @@ fn test_block_select_all_directions() {
             .unwrap();
 
         harness
-            .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Right,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
         harness.render().unwrap();
 
         assert!(
             harness.has_selection(),
-            "Alt+Shift+Right should create selection"
+            "Ctrl+Alt+Shift+Right should create selection"
         );
     }
 
-    // Test Alt+Shift+Left
+    // Test Ctrl+Alt+Shift+Left
     {
         let mut harness = EditorTestHarness::new(80, 24).unwrap();
         harness.type_text("aaaa\nbbbb\ncccc").unwrap();
@@ -203,13 +227,16 @@ fn test_block_select_all_directions() {
             .unwrap();
 
         harness
-            .send_key(KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Left,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
         harness.render().unwrap();
 
         assert!(
             harness.has_selection(),
-            "Alt+Shift+Left should create selection"
+            "Ctrl+Alt+Shift+Left should create selection"
         );
     }
 }
@@ -237,10 +264,16 @@ fn test_block_select_persistence_across_cycles() {
     }
 
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -266,7 +299,10 @@ fn test_block_select_persistence_across_cycles() {
     }
 
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -282,7 +318,10 @@ fn test_block_select_persistence_across_cycles() {
         .send_key(KeyCode::Home, KeyModifiers::CONTROL)
         .unwrap();
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -304,13 +343,22 @@ fn test_block_select_then_type() {
 
     // Create block selection spanning 2 lines
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -358,7 +406,10 @@ fn test_normal_then_block_selection() {
 
     // Now do block selection
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -393,13 +444,22 @@ fn test_block_selection_renders_rectangular() {
 
     // Block select down and right to create a 2x3 rectangle (columns 2-4, lines 0-1)
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness
-        .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     harness.render().unwrap();
 
@@ -489,11 +549,17 @@ fn test_block_selection_copy_copies_rectangular_region() {
     // Create block selection: down one line, right 4 characters
     // This should select a 2x4 rectangle: "BBBB" on lines 0 and 1
     harness
-        .send_key(KeyCode::Down, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .send_key(
+            KeyCode::Down,
+            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+        )
         .unwrap();
     for _ in 0..4 {
         harness
-            .send_key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .send_key(
+                KeyCode::Right,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )
             .unwrap();
     }
     harness.render().unwrap();

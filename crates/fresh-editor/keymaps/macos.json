@@ -138,6 +138,21 @@
       "when": "normal"
     },
     {
+      "comment": "VSCode-compatible duplicate line/selection up/down",
+      "key": "Up",
+      "modifiers": ["alt", "shift"],
+      "action": "duplicate_line_up",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "key": "Down",
+      "modifiers": ["alt", "shift"],
+      "action": "duplicate_line_down",
+      "args": {},
+      "when": "normal"
+    },
+    {
       "comment": "Ctrl+A -> Line start (Mac terminals send this for Home)",
       "key": "a",
       "modifiers": ["ctrl"],

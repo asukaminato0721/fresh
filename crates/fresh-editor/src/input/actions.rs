@@ -2620,13 +2620,20 @@ fn handle_sort_lines(state: &mut EditorState, cursors: &Cursors, events: &mut Ve
     }
 }
 
+#[derive(Clone, Copy)]
+enum LineDuplicateDirection {
+    Up,
+    Down,
+}
+
 fn handle_duplicate_line(
     state: &mut EditorState,
     cursors: &Cursors,
     events: &mut Vec<Event>,
+    direction: LineDuplicateDirection,
     estimated_line_length: usize,
 ) {
-    // Duplicate the current line (or selected lines) below
+    // Duplicate the current line (or selected lines) in the requested direction.
     // Process cursors in reverse order to avoid position shifts
     let mut cursor_data: Vec<_> = cursors
         .iter()
@@ -2666,34 +2673,49 @@ fn handle_duplicate_line(
     for (cursor_id, line_start, line_end) in cursor_data {
         let line_text = state.get_text_range(line_start, line_end);
         let line_ending = state.buffer.line_ending().insertion_str();
-        // If the line doesn't end with a newline, prepend one
         let has_trailing_newline = line_text.ends_with('\n') || line_text.ends_with("\r\n");
-        let insert_text = if has_trailing_newline {
-            line_text
-        } else {
-            format!("{}{}", line_ending, line_text)
+        let (insert_position, insert_text, new_line_start) = match direction {
+            LineDuplicateDirection::Up => {
+                // A final line has no line ending to copy, so append one to the
+                // upper duplicate to keep the original on its own line.
+                let insert_text = if has_trailing_newline {
+                    line_text
+                } else {
+                    format!("{}{}", line_text, line_ending)
+                };
+                (line_start, insert_text, line_start)
+            }
+            LineDuplicateDirection::Down => {
+                // A final line has no line ending to copy, so prepend one to the
+                // lower duplicate to separate it from the original.
+                let insert_text = if has_trailing_newline {
+                    line_text
+                } else {
+                    format!("{}{}", line_ending, line_text)
+                };
+                let new_line_start = if has_trailing_newline {
+                    line_end
+                } else {
+                    line_end + line_ending.len()
+                };
+                (line_end, insert_text, new_line_start)
+            }
         };
         let insert_len = insert_text.len();
         events.push(Event::Insert {
-            position: line_end,
+            position: insert_position,
             text: insert_text,
             cursor_id,
         });
 
         // Move cursor to start of the newly duplicated line.
-        // After the Insert, apply_insert places cursor at line_end + insert_len.
-        // The new line starts at line_end (if original had trailing newline)
-        // or line_end + line_ending.len() (if we prepended a newline).
-        let new_line_start = if has_trailing_newline {
-            line_end
-        } else {
-            line_end + line_ending.len()
-        };
+        // After the Insert, apply_insert places the responsible cursor at the
+        // end of the inserted text, irrespective of which side was duplicated.
         let cursor = cursors.get(cursor_id);
         let old_sticky = cursor.and_then(|c| c.sticky_column);
         events.push(Event::MoveCursor {
             cursor_id,
-            old_position: line_end + insert_len,
+            old_position: insert_position + insert_len,
             new_position: new_line_start,
             old_anchor: None,
             new_anchor: None,
@@ -3267,7 +3289,33 @@ pub fn action_to_events(
         }
 
         Action::DuplicateLine => {
-            handle_duplicate_line(state, cursors, &mut events, estimated_line_length);
+            handle_duplicate_line(
+                state,
+                cursors,
+                &mut events,
+                LineDuplicateDirection::Down,
+                estimated_line_length,
+            );
+        }
+
+        Action::DuplicateLineUp => {
+            handle_duplicate_line(
+                state,
+                cursors,
+                &mut events,
+                LineDuplicateDirection::Up,
+                estimated_line_length,
+            );
+        }
+
+        Action::DuplicateLineDown => {
+            handle_duplicate_line(
+                state,
+                cursors,
+                &mut events,
+                LineDuplicateDirection::Down,
+                estimated_line_length,
+            );
         }
 
         Action::Recenter => {

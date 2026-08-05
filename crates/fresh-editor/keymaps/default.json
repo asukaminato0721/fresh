@@ -142,6 +142,21 @@
       "when": "normal"
     },
     {
+      "comment": "VSCode-compatible duplicate line/selection up/down",
+      "key": "Up",
+      "modifiers": ["alt", "shift"],
+      "action": "duplicate_line_up",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "key": "Down",
+      "modifiers": ["alt", "shift"],
+      "action": "duplicate_line_down",
+      "args": {},
+      "when": "normal"
+    },
+    {
       "key": "Home",
       "modifiers": [],
       "action": "smart_home",
@@ -471,30 +486,30 @@
       "when": "normal"
     },
     {
-      "comment": "Normal context - Block selection",
+      "comment": "Normal context - Block selection (VSCode-compatible chord)",
       "key": "Left",
-      "modifiers": ["alt", "shift"],
+      "modifiers": ["ctrl", "alt", "shift"],
       "action": "block_select_left",
       "args": {},
       "when": "normal"
     },
     {
       "key": "Right",
-      "modifiers": ["alt", "shift"],
+      "modifiers": ["ctrl", "alt", "shift"],
       "action": "block_select_right",
       "args": {},
       "when": "normal"
     },
     {
       "key": "Up",
-      "modifiers": ["alt", "shift"],
+      "modifiers": ["ctrl", "alt", "shift"],
       "action": "block_select_up",
       "args": {},
       "when": "normal"
     },
     {
       "key": "Down",
-      "modifiers": ["alt", "shift"],
+      "modifiers": ["ctrl", "alt", "shift"],
       "action": "block_select_down",
       "args": {},
       "when": "normal"

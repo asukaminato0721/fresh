@@ -113,3 +113,32 @@ fn theorem_duplicate_line_undo_restores_original() {
         undo_count: 1,
     });
 }
+
+#[test]
+fn theorem_duplicate_line_up_without_trailing_newline() {
+    assert_buffer_scenario(BufferScenario {
+        description: "DuplicateLineUp copies the final line above with the configured line ending"
+            .into(),
+        initial_text: "one\ntwo".into(),
+        actions: vec![Action::MoveDocumentEnd, Action::DuplicateLineUp],
+        expected_text: "one\ntwo\ntwo".into(),
+        expected_primary: CursorExpect::at(4),
+        expected_extra_cursors: vec![],
+        expected_selection_text: None,
+        ..Default::default()
+    });
+}
+
+#[test]
+fn theorem_directional_duplicate_preserves_crlf() {
+    assert_buffer_scenario(BufferScenario {
+        description: "DuplicateLineUp preserves CRLF when the final line has no terminator".into(),
+        initial_text: "one\r\ntwo".into(),
+        actions: vec![Action::MoveDocumentEnd, Action::DuplicateLineUp],
+        expected_text: "one\r\ntwo\r\ntwo".into(),
+        expected_primary: CursorExpect::at(5),
+        expected_extra_cursors: vec![],
+        expected_selection_text: None,
+        ..Default::default()
+    });
+}

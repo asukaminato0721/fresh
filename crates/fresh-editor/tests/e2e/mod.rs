@@ -110,6 +110,7 @@ pub mod issue_2843_single_line_viewport;
 pub mod issue_2876_prompt_input_hscroll;
 pub mod issue_2878_split_cursor_independence;
 pub mod issue_2893_replace_all_many_matches;
+pub mod issue_2910_duplicate_lines;
 pub mod issue_2953_search_replace_double_open;
 pub mod issue_2969_wheel_over_chrome;
 pub mod issue_3006_drag_beyond_text_area;

@@ -37,7 +37,7 @@ Place your cursor on a word, press **Ctrl+W** to select it, then **Ctrl+D** to s
 
 ## Block Selection
 
-**Alt+Shift+Arrow** creates rectangular column selections — useful for editing aligned data, CSV columns, or repetitive code patterns. Block selections convert to multi-cursors when you start typing.
+**Ctrl+Alt+Shift+Arrow** creates rectangular column selections — useful for editing aligned data, CSV columns, or repetitive code patterns. Block selections convert to multi-cursors when you start typing.
 
 <div class="showcase-demo">
   <img src="./block-selection/showcase.gif" alt="Block selection demo" />
@@ -69,7 +69,7 @@ Select text and press **Alt+U** for uppercase or **Alt+L** for lowercase. When n
 
 ## Duplicate Line
 
-Duplicate the current line instantly via the command palette. Works with selections too.
+Duplicate the current line instantly with **Alt+Shift+Up/Down**. Works with selections too.
 
 <div class="showcase-demo">
   <img src="./duplicate-line/showcase.gif" alt="Duplicate line demo" />
