@@ -79,6 +79,59 @@ impl Editor {
 }
 
 impl Editor {
+    /// Evaluate an agent-submitted script (already wrapped by
+    /// `server::command_access`) as an ephemeral plugin.
+    ///
+    /// This is the whole of the script channel's runtime cost: the source goes
+    /// through the *existing* load-from-source path — the one `init.ts` and
+    /// "Load Plugin from Buffer" use — so it gets TypeScript transpilation, its
+    /// own context, and the full `editor` API without a line of new runtime
+    /// code. The wrapper answers the caller through `editor.completeCommand`,
+    /// which is an ordinary plugin API method, so the result travels the same
+    /// route a plugin command's return value already took.
+    ///
+    /// `Ok(())` means the script was *submitted*. Success is reported later by
+    /// the script itself; only a failure to compile or to reach the runtime is
+    /// settled here, since in that case nothing will ever call
+    /// `completeCommand` and the caller would wait for an answer that cannot
+    /// come.
+    pub fn eval_agent_script(&mut self, wrapped: &str, request_id: u64) -> Result<(), String> {
+        #[cfg(feature = "plugins")]
+        {
+            // A name per request: two scripts in flight must not share a
+            // context, or the second would see (and could clobber) the first's
+            // globals.
+            let name = format!("agent-script-{}", request_id);
+            let rx = self
+                .plugin_manager
+                .read()
+                .unwrap()
+                .load_plugin_from_source_request(wrapped, &name, true)
+                .ok_or_else(|| "plugin runtime unavailable".to_string())?;
+            // Wait for the load off the editor thread: the script's own host
+            // calls only complete on later editor ticks, which this thread must
+            // stay free to service.
+            std::thread::Builder::new()
+                .name("agent-script-load".to_string())
+                .spawn(move || {
+                    let failure = match rx.recv() {
+                        // The script is running; it answers for itself.
+                        Ok(Ok(())) => return,
+                        Ok(Err(e)) => format!("{e}"),
+                        Err(e) => format!("plugin thread closed: {e}"),
+                    };
+                    crate::server::command_access::complete(request_id, false, None, Some(failure));
+                })
+                .map_err(|e| format!("could not start script loader: {e}"))?;
+            Ok(())
+        }
+        #[cfg(not(feature = "plugins"))]
+        {
+            let _ = (wrapped, request_id);
+            Err("scripts not available (compiled without plugin support)".to_string())
+        }
+    }
+
     /// Whether editor-pane popups (LSP completion, hover, signature help,
     /// global plugin popups, …) should intercept keyboard input.
     ///
@@ -388,6 +441,17 @@ impl Editor {
         if self.active_window().file_explorer_context_menu.is_some() {
             layers.push(Layer {
                 kind: LayerKind::FileExplorerContextMenu,
+                owns_keyboard: true,
+                key_context: None,
+                blocks_terminal_input: true,
+            });
+        }
+        // The close-split confirmation popup gets the same treatment as the
+        // other native context menus: a custom key dispatcher owns the keyboard
+        // while it's open and it blocks PTY routing.
+        if self.active_window().close_split_menu.is_some() {
+            layers.push(Layer {
+                kind: LayerKind::CloseSplitMenu,
                 owns_keyboard: true,
                 key_context: None,
                 blocks_terminal_input: true,
@@ -999,6 +1063,24 @@ impl Editor {
             self.reset_dabbrev_state();
         }
 
+        // Enter on a line that points somewhere (`editor.setLineTargets`)
+        // follows it, the same as clicking it. Intercepted here rather than
+        // inside the newline handler so the behaviour is identical whether
+        // the buffer is editable or not — an index built by a script is
+        // usually a plain file, and typing a newline into it is never what
+        // pressing Enter on an entry meant.
+        #[cfg(feature = "plugins")]
+        if matches!(action, Action::InsertNewline) {
+            let buffer_id = self.active_buffer();
+            if let Some(line) = self.cursor_line_in_active_buffer() {
+                if let Some(target) = self.line_target_at(buffer_id, line) {
+                    let source = self.active_split_id();
+                    self.follow_line_target(target, source);
+                    return Ok(());
+                }
+            }
+        }
+
         match action {
             Action::Quit => self.quit(),
             Action::ForceQuit => {
@@ -1152,6 +1234,36 @@ impl Editor {
             }
             Action::ToggleAutoRevert => {
                 self.toggle_auto_revert();
+            }
+            Action::OpenUpdateLog => {
+                self.show_self_update_output();
+            }
+            Action::UpdateFresh => {
+                // Once an update is running or finished, the indicator's job is
+                // to surface the update terminal, not to re-offer the update —
+                // except after a failure, where it offers retry / show-log /
+                // cancel.
+                if self.self_update_phase()
+                    == crate::services::release_checker::SelfUpdatePhase::Failed
+                {
+                    self.show_update_failed_popup();
+                } else if self.self_update_phase()
+                    != crate::services::release_checker::SelfUpdatePhase::Idle
+                {
+                    self.show_self_update_output();
+                } else if !self.config().self_update {
+                    self.set_status_message(t!("update.disabled").to_string());
+                } else if !self.is_update_available() {
+                    self.set_status_message(t!("update.up_to_date").to_string());
+                } else {
+                    // An update is available — offer it via the popup regardless
+                    // of install method. Choosing "Update" opens the local update
+                    // terminal (`fresh --cmd update --yes`); for unknown/source
+                    // installs that terminal just prints the releases page and
+                    // exits, but the UX stays consistent with every other state.
+                    let version = self.latest_version().unwrap_or("").to_string();
+                    self.show_update_popup(&version);
+                }
             }
             Action::FormatBuffer => {
                 if self.refuse_if_editing_disabled() {
@@ -2242,11 +2354,11 @@ impl Editor {
                 // Use non-blocking version to avoid deadlock with async plugin ops
                 #[cfg(feature = "plugins")]
                 {
-                    let result = self
-                        .plugin_manager
-                        .read()
-                        .unwrap()
-                        .execute_action_async(&action_name);
+                    let result = self.plugin_manager.read().unwrap().execute_action_async(
+                        &action_name,
+                        None,
+                        None,
+                    );
                     if let Some(result) = result {
                         match result {
                             Ok(receiver) => {
@@ -2405,6 +2517,9 @@ impl Editor {
             }
             Action::CloseTerminal => {
                 self.close_terminal();
+            }
+            Action::RestartTerminal => {
+                self.restart_terminal();
             }
             Action::FocusTerminal => {
                 // If viewing a terminal buffer, drop the focused split into live
@@ -3049,6 +3164,50 @@ impl Editor {
             // editor (blur) and falls through so the editor handles it
             // (e.g. Ctrl-P opens the command palette).
             if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                // Clipboard chords on a focused Text field belong to the
+                // field, not the editor: Ctrl+V must paste into the
+                // New-Session form's Project Path, not be swallowed (and
+                // Ctrl+A / Ctrl+C / Ctrl+X select/copy/cut the field's
+                // own text). Resolve against the Normal context — the
+                // same lookup the buffer-mounted widget routing in
+                // `handle_action` uses — and route the clipboard actions
+                // to the widget. Everything else keeps the swallow/blur
+                // behaviour below.
+                if self.panel_focused_widget_is_text(&panel_key) {
+                    use crate::input::keybindings::Action;
+                    let key_event = crossterm::event::KeyEvent::new(code, modifiers);
+                    let resolved = {
+                        let keybindings = self.keybindings.read().unwrap();
+                        keybindings
+                            .resolve(&key_event, crate::input::keybindings::KeyContext::Normal)
+                    };
+                    match resolved {
+                        Action::Paste => {
+                            if let Some(text) = self.clipboard.paste() {
+                                // Normalise line endings to LF, matching the
+                                // Action::Paste widget branch; single-line
+                                // TextEdit strips embedded newlines itself.
+                                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                                self.handle_widget_insert_str(&panel_key, &normalized);
+                                self.set_status_message(t!("clipboard.pasted").to_string());
+                            }
+                            return true;
+                        }
+                        Action::Copy => {
+                            self.handle_widget_copy(&panel_key);
+                            return true;
+                        }
+                        Action::Cut => {
+                            self.handle_widget_cut(&panel_key);
+                            return true;
+                        }
+                        Action::SelectAll => {
+                            self.handle_widget_select_all(&panel_key);
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
                 if matches!(
                     self.panel(slot).map(|f| f.placement),
                     Some(super::PanelPlacement::LeftDock { .. })

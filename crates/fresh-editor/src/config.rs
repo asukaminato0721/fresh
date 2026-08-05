@@ -420,6 +420,16 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub check_for_updates: bool,
 
+    /// Offer an interactive in-editor update when a new version is detected
+    /// (default: true). When on, clicking the status-bar update indicator (or
+    /// the "Update fresh" command) prompts to update now; confirming runs the
+    /// update locally in the background and logs to the data dir. When off, the
+    /// indicator is passive (it only tells you a version is available). Has no
+    /// effect if `check_for_updates` is false or the install method can't
+    /// self-update.
+    #[serde(default = "default_true")]
+    pub self_update: bool,
+
     /// Editor behavior settings (indentation, line numbers, wrapping, etc.)
     #[serde(default)]
     pub editor: EditorConfig,
@@ -670,11 +680,13 @@ pub struct WhitespaceVisibility {
     pub tabs_leading: bool,
     pub tabs_inner: bool,
     pub tabs_trailing: bool,
+    pub newlines: bool,
+    pub carriage_returns: bool,
 }
 
 impl Default for WhitespaceVisibility {
     fn default() -> Self {
-        // Match EditorConfig defaults: tabs all on, spaces all off
+        // Match EditorConfig defaults: tabs all on, spaces and line endings all off
         Self {
             spaces_leading: false,
             spaces_inner: false,
@@ -682,6 +694,8 @@ impl Default for WhitespaceVisibility {
             tabs_leading: true,
             tabs_inner: true,
             tabs_trailing: true,
+            newlines: false,
+            carriage_returns: false,
         }
     }
 }
@@ -690,14 +704,7 @@ impl WhitespaceVisibility {
     /// Resolve from EditorConfig flat fields (applying master toggle)
     pub fn from_editor_config(editor: &EditorConfig) -> Self {
         if !editor.whitespace_show {
-            return Self {
-                spaces_leading: false,
-                spaces_inner: false,
-                spaces_trailing: false,
-                tabs_leading: false,
-                tabs_inner: false,
-                tabs_trailing: false,
-            };
+            return Self::hidden();
         }
         Self {
             spaces_leading: editor.whitespace_spaces_leading,
@@ -706,6 +713,8 @@ impl WhitespaceVisibility {
             tabs_leading: editor.whitespace_tabs_leading,
             tabs_inner: editor.whitespace_tabs_inner,
             tabs_trailing: editor.whitespace_tabs_trailing,
+            newlines: editor.whitespace_newlines,
+            carriage_returns: editor.whitespace_carriage_returns,
         }
     }
 
@@ -730,9 +739,14 @@ impl WhitespaceVisibility {
         self.tabs_leading || self.tabs_inner || self.tabs_trailing
     }
 
-    /// Returns true if any indicator (space or tab) is enabled
+    /// Returns true if any line-ending indicator (newline or CR) is enabled
+    pub fn any_line_endings(&self) -> bool {
+        self.newlines || self.carriage_returns
+    }
+
+    /// Returns true if any indicator (space, tab, or line ending) is enabled
     pub fn any_visible(&self) -> bool {
-        self.any_spaces() || self.any_tabs()
+        self.any_spaces() || self.any_tabs() || self.any_line_endings()
     }
 
     /// All indicators disabled — the "hidden" state of the master toggle.
@@ -744,6 +758,8 @@ impl WhitespaceVisibility {
             tabs_leading: false,
             tabs_inner: false,
             tabs_trailing: false,
+            newlines: false,
+            carriage_returns: false,
         }
     }
 
@@ -819,6 +835,11 @@ pub enum StatusBarElement {
     Warnings,
     /// Update available indicator
     Update,
+    /// Restart indicator for a terminal buffer whose process has quit.
+    /// Renders only while the active buffer is such a terminal; clicking it
+    /// restarts the process (resuming the agent conversation when the
+    /// terminal carries an agent-resume spec).
+    TerminalRestart,
     /// Command palette shortcut hint
     Palette,
     /// Current time (HH:MM) with blinking colon separator
@@ -860,6 +881,7 @@ impl TryFrom<String> for StatusBarElement {
             "lsp" => Ok(Self::Lsp),
             "warnings" => Ok(Self::Warnings),
             "update" => Ok(Self::Update),
+            "terminal_restart" => Ok(Self::TerminalRestart),
             "palette" => Ok(Self::Palette),
             "clock" => Ok(Self::Clock),
             "remote" => Ok(Self::RemoteIndicator),
@@ -893,6 +915,7 @@ impl From<StatusBarElement> for String {
             StatusBarElement::Lsp => "{lsp}".to_string(),
             StatusBarElement::Warnings => "{warnings}".to_string(),
             StatusBarElement::Update => "{update}".to_string(),
+            StatusBarElement::TerminalRestart => "{terminal_restart}".to_string(),
             StatusBarElement::Palette => "{palette}".to_string(),
             StatusBarElement::Clock => "{clock}".to_string(),
             StatusBarElement::RemoteIndicator => "{remote}".to_string(),
@@ -924,6 +947,7 @@ impl schemars::JsonSchema for StatusBarElement {
                 {"value": "{lsp}", "name": "LSP"},
                 {"value": "{warnings}", "name": "Warnings"},
                 {"value": "{update}", "name": "Update"},
+                {"value": "{terminal_restart}", "name": "Terminal Restart"},
                 {"value": "{palette}", "name": "Palette"},
                 {"value": "{clock}", "name": "Clock"},
                 {"value": "{remote}", "name": "Remote Indicator"},
@@ -946,6 +970,11 @@ fn default_status_bar_left() -> Vec<StatusBarElement> {
     vec![
         StatusBarElement::WorkspaceTrust,
         StatusBarElement::RemoteIndicator,
+        // Renders only while the active buffer is a terminal whose process
+        // quit, so it costs nothing the rest of the time — but when an agent
+        // dies it sits beside the other two persistent, clickable controls
+        // where users already look.
+        StatusBarElement::TerminalRestart,
         StatusBarElement::Cursor,
         StatusBarElement::Diagnostics,
         StatusBarElement::CursorCount,
@@ -1351,6 +1380,20 @@ pub struct EditorConfig {
     #[schemars(extend("x-section" = "Whitespace"))]
     pub whitespace_tabs_trailing: bool,
 
+    /// Show newline indicators (↵) at the end of every line.
+    /// Default: false
+    #[serde(default = "default_false")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_newlines: bool,
+
+    /// Show carriage-return indicators (␍) for the CR half of CRLF line
+    /// endings, next to the newline position. Stray CR bytes that are not
+    /// part of the buffer's line ending always render as `<0D>` escapes.
+    /// Default: false
+    #[serde(default = "default_false")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_carriage_returns: bool,
+
     // ===== Editing =====
     /// Whether pressing Tab inserts a tab character instead of spaces.
     /// This is the global default; individual languages can override it
@@ -1668,11 +1711,6 @@ pub struct EditorConfig {
     pub keyboard_report_all_keys_as_escape_codes: bool,
 
     // ===== Performance =====
-    /// Maximum time in milliseconds for syntax highlighting per frame
-    #[serde(default = "default_highlight_timeout")]
-    #[schemars(extend("x-section" = "Performance"))]
-    pub highlight_timeout_ms: u64,
-
     /// Undo history snapshot interval (number of edits between snapshots)
     #[serde(default = "default_snapshot_interval")]
     #[schemars(extend("x-section" = "Performance"))]
@@ -1776,10 +1814,6 @@ fn default_scroll_offset() -> usize {
     3
 }
 
-fn default_highlight_timeout() -> u64 {
-    5
-}
-
 fn default_snapshot_interval() -> usize {
     100
 }
@@ -1843,7 +1877,6 @@ impl Default for EditorConfig {
             wrap_indent: true,
             wrap_column: None,
             page_width: default_page_width(),
-            highlight_timeout_ms: default_highlight_timeout(),
             snapshot_interval: default_snapshot_interval(),
             large_file_threshold_bytes: default_large_file_threshold(),
             estimated_line_length: default_estimated_line_length(),
@@ -1907,6 +1940,8 @@ impl Default for EditorConfig {
             whitespace_tabs_leading: true,
             whitespace_tabs_inner: true,
             whitespace_tabs_trailing: true,
+            whitespace_newlines: false,
+            whitespace_carriage_returns: false,
         }
     }
 }
@@ -1923,7 +1958,10 @@ pub enum FileExplorerSide {
 /// File explorer configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FileExplorerConfig {
-    /// Whether to respect .gitignore files
+    /// Whether `.gitignore` rules apply in the file explorer at all.
+    /// When disabled, ignored entries are neither hidden nor grayed out and
+    /// the "show gitignored files" toggle below has nothing left to hide.
+    /// Default: true
     #[serde(default = "default_true")]
     pub respect_gitignore: bool,
 
@@ -2591,8 +2629,11 @@ pub struct LanguageConfig {
     #[serde(default)]
     pub auto_surround: Option<bool>,
 
-    /// Path to custom TextMate grammar file (optional)
-    /// If specified, this grammar will be used when highlighter is "textmate"
+    /// Path to a custom grammar file for this language (optional).
+    /// Loaded into the grammar registry at startup and associated with this
+    /// language's `extensions`, so files matching them highlight with it.
+    /// Only Sublime Text `.sublime-syntax` grammars are supported —
+    /// TextMate `.tmLanguage` is a different format syntect cannot load.
     #[serde(default)]
     pub textmate_grammar: Option<std::path::PathBuf>,
 
@@ -3055,6 +3096,7 @@ impl Default for Config {
             theme: default_theme_name(),
             locale: LocaleName::default(),
             check_for_updates: true,
+            self_update: true,
             editor: EditorConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             file_browser: FileBrowserConfig::default(),
@@ -3474,6 +3516,13 @@ impl MenuConfig {
                             MenuItem::Action {
                                 label: t!("menu.terminal.close").to_string(),
                                 action: "close_terminal".to_string(),
+                                args: HashMap::new(),
+                                when: None,
+                                checkbox: None,
+                            },
+                            MenuItem::Action {
+                                label: t!("menu.terminal.restart").to_string(),
+                                action: "restart_terminal".to_string(),
                                 args: HashMap::new(),
                                 when: None,
                                 checkbox: None,
@@ -4766,6 +4815,8 @@ impl Config {
             LanguageConfig {
                 extensions: vec![
                     "glsl".to_string(),
+                    "glslf".to_string(),
+                    "glslv".to_string(),
                     "vert".to_string(),
                     "frag".to_string(),
                     "geom".to_string(),
@@ -5066,12 +5117,119 @@ impl Config {
                     "tex".to_string(),
                     "latex".to_string(),
                     "ltx".to_string(),
+                    "tikz".to_string(),
+                    "bbl".to_string(),
+                ],
+                filenames: vec![
+                    "*.tex.in".to_string(),
+                    "*.ltx.in".to_string(),
+                    "*.latex.in".to_string(),
+                ],
+                grammar: "LaTeX".to_string(),
+                comment_prefix: Some("%".to_string()),
+                auto_indent: true,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "tex".to_string(),
+            LanguageConfig {
+                extensions: vec![
                     "sty".to_string(),
                     "cls".to_string(),
-                    "bib".to_string(),
+                    "dtx".to_string(),
+                    "ins".to_string(),
+                    "bbx".to_string(),
+                    "cbx".to_string(),
+                    "lbx".to_string(),
+                    "pgf".to_string(),
+                    "ctx".to_string(),
+                    "mkiv".to_string(),
+                    "mkvi".to_string(),
+                    "mkxl".to_string(),
+                    "aux".to_string(),
+                    "toc".to_string(),
                 ],
+                filenames: vec![
+                    "*.sty.in".to_string(),
+                    "*.cls.in".to_string(),
+                    "*.dtx.in".to_string(),
+                    "*.ins.in".to_string(),
+                    "*.bbx.in".to_string(),
+                    "*.cbx.in".to_string(),
+                    "*.lbx.in".to_string(),
+                ],
+                grammar: "TeX".to_string(),
+                comment_prefix: Some("%".to_string()),
+                auto_indent: true,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "bibtex".to_string(),
+            LanguageConfig {
+                extensions: vec!["bib".to_string()],
+                filenames: vec!["*.bib.in".to_string()],
+                grammar: "BibTeX".to_string(),
+                comment_prefix: Some("%".to_string()),
+                auto_indent: true,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "bibtex-style".to_string(),
+            LanguageConfig {
+                extensions: vec!["bst".to_string()],
                 filenames: vec![],
-                grammar: "latex".to_string(),
+                grammar: "BibTeX Style".to_string(),
                 comment_prefix: Some("%".to_string()),
                 auto_indent: true,
                 auto_close: None,
@@ -5711,7 +5869,7 @@ impl Config {
             "perl".to_string(),
             LanguageConfig {
                 extensions: vec!["pl".to_string(), "pm".to_string(), "t".to_string()],
-                filenames: vec![],
+                filenames: vec!["latexmkrc".to_string(), ".latexmkrc".to_string()],
                 grammar: "Perl".to_string(),
                 comment_prefix: Some("#".to_string()),
                 auto_indent: true,
@@ -6294,12 +6452,201 @@ impl Config {
         );
 
         languages.insert(
+            "thrift".to_string(),
+            LanguageConfig {
+                extensions: vec!["thrift".to_string()],
+                filenames: vec![],
+                grammar: "Thrift".to_string(),
+                comment_prefix: Some("//".to_string()),
+                auto_indent: true,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
             "cmake".to_string(),
             LanguageConfig {
                 extensions: vec!["cmake".to_string()],
-                filenames: vec!["CMakeLists.txt".to_string()],
+                filenames: vec!["CMakeLists.txt".to_string(), "*.cmake.in".to_string()],
                 grammar: "CMake".to_string(),
                 comment_prefix: Some("#".to_string()),
+                auto_indent: true,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "cmake-cache".to_string(),
+            LanguageConfig {
+                extensions: vec![],
+                filenames: vec!["CMakeCache.txt".to_string(), "cmakecache.txt".to_string()],
+                grammar: "CMake Cache".to_string(),
+                comment_prefix: Some("//".to_string()),
+                auto_indent: false,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "pkg-config".to_string(),
+            LanguageConfig {
+                extensions: vec!["pc".to_string()],
+                filenames: vec!["*.pc.in".to_string()],
+                grammar: "pkg-config".to_string(),
+                comment_prefix: Some("#".to_string()),
+                auto_indent: false,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "wavefront-obj".to_string(),
+            LanguageConfig {
+                extensions: vec!["obj".to_string()],
+                filenames: vec![],
+                grammar: "Wavefront OBJ".to_string(),
+                comment_prefix: Some("#".to_string()),
+                auto_indent: false,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "doxygen".to_string(),
+            LanguageConfig {
+                extensions: vec!["dox".to_string(), "doxy".to_string()],
+                filenames: vec![],
+                grammar: "Doxygen".to_string(),
+                comment_prefix: Some("///".to_string()),
+                auto_indent: false,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "doxygen-config".to_string(),
+            LanguageConfig {
+                extensions: vec![],
+                filenames: vec!["Doxyfile".to_string(), "Doxyfile.in".to_string()],
+                grammar: "Doxygen Config".to_string(),
+                comment_prefix: Some("#".to_string()),
+                auto_indent: false,
+                auto_close: None,
+                auto_surround: None,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                line_wrap: None,
+                wrap_column: None,
+                page_view: None,
+                page_width: None,
+                use_tabs: None,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+                word_characters: None,
+                indentation_guide: None,
+                indent: None,
+            },
+        );
+
+        languages.insert(
+            "windows-resource".to_string(),
+            LanguageConfig {
+                extensions: vec!["rc".to_string()],
+                filenames: vec![],
+                grammar: "Windows Resource Script".to_string(),
+                comment_prefix: Some("//".to_string()),
                 auto_indent: true,
                 auto_close: None,
                 auto_surround: None,
@@ -8400,6 +8747,8 @@ mod tests {
         assert!(config.editor.syntax_highlighting);
         assert!(config.languages.contains_key("gdscript"));
         assert_eq!(config.languages["gdscript"].extensions, vec!["gd"]);
+        assert_eq!(config.languages["thrift"].extensions, vec!["thrift"]);
+        assert_eq!(config.languages["thrift"].grammar, "Thrift");
         // keybindings is empty by design - it's for user customizations only
         // The actual keybindings come from resolve_keymap(active_keybinding_map)
         assert!(config.keybindings.is_empty());

@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::action::Action;
-use crate::api::ViewTokenWire;
 use crate::{BufferId, CursorId, SplitId};
 
 /// Arguments passed to hook callbacks
@@ -25,6 +24,14 @@ pub enum HookArgs {
 
     /// After a buffer is successfully saved
     AfterFileSave { buffer_id: BufferId, path: PathBuf },
+
+    /// A buffer was reloaded from disk — auto-revert picked up an external
+    /// change (e.g. `git checkout <ref> -- <file>` run in another terminal)
+    /// or the user ran an explicit revert. Fires after the new content is
+    /// live. Reloads don't go through `AfterFileSave`, so plugins that
+    /// surface disk-derived state (git gutter, etc.) must subscribe to this
+    /// too or their decorations go stale on every external reset.
+    AfterFileRevert { buffer_id: BufferId, path: PathBuf },
 
     /// The file explorer mutated the filesystem (paste, duplicate, ...)
     /// without going through a buffer save. Plugins that surface
@@ -158,6 +165,24 @@ pub enum HookArgs {
     /// hook, *not* an editor rebuild (which would reset other sessions).
     TrustChanged { level: String },
 
+    /// The effective configuration changed: the user saved from the
+    /// Settings UI, or the config was reloaded from disk. Fires after
+    /// the new config is live *and* the plugin state snapshot has been
+    /// refreshed, so a handler that re-reads `editor.getConfig()` /
+    /// `editor.getPluginConfig()` sees the new values, not the old ones.
+    ///
+    /// Deliberately payload-free. Config is a pull API — the host says
+    /// "something changed" and each plugin re-reads exactly the keys it
+    /// cares about. Naming the changed keys here would have to lie for
+    /// the reload-from-disk path, which replaces the whole tree without
+    /// computing a diff.
+    ///
+    /// Does *not* fire for `editor.setSetting(...)`, a plugin's own
+    /// write into its session-scoped runtime layer: a plugin that
+    /// re-configures itself from this handler would otherwise wake
+    /// itself (and every other plugin) right back up.
+    ConfigChanged {},
+
     /// Rendering is starting for a buffer (called once per buffer before render_line hooks)
     RenderStart { buffer_id: BufferId },
 
@@ -241,20 +266,6 @@ pub enum HookArgs {
         language: String,
         /// The server that produced the target (e.g. `slangd`).
         server_name: String,
-    },
-
-    /// View transform request
-    ViewTransformRequest {
-        buffer_id: BufferId,
-        split_id: SplitId,
-        /// Byte offset of the viewport start
-        viewport_start: usize,
-        /// Byte offset of the viewport end
-        viewport_end: usize,
-        /// Base tokens (Text, Newline, Space) from the source
-        tokens: Vec<ViewTokenWire>,
-        /// Byte positions of all cursors in this buffer
-        cursor_positions: Vec<usize>,
     },
 
     /// Mouse click event
@@ -737,6 +748,7 @@ mod tests {
             HookArgs::PluginsLoaded {},
             HookArgs::Ready {},
             HookArgs::FocusGained {},
+            HookArgs::ConfigChanged {},
         ] {
             let json = hook_args_to_json(&args).unwrap();
             assert_eq!(

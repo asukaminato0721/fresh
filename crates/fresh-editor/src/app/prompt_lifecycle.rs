@@ -94,6 +94,17 @@ impl Editor {
         // Dismiss transient popups and clear hover state when opening a prompt
         self.active_window_mut().on_editor_focus_lost();
 
+        // A new prompt displacing a live `editor.pickFile` browser must
+        // resolve the pick as cancelled — a dangling callback would
+        // otherwise hijack the next Open File confirm. (`pickFile`
+        // itself arms the callback after this runs.)
+        if let Some(stale) = self.active_window_mut().pending_file_pick_callback.take() {
+            self.plugin_manager
+                .read()
+                .unwrap()
+                .resolve_callback(stale, "null".to_string());
+        }
+
         // Clear search highlights when starting a new search prompt
         // This ensures old highlights from previous searches don't persist
         match prompt_type {
@@ -331,7 +342,7 @@ impl Editor {
         };
         let (viewport_top_byte, viewport_top_view_line_offset, viewport_left_column) = {
             let vp = self.active_viewport();
-            (vp.top_byte, vp.top_view_line_offset, vp.left_column)
+            (vp.top_byte(), vp.top_view_line_offset(), vp.left_column)
         };
 
         self.active_window_mut().goto_line_preview = Some(super::GotoLinePreviewSnapshot {
@@ -410,8 +421,8 @@ impl Editor {
             .get_mut(&snap.split_id)
         {
             let vp = &mut view_state.viewport;
-            vp.top_byte = snap.viewport_top_byte;
-            vp.top_view_line_offset = snap.viewport_top_view_line_offset;
+            vp.set_top_byte(snap.viewport_top_byte);
+            vp.set_top_view_line_offset(snap.viewport_top_view_line_offset);
             vp.left_column = snap.viewport_left_column;
             // The cursor we just restored is already consistent with this
             // viewport; don't let ensure_visible re-scroll on the next render.
@@ -851,6 +862,18 @@ impl Editor {
                     // Clear file browser state
                     self.active_window_mut().file_open_state = None;
                     self.active_window_mut().file_browser_layout = None;
+
+                    // A cancelled `editor.pickFile` browser resolves the
+                    // plugin's promise with null, like a dismissed file
+                    // dialog resolves an empty pick in a browser.
+                    if let Some(callback_id) =
+                        self.active_window_mut().pending_file_pick_callback.take()
+                    {
+                        self.plugin_manager
+                            .read()
+                            .unwrap()
+                            .resolve_callback(callback_id, "null".to_string());
+                    }
 
                     // Cancelling a Save-As that was opened as part of the
                     // "save and quit" chain aborts the quit — the user

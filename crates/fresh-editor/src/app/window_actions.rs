@@ -262,13 +262,24 @@ impl crate::app::Editor {
     /// blessed factory. Each call mints handles owned by exactly one session,
     /// so a trust decision or env activation in one window can never leak into
     /// another. Every per-session window construction goes through this.
+    ///
+    /// Trust is keyed on the *repo* rather than on `root`: a session opened on
+    /// a linked git worktree is born under the main worktree's recorded
+    /// decision, so forking a worktree per agent doesn't re-ask the trust
+    /// question for code the user already vouched for. Env stays keyed on
+    /// `root` (a worktree can carry its own `.venv`).
     pub(crate) fn session_scope_for(
         &self,
         root: &std::path::Path,
     ) -> crate::services::authority::SessionScope {
+        let trust_owner = crate::services::workspace_trust::trust_owner_root(
+            self.authority().filesystem.as_ref(),
+            root,
+        );
         crate::services::authority::SessionScope::for_root(
             root,
             &self.dir_context.project_state_dir(root),
+            &self.dir_context.project_state_dir(&trust_owner),
         )
     }
 
@@ -337,7 +348,7 @@ impl crate::app::Editor {
         window_authority: crate::services::authority::Authority,
         resume: Option<Vec<String>>,
         env: Option<HashMap<String, String>>,
-        command_allowlist: Option<Vec<String>>,
+        allow_script: bool,
     ) -> Result<(WindowId, fresh_core::TerminalId, fresh_core::BufferId), String> {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
@@ -403,13 +414,13 @@ impl crate::app::Editor {
         let restore_command = command.clone().unwrap_or_default();
 
         // Assemble the extra env injected into the seeded terminal's child:
-        // `FRESH_BIN` always, plus (when `command_allowlist` is present) a
+        // `FRESH_BIN` always, plus (when `allow_script` is present) a
         // capability token bound to *this* new window + that allowlist, so a
         // client in the terminal can drive exactly those commands against this
         // window and no other. Minting happens here — after the window id is
         // known, before the PTY spawns — so the token is live by the time the
         // child reads its env. See `terminal::agent_command_env`.
-        let terminal_env = crate::app::terminal::agent_command_env(id, env, command_allowlist);
+        let terminal_env = crate::app::terminal::agent_command_env(id, env, allow_script);
 
         let spawn_result = {
             let target = self
@@ -448,14 +459,7 @@ impl crate::app::Editor {
         // An explicit `resume` argv (agent-resume) supersedes the launch
         // command on restore — see `restore_terminal_from_workspace`.
         if let Some(target) = self.windows.get_mut(&id) {
-            target
-                .terminal_commands
-                .insert(terminal_id, restore_command);
-            if let Some(resume_argv) = resume.filter(|a| !a.is_empty()) {
-                target
-                    .terminal_resume_commands
-                    .insert(terminal_id, resume_argv);
-            }
+            target.mark_terminal_restorable(terminal_id, Some(restore_command), resume);
         }
 
         // The switch has now committed (the spawn succeeded and the active
@@ -721,8 +725,20 @@ impl crate::app::Editor {
     /// editor content as the incoming window appears. The editor
     /// content geometry is layout-driven (identical for any session),
     /// so the outgoing window's last content rect is the right area to
-    /// animate. `capture_before_all` snapshots the previous frame (the
-    /// outgoing window) and `SlideIn` slides the new content in over it.
+    /// animate: `SlideIn` pushes the previous frame out as the new
+    /// content slides in over it.
+    ///
+    /// The "before" comes from `last_rendered_frame`, the editor-wide
+    /// clone of the last painted frame, so it is the workspace the user
+    /// is actually looking at. It cannot come from the incoming window's
+    /// own animation runner: runners are per-window and only the active
+    /// window paints, so that one still holds whatever this window drew
+    /// the last time it was on screen.
+    ///
+    /// Starting the effect here is only sound because every path that
+    /// reaches this function runs between frames — the render path
+    /// dispatches plugin commands only in its pre-layout drain, before
+    /// anything has been painted for the outgoing window.
     pub fn set_active_window_animated(&mut self, id: WindowId, from_edge: &str) {
         let animate = self.active_window != id
             && self.windows.contains_key(&id)
@@ -1339,7 +1355,6 @@ impl crate::app::Editor {
         if self.session_keepalives.remove(&id).is_some() {
             tracing::info!("close_window: dropped remote session keepalive for window {id}");
         }
-
         self.plugin_manager
             .read()
             .unwrap()
@@ -1382,7 +1397,7 @@ impl crate::app::Editor {
             authority,
             None,
             None,
-            None,
+            false,
         ) {
             Ok((window_id, _terminal, _buffer)) => {
                 self.session_keepalives.insert(window_id, keepalive);
@@ -1478,13 +1493,8 @@ impl crate::app::Editor {
         // terminals spawn over SSH/kube), or seed an empty layout when there is
         // no saved workspace. Either constructor takes the authority by value —
         // the window is born owning its real backend.
-        let workspace = if let Some(name) = self.session_name.clone() {
-            crate::workspace::Workspace::load_session(&name, &root)
-                .ok()
-                .flatten()
-        } else {
-            crate::workspace::Workspace::load(&root).ok().flatten()
-        };
+        // One store, whatever launched this editor — see `save_workspace_for`.
+        let workspace = crate::workspace::Workspace::load(&root).ok().flatten();
         let mut window = match workspace {
             Some(ws) => crate::app::window::Window::from_workspace(
                 id,
@@ -1567,13 +1577,9 @@ impl crate::app::Editor {
         let root = descriptor.root.clone();
         // Same per-session local scope a boot-discovered local shell gets:
         // its own trust + env handles, never a clone of the previous
-        // window's.
-        let authority = crate::services::authority::Authority::local_scoped(
-            crate::services::authority::SessionScope::for_root(
-                &root,
-                &self.dir_context.project_state_dir(&root),
-            ),
-        );
+        // window's. Routed through the blessed factory so this shell inherits
+        // the worktree→repo trust keying too.
+        let authority = self.local_session_authority(&root);
         let mut window = Window::new(
             id,
             descriptor.label.clone(),

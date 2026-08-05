@@ -60,6 +60,39 @@ fn tab_row_col_of_str(screen: &str, needle: &str) -> Option<u16> {
     Some(line[..byte_idx].chars().count() as u16)
 }
 
+/// Column of the last character of the *terminal* tab's name on the tab row,
+/// for a window holding `[No Name]` plus one terminal. Walks left from that
+/// tab's close button (the row's second "×") past the padding, so the caller
+/// never has to know what the spawned shell is called — the title is the
+/// foreground process name and differs per platform and per CI runner.
+fn terminal_tab_name_col(screen: &str) -> Option<u16> {
+    let row: Vec<char> = screen.lines().nth(1)?.chars().collect();
+    let mut closes = row.iter().enumerate().filter(|(_, c)| **c == '×');
+    closes.next()?; // the [No Name] tab's close button
+    let close_col = closes.next()?.0; // the terminal tab's
+    row[..close_col]
+        .iter()
+        .rposition(|c| !c.is_whitespace() && *c != '×')
+        .map(|p| p as u16)
+}
+
+/// The rendered text of the LEFT pane of a two-pane vertical split: every
+/// screen row truncated at the vertical separator. Lets an assertion say
+/// "this appeared in *that* pane" when both panes show the same terminal.
+fn left_pane_text(screen: &str) -> String {
+    screen
+        .lines()
+        .map(|line| line.split('│').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Shell command emitting one line of `X` * 100 followed by the marker
+/// `ZEND`. The `Z` is written as `\x5a` so the marker never appears
+/// literally in the echoed command line — finding "ZEND" on screen can only
+/// mean the *output* row's tail was actually rendered.
+const WIDE_LINE_CMD: &[u8] = b"printf 'X%.0s' $(seq 1 100); printf '\\x5aEND\\n'\n";
+
 /// Regression: with the keyboard focused on an *active terminal* buffer
 /// (terminal mode owns the keyboard), opening the tab bar's "+" popup must
 /// still hand the keyboard to the popup. Its navigation keys drive the menu
@@ -3419,11 +3452,13 @@ fn test_scrollback_viewport_resets_on_reentry_mouse_scroll() {
     );
 }
 
-/// Test that terminal process exit keeps buffer open with exit message
+/// Test that terminal process exit keeps the buffer open, marked on the tab
 ///
 /// When a terminal process exits (e.g., via 'exit' command):
 /// 1. The final screen state should be preserved in the buffer
-/// 2. An "[Terminal process exited]" message should be appended
+/// 2. The *tab* should say so — nothing is written into the output, because a
+///    line appended there costs a row of the user's last screen (see
+///    `test_exit_does_not_scroll_the_last_frame_away`)
 /// 3. The buffer should remain open in read-only scrollback mode
 #[test]
 #[cfg(not(windows))] // Uses Unix shell
@@ -3453,12 +3488,9 @@ fn test_terminal_exit_keeps_buffer_with_message() {
         .active_window_mut()
         .send_terminal_input(b"exit\n");
 
-    // Wait for terminal to exit and buffer to show the exit message
+    // Wait for the terminal to exit — signalled on the tab, not in the output.
     harness
-        .wait_until(|h| {
-            let content = h.editor().get_buffer_content(buffer_id).unwrap_or_default();
-            content.contains("[Terminal process exited]")
-        })
+        .wait_until(|h| h.screen_to_string().contains("(exited)"))
         .unwrap();
 
     harness.render().unwrap();
@@ -3493,13 +3525,11 @@ fn test_terminal_exit_keeps_buffer_with_message() {
         content
     );
     assert!(
-        content.contains("[Terminal process exited]"),
-        "Buffer should contain exit message.\nContent:\n{}",
+        !content.contains("[Terminal process exited]"),
+        "The exit must not be written into the output — it costs a row of the \
+         user's last screen. It belongs on the tab.\nContent:\n{}",
         content
     );
-
-    // Screen should show the exit message
-    harness.assert_screen_contains("[Terminal process exited]");
 }
 
 /// Test Windows terminal shows prompt and responds to commands
@@ -4313,24 +4343,40 @@ fn test_terminal_mode_hides_scrollbar_and_reclaims_width() {
     );
 }
 
-/// Terminal buffers must never line-wrap, even with global line wrap enabled.
-/// Wrapping a large terminal scrollback turns the scrollbar's visual-row index
-/// into an O(all-lines) scan on every frame, freezing the UI (fresh#2608).
+/// Terminal buffers always line-wrap in *grid* mode (fresh#2649): scroll-back
+/// lays out exactly like the live PTY grid — regardless of the global
+/// line-wrap setting — so entering scroll-back never reflows. The fresh#2608
+/// freeze does not return with it: grid row counting is allocation-free and
+/// viewport-local, and the whole-buffer visual-row index keeps its size gates.
 #[test]
-fn test_terminal_buffers_never_line_wrap() {
+fn test_terminal_buffers_always_grid_wrap() {
     let mut harness = harness_or_return!(80, 24);
     harness.editor_mut().open_terminal();
     let term_id = harness.editor().active_buffer();
 
-    // Global line wrap on: a regular buffer would wrap; a terminal must not.
-    harness.editor_mut().config_mut().editor.line_wrap = true;
+    // Regardless of the global setting, terminals resolve to (grid) wrap —
+    // no toggle or override may flip them to word wrap or to non-wrap.
+    for global in [false, true] {
+        harness.editor_mut().config_mut().editor.line_wrap = global;
+        assert!(
+            harness
+                .editor()
+                .active_window()
+                .resolve_line_wrap_for_buffer(term_id),
+            "terminal buffers must resolve to grid line-wrap (global line_wrap={global})"
+        );
+    }
 
+    // The per-frame healer pins the terminal viewport to grid-wrap mode.
+    harness.render().unwrap();
+    let win = harness.editor().active_window();
+    let (mgr, view_states) = win.buffers.splits().unwrap();
+    let vp = &view_states.get(&mgr.active_split()).unwrap().viewport;
     assert!(
-        !harness
-            .editor()
-            .active_window()
-            .resolve_line_wrap_for_buffer(term_id),
-        "terminal buffers must never resolve to line-wrap even when global line wrap is on"
+        vp.line_wrap_enabled && vp.grid_wrap,
+        "terminal viewport must be healed into grid-wrap mode (line_wrap_enabled={}, grid_wrap={})",
+        vp.line_wrap_enabled,
+        vp.grid_wrap
     );
 }
 
@@ -4449,6 +4495,38 @@ fn test_terminal_drag_select_copy_resumes_live() {
     assert!(
         harness.editor().is_terminal_mode(),
         "copying the selection should resume the live terminal"
+    );
+}
+
+/// A drag that overshoots the end of the echoed text must still select the
+/// WHOLE text, last character included. Regression: the grid-wrap byte
+/// resolver (`terminal_grid_byte_at`) resolved a past-end column through
+/// `source_byte_at_visual_col`, whose out-of-range fallback clamps to the
+/// last character's *start* byte — so every selection whose drag ended past
+/// the text silently lost the final character (fresh web-ui suite caught it
+/// as a copied "…MARKER-4" for an on-screen "…MARKER-42").
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_terminal_drag_select_past_line_end_includes_last_char() {
+    let mut harness = harness_or_return!(120, 30);
+    harness.editor_mut().set_clipboard_for_test(String::new());
+    let marker = "XSELECT_PAST_EOL_9";
+    let (col, row) = terminal_with_marker(&mut harness, marker);
+
+    // Overshoot the 18-char marker by several columns.
+    drag_select_row(&mut harness, col, col + marker.len() as u16 + 7, row).unwrap();
+    assert!(
+        primary_selection_active(&harness),
+        "drag should build a real selection over the terminal text"
+    );
+
+    harness
+        .send_key(KeyCode::Char('c'), KeyModifiers::CONTROL)
+        .unwrap();
+    let clip = harness.editor_mut().clipboard_content_for_test();
+    assert!(
+        clip.contains(marker),
+        "a drag past the end of the text must copy it whole (last char included), got {clip:?}"
     );
 }
 
@@ -4625,5 +4703,379 @@ fn test_terminal_double_click_selects_word_and_copy_resumes() {
     assert!(
         harness.editor().is_terminal_mode(),
         "copying the double-click selection should resume the live terminal"
+    );
+}
+
+/// fresh#2649: a single logical line taller than the terminal pane.
+///
+/// Symptom 1 (data loss): the leading `XXXXXXXX` of an in-progress wrapped
+/// line scrolls into grid history while its terminator is still on screen, so
+/// it reaches scrollback via NEITHER capture path and is unreachable at any
+/// scroll position. After the fix `append_visible_screen` re-attaches the
+/// in-history head, so scrolling to the top of scrollback reveals it.
+///
+/// Symptom 2 (scroll corruption): the scroll math and the renderer used to
+/// disagree about how scroll-back rows lay out, so scrolling up then back
+/// down got stuck. Terminal scroll-back now *grid-wraps* — exact-column rows
+/// at the capture-time PTY width — and the renderer and every scroll path
+/// share that one row model, so a scroll round-trip returns to a stable
+/// bottom frame.
+#[test]
+#[cfg(not(windows))] // Uses a Unix shell to emit the long line
+fn test_bug_2649_tall_line_scrollback_reachable_and_stable() {
+    let mut harness = harness_or_return!(100, 24);
+
+    harness.editor_mut().open_terminal();
+    // Keep the focused split parked in scroll-back instead of snapping back to
+    // the live tail when the shell prompt redraws after our command.
+    harness
+        .editor_mut()
+        .set_terminal_jump_to_end_on_output(false);
+
+    // Emit ONE logical line far taller than the ~22-row pane: 8 'X', then 3600
+    // 'A', then an 8-'Z' tail — all one line, terminated. Each run is built via
+    // `head`/`tr` (shell-portable, no python/seq) specifically so the echoed
+    // COMMAND text contains none of the literal marker strings — only the
+    // program OUTPUT does, keeping the screen assertions unambiguous. The 'Z'
+    // tail stays on the live grid (just above the returning prompt) so the line
+    // is still "in progress" when we enter scroll-back — exactly the case where
+    // the in-history head (`XXXXXXXX`) used to be lost (fresh#2649).
+    harness.editor_mut().active_window_mut().send_terminal_input(
+        b"head -c 8 /dev/zero | tr '\\0' 'X'; head -c 3600 /dev/zero | tr '\\0' 'A'; head -c 8 /dev/zero | tr '\\0' 'Z'; printf '\\n'\n",
+    );
+    harness
+        .wait_until(|h| h.screen_to_string().contains("ZZZZZZZZ"))
+        .unwrap();
+
+    // The leading X's are above the live pane (the line is taller than it).
+    harness.assert_screen_not_contains("XXXXXXXX");
+
+    // Drop into read-only scroll-back and jump to the very top of history.
+    harness
+        .send_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(!harness.editor().is_terminal_mode());
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Symptom 1: the leading XXXXXXXX is now reachable in scroll-back.
+    assert!(
+        harness.screen_to_string().contains("XXXXXXXX"),
+        "leading XXXXXXXX of the tall line must be reachable at the top of \
+         scroll-back (fresh#2649 symptom 1). Screen:\n{}",
+        harness.screen_to_string()
+    );
+
+    // Symptom 2: scrolling to the bottom and back to the top must round-trip
+    // cleanly — terminal scroll-back is non-wrapping and the scroll math now
+    // agrees with the renderer, so this doesn't get stuck or collapse the
+    // content. After the round-trip the head is still reachable at the top.
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    for _ in 0..6 {
+        harness
+            .send_key(KeyCode::PageUp, KeyModifiers::NONE)
+            .unwrap();
+    }
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    assert!(
+        harness.screen_to_string().contains("XXXXXXXX"),
+        "after scrolling to the bottom and back up, the tall line's head must \
+         still be reachable — scroll-back must not get stuck or collapse \
+         (fresh#2649 symptom 2). Screen:\n{}",
+        harness.screen_to_string()
+    );
+}
+
+/// fresh#2775 UX regression: entering scroll-back must not reflow the pane.
+///
+/// The live grid soft-wraps long lines at exact column boundaries (mid-word,
+/// at the PTY width). The scroll-back view now wraps the same way — grid
+/// wrap at the capture-time width — so the transition Ctrl+Space makes is
+/// seamless: every content row of the last live frame reads identically in
+/// the first scroll-back frame. The old behaviour (non-wrapping scroll-back)
+/// collapsed each wrapped line onto one long row with horizontal overflow;
+/// word-boundary wrapping would reshuffle rows around the spaces. Both would
+/// fail the row-for-row comparison below.
+#[test]
+#[cfg(not(windows))] // Uses a Unix shell to emit the long lines
+fn test_bug_2775_scrollback_entry_is_seamless_grid_wrap() {
+    let mut harness = harness_or_return!(100, 24);
+
+    harness.editor_mut().open_terminal();
+    harness
+        .editor_mut()
+        .set_terminal_jump_to_end_on_output(false);
+
+    // Two wrapped logical lines, built so the echoed COMMAND text contains
+    // none of the literal markers (only the OUTPUT does):
+    //  - a solid 8-'Q' + 260-'W' run (no spaces): wraps mid-run at exactly
+    //    the grid width;
+    //  - 40 space-separated words "w00xx " .. "w39xx" (~240 cells): the grid
+    //    splits these MID-WORD at the column boundary, which word-boundary
+    //    wrapping would never do — pinning the grid-wrap semantics.
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(
+        b"head -c 8 /dev/zero | tr '\\0' 'Q'; head -c 260 /dev/zero | tr '\\0' 'W'; printf '\\n'\n",
+    );
+    harness
+        .wait_until(|h| h.screen_to_string().contains("WWWWWWWW"))
+        .unwrap();
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(b"awk 'BEGIN{for(i=0;i<40;i++)printf \"w%02dxx \",i; print \"\"}'\n");
+    harness
+        .wait_until(|h| h.screen_to_string().contains("w39xx"))
+        .unwrap();
+
+    let live = harness.screen_to_string();
+    let live_rows: Vec<&str> = live.lines().collect();
+
+    // Rows carrying our wrapped output (not the echoed commands, which
+    // contain neither marker).
+    let marker_rows: Vec<usize> = live_rows
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains("WWWWWWWW") || l.contains("w07xx") || l.contains("w39xx"))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        marker_rows.len() >= 4,
+        "expected the two long lines to wrap across >= 4 rows on the live \
+         grid, got {} marker rows. Screen:\n{}",
+        marker_rows.len(),
+        live
+    );
+
+    // Enter read-only scroll-back.
+    harness
+        .send_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(!harness.editor().is_terminal_mode());
+    harness.render().unwrap();
+    let scrollback = harness.screen_to_string();
+    let sb_rows: Vec<&str> = scrollback.lines().collect();
+
+    // Seamless transition: each content row reads the same before and
+    // after, at the same screen row. Only the far-right columns may differ
+    // (the scroll-back view draws a scrollbar over the grid's last column),
+    // so compare the first 96 of the 100 screen columns.
+    let prefix = |l: &str| {
+        l.chars()
+            .take(96)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    };
+    for &i in &marker_rows {
+        assert_eq!(
+            prefix(live_rows[i]),
+            prefix(sb_rows[i]),
+            "row {i} reflowed when entering scroll-back.\nLIVE:\n{live}\nSCROLLBACK:\n{scrollback}"
+        );
+    }
+
+    // And the scroll round trip is stable. Establish the bottom frame with
+    // Ctrl+End first — it moves the cursor to EOF, whose trailing empty
+    // line sits one row below the entry frame's last grid row, so the
+    // bottom frame legitimately differs from the entry frame by that one
+    // row (same as in non-wrap mode). The invariant under test is that
+    // scrolling away and returning reproduces the SAME bottom frame —
+    // grid scroll math clamping to a stable maximum instead of drifting
+    // or sticking (fresh#2649 symptom 2).
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    let bottom1 = harness.screen_to_string();
+    for _ in 0..3 {
+        harness
+            .send_key(KeyCode::PageUp, KeyModifiers::NONE)
+            .unwrap();
+    }
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    let bottom2 = harness.screen_to_string();
+    let b1_rows: Vec<&str> = bottom1.lines().collect();
+    let b2_rows: Vec<&str> = bottom2.lines().collect();
+    assert_eq!(b1_rows.len(), b2_rows.len());
+    // Compare every row except the status bar (it shows the cursor
+    // position, which Ctrl+End pins to EOF both times anyway — but keep
+    // the comparison to content rows for robustness).
+    for i in 0..b1_rows.len().saturating_sub(2) {
+        assert_eq!(
+            prefix(b1_rows[i]),
+            prefix(b2_rows[i]),
+            "row {i} unstable after PageUp x3 + Ctrl+End round trip.\nBEFORE:\n{bottom1}\nAFTER:\n{bottom2}"
+        );
+    }
+}
+
+/// fresh#2844: a terminal's scroll-back view keeps the wrap column it was
+/// captured at, so when a *new split* halves its pane the exact-column grid
+/// rows are laid out too wide and every line is clipped at the pane edge —
+/// the tail of each line simply disappears.
+///
+/// Drives: print a line wider than half the screen, drop the split into
+/// read-only scroll-back, then split vertically. The pre-existing (left) pane
+/// must re-wrap at its new width, so the line's tail is still on screen
+/// *inside that pane*.
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_terminal_scrollback_rewraps_when_split_shrinks_pane() {
+    let mut harness = harness_or_return!(120, 30);
+
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(WIDE_LINE_CMD);
+    harness
+        .wait_until(|h| h.screen_to_string().contains("ZEND"))
+        .unwrap();
+
+    // Ctrl+Space drops the focused split into read-only scroll-back, which
+    // captures the buffer at the current (full-width) grid width.
+    harness
+        .send_key(KeyCode::Char(' '), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Split vertically: the pre-existing split's pane halves in width. The new
+    // split streams the live grid, so only the LEFT pane exercises scroll-back.
+    harness.editor_mut().split_pane_vertical();
+    harness.render().unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        left_pane_text(&screen).contains("ZEND"),
+        "The pre-existing split's scroll-back must re-wrap to its new pane \
+         width and keep the tail of the line on screen. Screen:\n{}",
+        screen
+    );
+}
+
+/// fresh#2844: the tab bar's maximize button toggles the split tree directly
+/// and never reflows, so every visible terminal keeps the PTY size (and
+/// scroll-back wrap column) it had before the click — the grid stays wrapped
+/// at the old half-pane width inside a now full-width pane.
+///
+/// Drives: split a terminal in two, then click the maximize button on the
+/// left split's tab bar. Its pane is now full width, so the whole 104-column
+/// line must fit on a single rendered row.
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_mouse_maximize_button_resizes_terminal() {
+    let mut harness = harness_or_return!(120, 30);
+
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(WIDE_LINE_CMD);
+    harness
+        .wait_until(|h| h.screen_to_string().contains("ZEND"))
+        .unwrap();
+
+    // Two splits, both showing the same terminal at roughly half width. The
+    // 100-X run no longer fits on one row.
+    harness.editor_mut().split_pane_vertical();
+    harness.render().unwrap();
+    let run = "X".repeat(100);
+    assert!(
+        !harness.screen_to_string().lines().any(|l| l.contains(&run)),
+        "Precondition: at half width no row should hold 100 columns of output. \
+         Screen:\n{}",
+        harness.screen_to_string()
+    );
+
+    // The maximize glyph is "□" while not maximized; the first one on the tab
+    // row belongs to the left split.
+    let screen = harness.screen_to_string();
+    let btn_col = tab_row_col_of(&screen, '□')
+        .unwrap_or_else(|| panic!("expected a '□' maximize button on the tab row:\n{screen}"));
+    harness.mouse_click(btn_col, 1).unwrap();
+    harness.render().unwrap();
+
+    // The grid reflow happens synchronously with the resize, so the very next
+    // frame already shows it — no waiting on the PTY child.
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.lines().any(|l| l.contains(&run)),
+        "Maximizing via the tab bar button must resize the terminal to the \
+         full-width pane, fitting the whole line on one row. Screen:\n{}",
+        screen
+    );
+}
+
+/// fresh#2844: dropping a tab onto a pane edge builds a new split without
+/// going through the layout funnel, so the dragged terminal's PTY child never
+/// gets the resize — an alternate-screen app (or anything that only redraws on
+/// SIGWINCH) keeps painting at the old width and is clipped at the new,
+/// narrower pane edge.
+///
+/// Drives: drag the terminal's tab to the right edge of its own pane to create
+/// a vertical split. The terminal now lives in a half-width pane, so its grid
+/// must re-wrap — the line's tail stays on screen instead of being clipped
+/// away.
+#[test]
+#[cfg(not(windows))] // Uses Unix shell
+fn test_tab_drag_split_resizes_terminal() {
+    let mut harness = harness_or_return!(120, 30);
+
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+
+    harness
+        .editor_mut()
+        .active_window_mut()
+        .send_terminal_input(WIDE_LINE_CMD);
+    harness
+        .wait_until(|h| h.screen_to_string().contains("ZEND"))
+        .unwrap();
+
+    // Full width: the whole line sits on one row.
+    let run = "X".repeat(100);
+    assert!(
+        harness.screen_to_string().lines().any(|l| l.contains(&run)),
+        "Precondition: at full width the whole line should fit on one row. \
+         Screen:\n{}",
+        harness.screen_to_string()
+    );
+
+    // Drag the terminal's tab onto the right edge of the content area, which
+    // is the "split right" drop zone (the rightmost 25% of the pane). Only a
+    // press on the tab's *name* starts a drag, so aim at the title rather than
+    // its close button.
+    let screen = harness.screen_to_string();
+    let tab_col = terminal_tab_name_col(&screen)
+        .unwrap_or_else(|| panic!("expected the terminal's tab on the tab row:\n{screen}"));
+    harness.mouse_drag(tab_col, 1, 115, 15).unwrap();
+    harness.render().unwrap();
+
+    // The terminal is now in a half-width pane. Its grid must have re-wrapped,
+    // so the tail marker is still rendered (rather than clipped off the pane).
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("ZEND"),
+        "A terminal dropped into a new split must be resized to its new pane, \
+         re-wrapping so the tail of the line stays on screen. Screen:\n{}",
+        screen
     );
 }

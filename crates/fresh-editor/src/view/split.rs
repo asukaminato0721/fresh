@@ -27,10 +27,10 @@ use crate::model::buffer::Buffer;
 use crate::model::cursor::Cursors;
 use crate::model::event::{BufferId, ContainerId, LeafId, SplitDirection, SplitId};
 use crate::model::marker::MarkerList;
+use crate::state::ViewMode;
 use crate::view::folding::FoldManager;
 use crate::view::ui::view_pipeline::Layout;
 use crate::view::viewport::Viewport;
-use crate::{services::plugins::api::ViewTransformPayload, state::ViewMode};
 use ratatui::layout::Rect;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -179,14 +179,6 @@ pub struct BufferViewState {
     /// source of truth.
     pub line_wrap_override: Option<bool>,
 
-    /// Optional view transform payload
-    pub view_transform: Option<ViewTransformPayload>,
-
-    /// True when the buffer was edited since the last view_transform_request hook fired.
-    /// While true, incoming SubmitViewTransform commands are rejected as stale
-    /// (their tokens have source_offsets from before the edit).
-    pub view_transform_stale: bool,
-
     /// Plugin-managed state (arbitrary key-value pairs).
     /// Plugins can store per-buffer-per-split state here via the `setViewState`/`getViewState` API.
     /// Persisted across sessions via workspace serialization.
@@ -240,8 +232,6 @@ impl BufferViewState {
             highlight_current_line: true,
             line_numbers_override: None,
             line_wrap_override: None,
-            view_transform: None,
-            view_transform_stale: false,
             plugin_state: std::collections::HashMap::new(),
             folds: FoldManager::new(),
         }
@@ -300,8 +290,6 @@ impl Clone for BufferViewState {
             highlight_current_line: self.highlight_current_line,
             line_numbers_override: self.line_numbers_override,
             line_wrap_override: self.line_wrap_override,
-            view_transform: self.view_transform.clone(),
-            view_transform_stale: self.view_transform_stale,
             plugin_state: self.plugin_state.clone(),
             // Fold markers are per-view; clones start with no folded ranges.
             folds: FoldManager::new(),
@@ -338,7 +326,7 @@ pub struct SplitViewState {
     /// Horizontal scroll offset for the tabs in this split
     pub tab_scroll_offset: usize,
 
-    /// Computed layout for this view (from view_transform or base tokens)
+    /// Computed layout for this view
     /// This is View state - each split has its own Layout
     pub layout: Option<Layout>,
 
@@ -489,7 +477,7 @@ impl SplitViewState {
     /// Returns the Layout - never returns None. Following VSCode's ViewModel pattern.
     ///
     /// # Arguments
-    /// * `tokens` - ViewTokenWire array (from view_transform or built from buffer)
+    /// * `tokens` - ViewTokenWire array built from the buffer
     /// * `source_range` - The byte range this layout covers
     /// * `tab_size` - Tab width for rendering
     pub fn ensure_layout(
@@ -670,7 +658,10 @@ impl SplitNode {
             direction,
             first: Box::new(first),
             second: Box::new(second),
-            ratio: ratio.clamp(0.1, 0.9), // Prevent extreme ratios
+            // Keep the stored ratio a valid fraction; the absolute
+            // minimum-pane-size guard is applied at layout time
+            // (see `clamp_first_to_min`), not as a fixed percentage floor.
+            ratio: ratio.clamp(0.0, 1.0),
             split_id: ContainerId(split_id),
             fixed_first: None,
             fixed_second: None,
@@ -1007,6 +998,45 @@ impl SplitNode {
     }
 }
 
+/// Minimum usable pane width, in columns.
+///
+/// A vertical split's separator eats one column; each child then needs enough
+/// room to show a (truncated) tab label plus a little content. Ten columns
+/// keeps a short filename tab and a handful of content cells legible, which is
+/// about the floor for a pane to be worth showing at all.
+pub const MIN_PANE_WIDTH: u16 = 10;
+
+/// Minimum usable pane height, in rows.
+///
+/// A pane spends one row on its tab bar; three rows leaves the tab bar plus two
+/// content rows, the smallest height where a pane is still usable rather than
+/// just a header.
+pub const MIN_PANE_HEIGHT: u16 = 3;
+
+/// Clamp the first child's cell size so neither child of a split renders below
+/// `min` cells.
+///
+/// `total` is the space shared by both children (the separator has already been
+/// subtracted). Normally the first child is clamped to `[min, total - min]`, so
+/// whatever the first child takes, the sibling keeps at least `min`. This is the
+/// real guard on split sizing: the stored ratio is free to be anything in
+/// `[0, 1]` (a plugin may ask for `0.99`), but at layout time the effective size
+/// is pinned so the sibling never drops below the minimum.
+///
+/// Small-container fallback: when the container cannot give *both* children the
+/// minimum (`total < 2 * min`), there is no size that satisfies the constraint.
+/// Rather than collapse or hide a pane, we split the available space evenly
+/// (`total / 2`) as a best effort so both panes stay as usable as the cramped
+/// container allows. This never panics (e.g. `total == 0` yields `0`).
+fn clamp_first_to_min(first: u16, total: u16, min: u16) -> u16 {
+    if total < min.saturating_mul(2) {
+        // Not enough room for both minimums — degrade to an even split.
+        total / 2
+    } else {
+        first.clamp(min, total - min)
+    }
+}
+
 /// Split a rectangle into two parts based on direction and ratio
 /// Leaves 1 character space for the separator line between splits
 #[cfg(test)]
@@ -1030,7 +1060,11 @@ fn split_rect_ext(
             } else if let Some(s) = fixed_second {
                 total_height.saturating_sub(s.min(total_height))
             } else {
-                (total_height as f32 * ratio).round() as u16
+                // Convert the ratio to cells, then pin it so neither child
+                // renders below the absolute minimum height (the sibling
+                // always keeps at least MIN_PANE_HEIGHT rows).
+                let raw = (total_height as f32 * ratio).round() as u16;
+                clamp_first_to_min(raw, total_height, MIN_PANE_HEIGHT)
             };
             let second_height = total_height.saturating_sub(first_height);
 
@@ -1058,7 +1092,11 @@ fn split_rect_ext(
             } else if let Some(s) = fixed_second {
                 total_width.saturating_sub(s.min(total_width))
             } else {
-                (total_width as f32 * ratio).round() as u16
+                // Convert the ratio to cells, then pin it so neither child
+                // renders below the absolute minimum width (the sibling
+                // always keeps at least MIN_PANE_WIDTH columns).
+                let raw = (total_width as f32 * ratio).round() as u16;
+                clamp_first_to_min(raw, total_width, MIN_PANE_WIDTH)
             };
             let second_width = total_width.saturating_sub(first_width);
 
@@ -1465,7 +1503,10 @@ impl SplitManager {
     pub fn adjust_ratio(&mut self, container_id: ContainerId, delta: f32) {
         match self.root.find_mut(container_id.into()) {
             Some(SplitNode::Split { ratio, .. }) => {
-                *ratio = (*ratio + delta).clamp(0.1, 0.9);
+                // Store the raw fraction; layout enforces the absolute
+                // minimum pane size, so resizing can approach the edge and
+                // simply stops when the sibling would drop below the minimum.
+                *ratio = (*ratio + delta).clamp(0.0, 1.0);
             }
             Some(SplitNode::Leaf { .. }) => {
                 unreachable!("ContainerId {:?} points to a leaf", container_id)
@@ -1543,7 +1584,11 @@ impl SplitManager {
     #[must_use]
     pub fn set_ratio(&mut self, container_id: ContainerId, new_ratio: f32) -> bool {
         if let Some(SplitNode::Split { ratio, .. }) = self.root.find_mut(container_id.into()) {
-            *ratio = new_ratio.clamp(0.1, 0.9);
+            // Store the plugin-supplied fraction as-is (within [0, 1]).
+            // A request like 0.99 is honored as a ratio, but layout pins the
+            // effective size so the sibling keeps at least the minimum pane
+            // size instead of being clamped to a fixed 90%.
+            *ratio = new_ratio.clamp(0.0, 1.0);
             true
         } else {
             false
@@ -1592,8 +1637,10 @@ impl SplitManager {
                 let total_leaves = first_leaves + second_leaves;
 
                 // Set ratio so each leaf gets equal space
-                // ratio = proportion for first pane
-                *ratio = (first_leaves as f32 / total_leaves as f32).clamp(0.1, 0.9);
+                // ratio = proportion for first pane. The absolute
+                // minimum-pane-size guard is applied at layout time, so we
+                // store the exact proportion here (clamped only to [0, 1]).
+                *ratio = (first_leaves as f32 / total_leaves as f32).clamp(0.0, 1.0);
 
                 total_leaves
             }
@@ -1946,9 +1993,62 @@ mod tests {
         );
         assert_eq!(manager.get_ratio(container_id), Some(0.7));
 
-        // Ratios are clamped to [0.1, 0.9].
+        // The stored ratio is now the raw fraction (only clamped to [0, 1]);
+        // the absolute minimum-pane-size guard lives at layout time, not as a
+        // fixed percentage floor. A plugin asking for 0.99 keeps 0.99.
         assert!(manager.set_ratio(ContainerId(container_id), 0.99));
-        assert_eq!(manager.get_ratio(container_id), Some(0.9));
+        assert_eq!(manager.get_ratio(container_id), Some(0.99));
+
+        // Out-of-range values are still pinned to a valid fraction.
+        assert!(manager.set_ratio(ContainerId(container_id), 1.5));
+        assert_eq!(manager.get_ratio(container_id), Some(1.0));
+        assert!(manager.set_ratio(ContainerId(container_id), -0.5));
+        assert_eq!(manager.get_ratio(container_id), Some(0.0));
+    }
+
+    #[test]
+    fn test_leaf_resolves_to_parent_container_for_ratio() {
+        // Follow-up to #2774 (#2770): plugins only ever hold *leaf* split
+        // ids, so `setSplitRatio` must resolve a leaf to its parent
+        // container. Here we exercise the building blocks
+        // (`parent_container_of` + `set_ratio`) that `handle_set_split_ratio`
+        // composes.
+        let mut manager = SplitManager::new(BufferId(0));
+        let new_leaf = manager
+            .split_active(SplitDirection::Horizontal, BufferId(1), 0.5)
+            .unwrap();
+        let new_leaf_id: SplitId = new_leaf.into();
+
+        // The leaf itself is not a container: setting its ratio directly fails.
+        assert!(
+            !manager.set_ratio(ContainerId(new_leaf_id), 0.75),
+            "a leaf split id is not a resizable container"
+        );
+
+        // But it resolves to the parent Split container...
+        let parent = manager
+            .parent_container_of(LeafId(new_leaf_id))
+            .expect("a split leaf must have a parent container");
+
+        // ...and setting the parent's ratio applies. The stored ratio is the
+        // raw fraction (only clamped to [0, 1]); the absolute minimum-pane-size
+        // guard is applied at layout time, so a plugin's 0.99 is preserved and
+        // the sibling is kept >= min when the split is actually rendered
+        // (see the `split_rect` layout tests), not pinned to a fixed 90%.
+        assert!(manager.set_ratio(parent, 0.75));
+        assert_eq!(manager.get_ratio(parent.into()), Some(0.75));
+        assert!(manager.set_ratio(parent, 0.99));
+        assert_eq!(manager.get_ratio(parent.into()), Some(0.99));
+    }
+
+    #[test]
+    fn test_lone_top_level_leaf_has_no_parent_container() {
+        // A single un-split pane has no parent container, so there is no
+        // resizable divider — resolution must yield `None` (a graceful
+        // `false` no-op in `handle_set_split_ratio`), never a panic.
+        let manager = SplitManager::new(BufferId(0));
+        let lone_leaf: SplitId = manager.active_split().into();
+        assert_eq!(manager.parent_container_of(LeafId(lone_leaf)), None);
     }
 
     #[test]
@@ -1989,6 +2089,91 @@ mod tests {
         assert_eq!(second.height, 100);
         assert_eq!(first.x, 0);
         assert_eq!(second.x, 51); // first.x + first.width + 1 (separator)
+    }
+
+    // === Absolute minimum pane-size clamp tests ===
+
+    #[test]
+    fn test_clamp_first_to_min_pins_both_children() {
+        // Normal case: first child is clamped into [min, total - min].
+        assert_eq!(clamp_first_to_min(0, 100, 10), 10); // floor
+        assert_eq!(clamp_first_to_min(100, 100, 10), 90); // ceiling (sibling keeps min)
+        assert_eq!(clamp_first_to_min(50, 100, 10), 50); // unaffected in-range value
+        assert_eq!(clamp_first_to_min(5, 100, 10), 10);
+        assert_eq!(clamp_first_to_min(95, 100, 10), 90);
+    }
+
+    #[test]
+    fn test_clamp_first_to_min_small_container_fallback() {
+        // total < 2*min: cannot satisfy both minimums, degrade to even split.
+        assert_eq!(clamp_first_to_min(0, 15, 10), 7); // 15/2
+        assert_eq!(clamp_first_to_min(15, 15, 10), 7); // request ignored, even split
+        assert_eq!(clamp_first_to_min(3, 5, 10), 2); // 5/2
+        assert_eq!(clamp_first_to_min(0, 0, 10), 0); // never panics
+        assert_eq!(clamp_first_to_min(1, 1, 10), 0);
+    }
+
+    #[test]
+    fn test_layout_never_renders_child_below_min_width() {
+        // An extreme ratio (plugin asks for 0.99) must not starve the sibling:
+        // the second child keeps at least MIN_PANE_WIDTH columns.
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 40,
+        };
+        let (first, second) = split_rect(rect, SplitDirection::Vertical, 0.99);
+        assert!(
+            second.width >= MIN_PANE_WIDTH,
+            "sibling width {} must be >= {}",
+            second.width,
+            MIN_PANE_WIDTH
+        );
+        assert!(first.width >= MIN_PANE_WIDTH);
+        // total = 99; first pinned to 99 - MIN_PANE_WIDTH = 89, second = 10.
+        assert_eq!(first.width, 100 - 1 - MIN_PANE_WIDTH);
+        assert_eq!(second.width, MIN_PANE_WIDTH);
+
+        // The symmetric case: ratio 0.0 must leave the first child >= min.
+        let (first, second) = split_rect(rect, SplitDirection::Vertical, 0.0);
+        assert_eq!(first.width, MIN_PANE_WIDTH);
+        assert!(second.width >= MIN_PANE_WIDTH);
+    }
+
+    #[test]
+    fn test_layout_never_renders_child_below_min_height() {
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 40,
+        };
+        let (first, second) = split_rect(rect, SplitDirection::Horizontal, 0.99);
+        assert!(second.height >= MIN_PANE_HEIGHT);
+        assert!(first.height >= MIN_PANE_HEIGHT);
+        assert_eq!(second.height, MIN_PANE_HEIGHT);
+
+        let (first, second) = split_rect(rect, SplitDirection::Horizontal, 0.0);
+        assert_eq!(first.height, MIN_PANE_HEIGHT);
+        assert!(second.height >= MIN_PANE_HEIGHT);
+    }
+
+    #[test]
+    fn test_layout_small_container_degrades_evenly() {
+        // A vertical container too narrow for two MIN_PANE_WIDTH panes
+        // (available < 2*min) splits its space evenly instead of hiding one.
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 15, // total = 14 after separator, < 2*MIN_PANE_WIDTH (20)
+            height: 40,
+        };
+        let (first, second) = split_rect(rect, SplitDirection::Vertical, 0.99);
+        // total = 14 -> first = 7, second = 7. Neither collapses to zero.
+        assert_eq!(first.width, 7);
+        assert_eq!(second.width, 7);
+        assert!(first.width > 0 && second.width > 0);
     }
 
     // === Split label tests ===

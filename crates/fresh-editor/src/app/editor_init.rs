@@ -508,10 +508,18 @@ fn build_persisted_window_shells(
         // This shell's own local authority, gated by its own per-session trust
         // + env (scoped to its root + project store) — never a clone of the
         // active session's handles.
+        // `shell_resources.fs_manager` is the local host filesystem these
+        // shells read through, so it's also what resolves a linked worktree
+        // to the repo whose trust decision governs it.
+        let trust_owner = crate::services::workspace_trust::trust_owner_root(
+            shell_resources.fs_manager.filesystem().as_ref(),
+            &ps.root,
+        );
         let shell_authority = crate::services::authority::Authority::local_scoped(
             crate::services::authority::SessionScope::for_root(
                 &ps.root,
                 &dir_context.project_state_dir(&ps.root),
+                &dir_context.project_state_dir(&trust_owner),
             ),
         );
         let mut shell = crate::app::window::Window::new(
@@ -621,6 +629,7 @@ impl Editor {
             session_mode: false,
             software_cursor_only: false,
             session_name: None,
+            session_display_name: None,
             pending_escape_sequences: Vec::new(),
             restart_with_dir: None,
             last_window_title: None,
@@ -635,9 +644,21 @@ impl Editor {
             plugin_schemas: std::sync::Arc::new(std::sync::RwLock::new(parts.plugin_schemas)),
             event_broadcaster: parts.event_broadcaster,
             #[cfg(feature = "plugins")]
+            line_targets: std::collections::HashMap::new(),
+            #[cfg(feature = "plugins")]
             pending_plugin_actions: Vec::new(),
             #[cfg(feature = "plugins")]
             plugin_render_requested: false,
+            last_rendered_frame: None,
+            #[cfg(feature = "plugins")]
+            plugin_command_backlog: std::collections::VecDeque::new(),
+            #[cfg(feature = "plugins")]
+            grep_project_cancel: None,
+            #[cfg(feature = "plugins")]
+            diff_baselines: crate::app::diff_baselines::BaselineStore::default(),
+            #[cfg(feature = "plugins")]
+            next_diff_baseline_id: 1,
+            async_message_backlog: std::collections::VecDeque::new(),
             full_redraw_requested: false,
             suppress_chrome_cells: false,
             suspend_requested: false,
@@ -646,6 +667,9 @@ impl Editor {
             plugin_global_dirty: HashMap::new(),
             warning_log: None,
             status_log_path: None,
+            self_update_phase: crate::services::release_checker::SelfUpdatePhase::default(),
+            self_update_terminal: None,
+            self_update_output: None,
             #[cfg(feature = "plugins")]
             file_watcher_manager: crate::services::file_watcher::FileWatcherManager::new(),
             path_changes_for_test: Vec::new(),
@@ -665,6 +689,7 @@ impl Editor {
             dock: None,
             dock_width: None,
             dock_resizing: false,
+            widget_text_drag: None,
         };
 
         // The plugin per-window filesystem registry is populated on the first
@@ -751,13 +776,15 @@ impl Editor {
         let start = std::time::Instant::now();
         let mut grammar_registry = crate::primitives::grammar::GrammarRegistry::defaults_only();
         // Merge user config so find_by_path respects user globs/filenames
-        // from the very first lookup. `defaults_only` just built the Arc, so
-        // we're the sole owner; get_mut is guaranteed to succeed. Assert
+        // from the very first lookup, and load any `textmate_grammar` files
+        // the config points at. `defaults_only` just built the Arc, so we're
+        // the sole owner; the get_mut inside is guaranteed to succeed. Assert
         // rather than silently drop config — a failure here would leave the
         // user wondering why their `*.conf → bash` rule doesn't highlight.
-        std::sync::Arc::get_mut(&mut grammar_registry)
-            .expect("defaults_only returned a shared Arc")
-            .apply_language_config(&config.languages);
+        crate::primitives::grammar::GrammarRegistry::apply_languages(
+            &mut grammar_registry,
+            &config.languages,
+        );
         crate::config::reload_indent_overrides(&config.languages);
         tracing::info!("Default grammar registry built in {:?}", start.elapsed());
         // Don't start background grammar build here — it's deferred to the
@@ -811,9 +838,10 @@ impl Editor {
         // through `find_by_path`. Both call sites that feed into `for_test`
         // (`HarnessOptions::with_full_grammar_registry` and the default
         // `GrammarRegistry::empty()`) hand us the sole Arc owner.
-        std::sync::Arc::get_mut(&mut grammar_registry)
-            .expect("grammar registry Arc must be uniquely owned at for_test entry")
-            .apply_language_config(&config.languages);
+        crate::primitives::grammar::GrammarRegistry::apply_languages(
+            &mut grammar_registry,
+            &config.languages,
+        );
         crate::config::reload_indent_overrides(&config.languages);
         let authority = Self::local_authority_with_filesystem(filesystem);
         let mut editor = Self::with_options(
@@ -1964,6 +1992,29 @@ impl Editor {
                 .read()
                 .unwrap()
                 .run_hook("ready", crate::services::plugins::hooks::HookArgs::Ready {});
+        }
+    }
+
+    /// Fire the `config_changed` hook after the effective config has
+    /// been replaced (Settings-UI save, config reload from disk).
+    ///
+    /// Refreshes the plugin state snapshot *first* so a handler that
+    /// re-reads `getConfig()` / `getPluginConfig()` observes the new
+    /// values rather than the ones it just replaced — the snapshot
+    /// reserializes lazily off the `Arc<Config>` pointer, so without
+    /// this the hook would hand plugins a stale read. Mirrors the
+    /// snapshot-then-hook order used by `trust_changed`.
+    pub fn fire_config_changed_hook(&mut self) {
+        #[cfg(feature = "plugins")]
+        {
+            if !self.plugin_manager.read().unwrap().is_active() {
+                return;
+            }
+            self.update_plugin_state_snapshot();
+            self.plugin_manager.read().unwrap().run_hook(
+                "config_changed",
+                crate::services::plugins::hooks::HookArgs::ConfigChanged {},
+            );
         }
     }
 

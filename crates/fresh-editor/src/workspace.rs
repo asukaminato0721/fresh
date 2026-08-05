@@ -493,6 +493,35 @@ pub struct SerializedTerminalWorkspace {
     /// `command`. Absent in older workspaces and for plain terminals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_resume: Option<AgentResume>,
+    /// Set when this terminal's process had already quit at save time.
+    ///
+    /// Restore then brings the buffer back as read-only scrollback with the
+    /// restart offer re-armed, rather than respawning: the user closed the
+    /// editor on a *finished* process, and silently re-running it — spending
+    /// agent tokens on a conversation they were done with — is not what
+    /// "restore my workspace" should mean. The restart is one click away
+    /// either way. Absent for live terminals and in older workspaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exited: Option<ExitedTerminalState>,
+    /// The tab's explicit title (`claude`, `npm`, a plugin-supplied name),
+    /// when it had one. Without this a restored agent tab falls back to
+    /// foreground-process auto-naming and reads `node` / `bash` — or plain
+    /// `*Terminal N*` once the process has exited and there is no foreground
+    /// to read. Absent for tabs that were auto-named to begin with, which
+    /// re-derive their name the same way after restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// The saved state of a terminal whose process had quit before the editor did.
+/// A struct rather than a bare bool so it can carry more of the dead process's
+/// story later (signal, duration, …) without a breaking schema change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExitedTerminalState {
+    /// Wait-status exit code, when the platform reported one. Drives the
+    /// `(exit N)` suffix on the restored restart indicator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 /// How to rejoin a terminal's agent conversation on restore. A struct (not a
@@ -912,27 +941,14 @@ pub fn find_workspace_file_by_root(working_dir: &Path) -> io::Result<Option<Path
     Ok(best.map(|b| b.path))
 }
 
-/// Get the session-workspaces directory
+/// The retired daemon-scoped workspace directory.
+///
+/// Workspaces are one set now, shared by direct mode and every daemon, so
+/// nothing writes here any more. The path survives only so boot migration can
+/// find pre-existing snapshots and fold them into the real store — see
+/// `orchestrator_persistence::migrate_session_workspaces_into_store`.
 pub fn get_session_workspaces_dir() -> io::Result<PathBuf> {
     Ok(get_data_dir()?.join("session-workspaces"))
-}
-
-/// Get the workspace file path for a named session
-pub fn get_session_workspace_path(session_name: &str) -> io::Result<PathBuf> {
-    let dir = get_session_workspaces_dir()?;
-    std::fs::create_dir_all(&dir)?;
-    // Sanitize session name for filesystem safety
-    let safe_name: String = session_name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    Ok(dir.join(format!("{}.json", safe_name)))
 }
 
 /// Workspace error types
@@ -1185,71 +1201,6 @@ impl Workspace {
             }
         }
 
-        Ok(())
-    }
-
-    /// Load workspace for a named session (if exists)
-    pub fn load_session(
-        session_name: &str,
-        working_dir: &Path,
-    ) -> Result<Option<Workspace>, WorkspaceError> {
-        let path = get_session_workspace_path(session_name)?;
-        tracing::debug!("Looking for session workspace at {:?}", path);
-
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let content = std::fs::read_to_string(&path)?;
-        let workspace: Workspace = serde_json::from_str(&content)?;
-
-        // For session workspaces, skip working_dir validation — the session
-        // always restores its own workspace regardless of CWD.
-        if workspace.version > WORKSPACE_VERSION {
-            return Err(WorkspaceError::VersionTooNew {
-                version: workspace.version,
-                max_supported: WORKSPACE_VERSION,
-            });
-        }
-
-        // If working_dir changed, log but still load (session owns its layout)
-        let found = workspace
-            .working_dir
-            .canonicalize()
-            .unwrap_or_else(|_| workspace.working_dir.clone());
-        let expected = working_dir
-            .canonicalize()
-            .unwrap_or_else(|_| working_dir.to_path_buf());
-        if expected != found {
-            tracing::info!(
-                "Session '{}' workspace was saved from {:?}, now loading from {:?}",
-                session_name,
-                found,
-                expected
-            );
-        }
-
-        Ok(Some(workspace))
-    }
-
-    /// Save workspace for a named session using atomic write
-    pub fn save_session(&self, session_name: &str) -> Result<(), WorkspaceError> {
-        let path = get_session_workspace_path(session_name)?;
-        tracing::debug!("Saving session workspace to {:?}", path);
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let content = serde_json::to_string_pretty(self)?;
-        let temp_path = path.with_extension("json.tmp");
-        {
-            let mut file = std::fs::File::create(&temp_path)?;
-            file.write_all(content.as_bytes())?;
-            file.sync_all()?;
-        }
-        std::fs::rename(&temp_path, &path)?;
-        tracing::info!("Session workspace saved to {:?}", path);
         Ok(())
     }
 

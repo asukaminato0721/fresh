@@ -7,9 +7,12 @@ pub mod audit_mode;
 pub mod authority_snapshot;
 pub mod buffer_info_splits;
 pub mod command_keybinding_editor;
+pub mod config_changed_adoption;
+pub mod csharp_restore_trust;
 #[cfg(unix)]
 pub mod dap;
 pub mod dashboard;
+pub mod hostile_plugin;
 // The three modules below drive the in-tree fake-devcontainer
 // CLI (a bash script under `scripts/fake-devcontainer/bin/`).
 // Native Windows can't execute `#!/usr/bin/env bash` shebangs
@@ -55,6 +58,7 @@ pub mod orchestrator_new_session_renders;
 pub mod orchestrator_open_cross_project;
 pub mod package_manager;
 pub mod plugin;
+pub mod plugin_config_changed_hook;
 pub mod plugin_config_registration;
 pub mod plugin_keybinding_execution;
 pub mod plugins_dir_in_working_dir;

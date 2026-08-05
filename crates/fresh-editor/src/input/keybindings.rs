@@ -545,6 +545,10 @@ pub enum Action {
     ShowLspStatus,
     ShowRemoteIndicatorMenu,
     ShowReadOnlyMenu,
+    /// Offer/confirm an in-editor update when a new version is available.
+    UpdateFresh,
+    /// Open the background self-update log (always the local copy).
+    OpenUpdateLog,
     ClearWarnings,
     CommandPalette, // Alias for QuickOpen — kept for keymap/plugin compatibility
     /// Quick Open - unified prompt with prefix-based provider routing
@@ -810,14 +814,17 @@ pub enum Action {
     SettingsInherit,     // Set nullable setting to null (inherit value)
 
     // Terminal operations
-    OpenTerminal,            // Open a new terminal in the current split
-    OpenTerminalRight,       // Open a new terminal in a split to the right (vertical split)
-    OpenTerminalBelow,       // Open a new terminal in a split below (horizontal split)
-    CloseTerminal,           // Close the current terminal
-    FocusTerminal,           // Focus the terminal buffer (if viewing terminal, focus input)
-    TerminalEscape,          // Escape from terminal mode back to editor
-    ToggleKeyboardCapture,   // Toggle keyboard capture mode (all keys go to terminal)
-    TerminalPaste,           // Paste clipboard contents into terminal as a single batch
+    OpenTerminal,      // Open a new terminal in the current split
+    OpenTerminalRight, // Open a new terminal in a split to the right (vertical split)
+    OpenTerminalBelow, // Open a new terminal in a split below (horizontal split)
+    CloseTerminal,     // Close the current terminal
+    /// Restart the exited terminal process in the current buffer, resuming the
+    /// agent conversation when the terminal carries an agent-resume spec.
+    RestartTerminal,
+    FocusTerminal,  // Focus the terminal buffer (if viewing terminal, focus input)
+    TerminalEscape, // Escape from terminal mode back to editor
+    ToggleKeyboardCapture, // Toggle keyboard capture mode (all keys go to terminal)
+    TerminalPaste,  // Paste clipboard contents into terminal as a single batch
     SendSelectionToTerminal, // Run the selection (or current line) in the last-focused terminal
 
     // Shell command operations
@@ -1083,6 +1090,8 @@ impl Action {
             "show_lsp_status" => ShowLspStatus,
             "show_remote_indicator_menu" => ShowRemoteIndicatorMenu,
             "show_read_only_menu" => ShowReadOnlyMenu,
+            "update_fresh" => UpdateFresh,
+            "open_update_log" => OpenUpdateLog,
             "clear_warnings" => ClearWarnings,
             "command_palette" => CommandPalette,
             "quick_open" => QuickOpen,
@@ -1271,6 +1280,7 @@ impl Action {
             "open_terminal_right" => OpenTerminalRight,
             "open_terminal_below" => OpenTerminalBelow,
             "close_terminal" => CloseTerminal,
+            "restart_terminal" => RestartTerminal,
             "focus_terminal" => FocusTerminal,
             "terminal_escape" => TerminalEscape,
             "toggle_keyboard_capture" => ToggleKeyboardCapture,
@@ -2003,7 +2013,21 @@ impl KeybindingResolver {
             context
         );
 
-        // Check Global bindings first (highest priority - work in all contexts)
+        // === User (custom) bindings take precedence over ALL built-in defaults ===
+        //
+        // A keybinding present in the user's config must win over the built-in
+        // keymap for the same chord — including default *global* entries such as
+        // the menu-bar Alt-letter mnemonics (`Alt+H → menu_open Help`). We
+        // therefore probe every custom source (global, then the active context,
+        // then its parent context) BEFORE any default source. Previously the
+        // default-global tier was checked between custom-global and
+        // custom-context, so a user's e.g. `alt+h → command_palette` (which
+        // loads into the Normal context when it has no `when` clause) was
+        // shadowed by the default-global mnemonic and never reached dispatch —
+        // it either opened the Help menu (mnemonics on) or silently no-op'd
+        // (mnemonics off). See issue #2720.
+
+        // Custom Global bindings (highest priority — work in all contexts).
         if let Some(global_bindings) = self.bindings.get(&KeyContext::Global) {
             if let Some(action) = global_bindings.get(norm) {
                 tracing::trace!("  -> Found in custom global bindings: {:?}", action);
@@ -2011,14 +2035,7 @@ impl KeybindingResolver {
             }
         }
 
-        if let Some(global_bindings) = self.default_bindings.get(&KeyContext::Global) {
-            if let Some(action) = global_bindings.get(norm) {
-                tracing::trace!("  -> Found in default global bindings: {:?}", action);
-                return action.clone();
-            }
-        }
-
-        // Try context-specific custom bindings
+        // Custom context-specific bindings.
         if let Some(context_bindings) = self.bindings.get(&context) {
             if let Some(action) = context_bindings.get(norm) {
                 tracing::trace!(
@@ -2030,7 +2047,28 @@ impl KeybindingResolver {
             }
         }
 
-        // Try context-specific default bindings
+        // Custom parent-context bindings (e.g. SearchPrompt → Prompt) so a
+        // narrowed context inherits its parent's user overrides too.
+        if let Some(parent) = context.parent_context() {
+            if let Some(parent_bindings) = self.bindings.get(&parent) {
+                if let Some(action) = parent_bindings.get(norm) {
+                    tracing::trace!("  -> Found in custom parent bindings: {:?}", action);
+                    return action.clone();
+                }
+            }
+        }
+
+        // === Built-in default bindings (only after every custom source) ===
+
+        // Default Global bindings.
+        if let Some(global_bindings) = self.default_bindings.get(&KeyContext::Global) {
+            if let Some(action) = global_bindings.get(norm) {
+                tracing::trace!("  -> Found in default global bindings: {:?}", action);
+                return action.clone();
+            }
+        }
+
+        // Default context-specific bindings.
         if let Some(context_bindings) = self.default_bindings.get(&context) {
             if let Some(action) = context_bindings.get(norm) {
                 tracing::trace!(
@@ -2042,7 +2080,7 @@ impl KeybindingResolver {
             }
         }
 
-        // Try plugin default bindings (mode bindings from defineMode)
+        // Plugin default bindings (mode bindings from defineMode).
         if let Some(plugin_bindings) = self.plugin_defaults.get(&context) {
             if let Some(action) = plugin_bindings.get(norm) {
                 tracing::trace!(
@@ -2054,19 +2092,12 @@ impl KeybindingResolver {
             }
         }
 
-        // Fall through to the parent context's bindings (e.g. SearchPrompt →
-        // Prompt) so a narrowed context inherits all of its parent's keys and
-        // only owns/overrides the few it declares. Checked after this context's
-        // own bindings but before the Normal fallthrough below, so the parent's
-        // editing/navigation keys outrank Normal.
+        // Default parent-context bindings (e.g. SearchPrompt → Prompt): the
+        // parent's editing/navigation keys outrank the Normal fallthrough below.
         if let Some(parent) = context.parent_context() {
-            if let Some(parent_bindings) = self.bindings.get(&parent) {
-                if let Some(action) = parent_bindings.get(norm) {
-                    return action.clone();
-                }
-            }
             if let Some(parent_bindings) = self.default_bindings.get(&parent) {
                 if let Some(action) = parent_bindings.get(norm) {
+                    tracing::trace!("  -> Found in default parent bindings: {:?}", action);
                     return action.clone();
                 }
             }
@@ -2612,6 +2643,8 @@ impl KeybindingResolver {
             Action::ShowLspStatus => t!("action.show_lsp_status"),
             Action::ShowRemoteIndicatorMenu => t!("action.show_remote_indicator_menu"),
             Action::ShowReadOnlyMenu => t!("action.show_read_only_menu"),
+            Action::UpdateFresh => t!("action.update_fresh"),
+            Action::OpenUpdateLog => t!("action.open_update_log"),
             Action::ClearWarnings => t!("action.clear_warnings"),
             Action::CommandPalette => t!("action.command_palette"),
             Action::QuickOpen => t!("action.quick_open"),
@@ -2800,6 +2833,7 @@ impl KeybindingResolver {
             Action::OpenTerminalRight => t!("action.open_terminal_right"),
             Action::OpenTerminalBelow => t!("action.open_terminal_below"),
             Action::CloseTerminal => t!("action.close_terminal"),
+            Action::RestartTerminal => t!("action.restart_terminal"),
             Action::FocusTerminal => t!("action.focus_terminal"),
             Action::TerminalEscape => t!("action.terminal_escape"),
             Action::ToggleKeyboardCapture => t!("action.toggle_keyboard_capture"),
@@ -3802,6 +3836,80 @@ mod tests {
         );
     }
 
+    /// Regression guard for issue #2720: a user-defined binding for an
+    /// Alt+letter chord must take precedence over the built-in menu-bar
+    /// mnemonic, which lives in the default keymap as a *global* binding
+    /// (`Alt+H → menu_open Help`). A user binding with no `when` clause loads
+    /// into the Normal context; before the fix the default-global tier was
+    /// checked ahead of the custom-context tier, so the override was shadowed
+    /// (opening the Help menu, or silently no-op'ing when mnemonics were off).
+    #[test]
+    fn test_user_alt_letter_binding_overrides_menu_mnemonic() {
+        use crate::config::Keybinding;
+
+        let alt_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT);
+
+        // Baseline: with no user override, Alt+H is the Help menu mnemonic
+        // (a default *global* binding).
+        let default_resolver = KeybindingResolver::new(&Config::default());
+        assert_eq!(
+            default_resolver.resolve(&alt_h, KeyContext::Normal),
+            Action::MenuOpen("Help".to_string()),
+            "unbound Alt+H must still open the Help menu by default"
+        );
+
+        // User binds Alt+H → command_palette (no `when` clause → Normal context).
+        let mut config = Config::default();
+        config.keybindings.push(Keybinding {
+            key: "h".to_string(),
+            modifiers: vec!["alt".to_string()],
+            keys: vec![],
+            action: "command_palette".to_string(),
+            args: HashMap::new(),
+            when: None,
+        });
+        let resolver = KeybindingResolver::new(&config);
+
+        assert_eq!(
+            resolver.resolve(&alt_h, KeyContext::Normal),
+            Action::CommandPalette,
+            "a user Alt+H binding must win over the default-global Help mnemonic"
+        );
+
+        // Other unbound Alt-letter mnemonics must remain intact.
+        let alt_f = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(
+            resolver.resolve(&alt_f, KeyContext::Normal),
+            Action::MenuOpen("File".to_string()),
+            "unrelated Alt+F mnemonic must not regress when Alt+H is overridden"
+        );
+    }
+
+    /// A user override placed explicitly in the `global` context must also win
+    /// over the default-global mnemonic for the same chord.
+    #[test]
+    fn test_user_global_binding_overrides_default_global() {
+        use crate::config::Keybinding;
+
+        let mut config = Config::default();
+        config.keybindings.push(Keybinding {
+            key: "h".to_string(),
+            modifiers: vec!["alt".to_string()],
+            keys: vec![],
+            action: "command_palette".to_string(),
+            args: HashMap::new(),
+            when: Some("global".to_string()),
+        });
+        let resolver = KeybindingResolver::new(&config);
+
+        let alt_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::ALT);
+        assert_eq!(
+            resolver.resolve(&alt_h, KeyContext::Normal),
+            Action::CommandPalette,
+            "a user global Alt+H binding must win over the default-global mnemonic"
+        );
+    }
+
     #[test]
     fn test_all_context_default_bindings_exist() {
         let config = Config::default();
@@ -3860,6 +3968,11 @@ mod tests {
             // — handled by the live_grep plugin (Finder panel), dispatched
             // as a plugin action from the prompt context.
             "live_grep_export_quickfix",
+            // Code Tour step navigation — handled by the code-tour plugin;
+            // bound in the default keymap so a tour can be stepped from the
+            // editor split while the tour panel stays docked below.
+            "tour_next",
+            "tour_prev",
         ];
 
         let config = Config::default();

@@ -1121,6 +1121,143 @@ impl Editor {
         }
     }
 
+    /// Show the update-available menu, anchored to the status bar's `{update}`
+    /// segment. Offers to run the update — which opens a **local** terminal
+    /// buffer running `fresh --cmd update --yes` (so package-manager / sudo
+    /// prompts work and the binary that gets updated is the one actually
+    /// running) — or to dismiss. Toggles closed on a second click, mirroring the
+    /// LSP / remote / read-only menus.
+    pub fn show_update_popup(&mut self, version: &str) {
+        use crate::view::popup::PopupListItem;
+        let items = vec![PopupListItem::new(format!(
+            "    {}",
+            t!("update.popup_update", version = version)
+        ))
+        .with_data("update".to_string())];
+        self.push_update_menu(t!("update.available_title").to_string(), items);
+    }
+
+    /// Show the update-*failed* menu, offered when the indicator is clicked
+    /// after an update terminal exited non-zero: retry the update, view the
+    /// update terminal ("Show log"), or dismiss.
+    pub fn show_update_failed_popup(&mut self) {
+        use crate::view::popup::PopupListItem;
+        let items = vec![
+            PopupListItem::new(format!("    {}", t!("update.retry")))
+                .with_data("update".to_string()),
+            PopupListItem::new(format!("    {}", t!("update.show_log")))
+                .with_data("show_log".to_string()),
+        ];
+        self.push_update_menu(t!("update.failed_title").to_string(), items);
+    }
+
+    /// Build + show a status-bar update menu titled `title` with the given
+    /// action rows (a "Dismiss" row is appended automatically). Anchored to the
+    /// `{update}` segment and toggles closed on a repeat click, mirroring the
+    /// LSP / remote / read-only menus. Shared by `show_update_popup` and
+    /// `show_update_failed_popup`.
+    fn push_update_menu(
+        &mut self,
+        title: String,
+        mut items: Vec<crate::view::popup::PopupListItem>,
+    ) {
+        use crate::view::popup::{
+            Popup, PopupContent, PopupKind, PopupListItem, PopupPosition, PopupResolver,
+        };
+        use ratatui::style::Style;
+
+        // Second click on the indicator closes the menu instead of rebuilding.
+        if self
+            .active_state()
+            .popups
+            .top()
+            .is_some_and(|p| matches!(p.resolver, PopupResolver::Update))
+        {
+            self.hide_popup();
+            return;
+        }
+        // Clear any *other* status-bar menu left open before building this one
+        // (done after the toggle check so it never closes our own popup).
+        self.dismiss_menu_popups_for_prompt();
+
+        let cancel_binding = self
+            .keybindings
+            .read()
+            .ok()
+            .and_then(|kb| {
+                kb.get_keybinding_for_action(
+                    &crate::input::keybindings::Action::PopupCancel,
+                    crate::input::keybindings::KeyContext::Popup,
+                )
+            })
+            .unwrap_or_else(|| "Esc".to_string());
+        items.push(
+            PopupListItem::new(format!("    Dismiss ({})", cancel_binding))
+                .with_data("cancel_popup".to_string()),
+        );
+
+        let position = self
+            .active_chrome()
+            .status_bar
+            .clickable_area(crate::view::ui::status_bar::StatusBarClickable::Update)
+            .map(
+                |(status_row, col_start, _)| PopupPosition::AboveStatusBarAt {
+                    x: col_start,
+                    status_row,
+                },
+            )
+            .unwrap_or(PopupPosition::BottomRight);
+
+        let popup_width = (items
+            .iter()
+            .map(|i| unicode_width::UnicodeWidthStr::width(i.text.as_str()))
+            .max()
+            .unwrap_or(24)
+            + 4) as u16;
+
+        let popup = Popup {
+            kind: PopupKind::List,
+            title: Some(title),
+            description: None,
+            transient: false,
+            content: PopupContent::List { items, selected: 0 },
+            position,
+            width: popup_width.clamp(28, 50),
+            max_height: 10,
+            bordered: true,
+            border_style: Style::default().fg(self.theme.read().unwrap().popup_border_fg),
+            background_style: Style::default().bg(self.theme.read().unwrap().popup_bg),
+            scroll_offset: 0,
+            text_selection: None,
+            accept_key_hint: None,
+            resolver: PopupResolver::Update,
+            focused: true,
+            focus_key_hint: None,
+        };
+
+        let buffer_id = self.active_buffer();
+        if let Some(state) = self
+            .windows
+            .get_mut(&self.active_window)
+            .map(|w| &mut w.buffers)
+            .expect("active window present")
+            .get_mut(&buffer_id)
+        {
+            state.popups.show(popup);
+        }
+    }
+
+    /// Handle a click/confirm on an update menu. "update" launches the local
+    /// update terminal (fresh run or retry); "show_log" switches to the update
+    /// terminal buffer; anything else just dismisses (already done by caller).
+    pub fn handle_update_menu_action(&mut self, action_key: &str) {
+        match action_key {
+            "update" => self.start_self_update(),
+            "show_log" => self.show_self_update_output(),
+            _ => {}
+        }
+    }
+
     /// Dispatch the action selected from the Remote Indicator popup.
     ///
     /// - `"detach"` — `clear_authority()` (falls back to local).
@@ -1219,12 +1356,24 @@ impl Editor {
         // editor fires when the level changes (see env-manager.ts). One
         // decision, one prompt, one place it is recorded.
         //
-        // A decision the user explicitly recorded is always honored — this
-        // branch only fires for undecided projects.
-        let store = crate::services::workspace_trust::TrustStore::for_project_dir(
-            &self.dir_context.project_state_dir(self.working_dir()),
+        // Anchor persistence before consulting it, so the gate and the live
+        // handle can never disagree about *which* file records this
+        // workspace's decision. `store_for_workspace` resolves a linked git
+        // worktree to the repo that owns it, so every checkout of one
+        // repository shares a single decision — and `set_store` adopts that
+        // level, which is what makes a worktree open already-trusted instead
+        // of re-asking. Idempotent: re-anchoring the same store is a no-op.
+        //
+        // A decision the user explicitly recorded is always honored — the rest
+        // of this function only runs for undecided projects.
+        let store = crate::services::workspace_trust::store_for_workspace(
+            &self.dir_context,
+            self.authority().filesystem.as_ref(),
+            self.working_dir(),
         );
-        if store.is_decided() {
+        let decided = store.is_decided();
+        self.authority().workspace_trust.set_store(Some(store));
+        if decided {
             return; // respect a decision the user already recorded
         }
 
@@ -1425,8 +1574,9 @@ impl Editor {
     }
 
     /// Set the radio selection to an absolute index (0=Trust, 1=Restricted,
-    /// 2=Block) without confirming.
-    fn set_workspace_trust_selection(&mut self, index: usize) {
+    /// 2=Block) without confirming. Shared by the keyboard mnemonics and the
+    /// mouse hit-test — both select, only [ OK ] / Enter commits.
+    pub(crate) fn set_workspace_trust_selection(&mut self, index: usize) {
         if let Some(popup) = self.global_popups.top_mut() {
             if let crate::view::popup::PopupContent::List { selected, .. } = &mut popup.content {
                 *selected = index.min(2);

@@ -4,6 +4,7 @@ use crate::common::git_test_helper::{DirGuard, GitTestRepo};
 use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
 use fresh::config::Config;
+use ratatui::style::Color;
 
 // =============================================================================
 // Test Helpers
@@ -198,6 +199,54 @@ fn start_server(config: Config) {
     println!("Git gutter screen:\n{}", screen);
 }
 
+/// Regression test for issue #2721: user-configured external diff tools may
+/// emit side-by-side output, but the gutter parser requires a unified diff.
+#[test]
+#[cfg(unix)]
+fn test_git_gutter_ignores_external_diff_and_pager() {
+    let repo = GitTestRepo::new();
+    repo.setup_typical_project();
+    repo.setup_git_gutter_plugin();
+    repo.setup_external_diff_and_pager();
+
+    repo.modify_file(
+        "src/main.rs",
+        r#"fn main() {
+    println!("Modified while difft is configured!");
+    let config = load_config();
+    start_server(config);
+}
+
+fn load_config() -> Config {
+    Config::default()
+}
+
+fn start_server(config: Config) {
+    println!("Starting server...");
+}
+"#,
+    );
+
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    open_file(&mut harness, &repo.path, "src/main.rs");
+    wait_for_indicator(&mut harness, "│");
+
+    assert!(
+        has_gutter_indicator(&harness.screen_to_string(), "│"),
+        "Git gutter indicator should appear even when diff.external and core.pager are configured"
+    );
+}
+
 /// Test that git gutter updates after saving a file
 // TODO: Fix git gutter tests on Windows - they fail due to git command output differences
 #[test]
@@ -264,6 +313,26 @@ fn test_git_gutter_updates_after_save() {
 
     let screen = harness.screen_to_string();
     println!("After save screen:\n{}", screen);
+
+    let (row, added_line) = screen
+        .lines()
+        .enumerate()
+        .find(|(_, line)| line.contains("// New comment"))
+        .expect("New comment should be visible after save");
+    assert_eq!(
+        added_line.chars().next(),
+        Some('│'),
+        "Saved Git gutter indicator should remain in its original position"
+    );
+
+    let indicator_style = harness
+        .get_cell_style(0, row as u16)
+        .expect("Git gutter indicator cell should have a style");
+    assert_eq!(
+        indicator_style.fg,
+        Some(Color::Rgb(80, 250, 123)),
+        "Saved Git gutter indicator should turn green"
+    );
 }
 
 /// Test that git gutter shows added lines indicator
@@ -1428,4 +1497,236 @@ fn test_indicator_line_shifting() {
     println!("\n=== Shift Test Summary ===");
     println!("Initial indicators: {:?}", lines_initial);
     println!("After shift indicators: {:?}", lines_after);
+}
+
+// =============================================================================
+// Git Gutter Scrollbar Markers
+// =============================================================================
+
+/// The half-block glyph a scrollbar marker paints.
+const SCROLLBAR_MARKER_GLYPH: &str = "▌";
+
+/// Rows of the scrollbar column showing a marker glyph, with the colour they
+/// were painted in.
+fn scrollbar_marker_rows(harness: &EditorTestHarness) -> Vec<(usize, Option<Color>)> {
+    let col = harness.buffer().area.width - 1;
+    let (first, last) = harness.content_area_rows();
+    (first..=last)
+        .filter(|row| harness.get_cell(col, *row as u16).as_deref() == Some(SCROLLBAR_MARKER_GLYPH))
+        .map(|row| {
+            (
+                row,
+                harness.get_cell_style(col, row as u16).and_then(|s| s.fg),
+            )
+        })
+        .collect()
+}
+
+/// The topmost row marked in a given colour, if any.
+fn first_marker_row(rows: &[(usize, Option<Color>)], color: Color) -> Option<usize> {
+    rows.iter()
+        .filter(|(_, fg)| *fg == Some(color))
+        .map(|(row, _)| *row)
+        .min()
+}
+
+/// A file long enough that most of it is off screen.
+fn numbered_lines(count: usize) -> Vec<String> {
+    (0..count).map(|i| format!("line {i:04}")).collect()
+}
+
+/// The git gutter marks its hunks on the scrollbar, in the same colours as its
+/// gutter glyphs — so uncommitted changes below the fold are visible without
+/// scrolling to find them.
+// TODO: Fix git gutter tests on Windows - they fail due to git command output differences
+#[test]
+#[cfg_attr(target_os = "windows", ignore)]
+fn test_git_gutter_marks_off_screen_hunks_on_scrollbar() {
+    let repo = GitTestRepo::new();
+    repo.setup_git_gutter_plugin();
+
+    let original = numbered_lines(200);
+    repo.create_file("long.txt", &format!("{}\n", original.join("\n")));
+    repo.git_add_all();
+    repo.git_commit("Commit the long file");
+
+    // Three hunks of different kinds, all far below the first screenful:
+    // an insertion, a deletion, and an in-place edit. Applied bottom-up so
+    // earlier edits don't shift the indices of later ones.
+    let mut changed = original.clone();
+    changed[150] = "line 0150 rewritten".to_string();
+    changed.drain(100..104);
+    changed.splice(60..60, ["added A".to_string(), "added B".to_string()]);
+    repo.modify_file("long.txt", &format!("{}\n", changed.join("\n")));
+
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    open_file(&mut harness, &repo.path, "long.txt");
+
+    // Every hunk is off screen, so the gutter alone tells the user nothing —
+    // the scrollbar marks are the only signal that this file has changes.
+    harness
+        .wait_until(|h| scrollbar_marker_rows(h).len() >= 3)
+        .unwrap();
+
+    let screen = harness.screen_to_string();
+    assert_eq!(
+        count_gutter_indicators(&screen, "│"),
+        0,
+        "the changed lines are all below the first screenful, so no gutter \
+         glyph should be visible:\n{screen}"
+    );
+
+    let rows = scrollbar_marker_rows(&harness);
+    let added = first_marker_row(&rows, Color::Rgb(80, 250, 123))
+        .unwrap_or_else(|| panic!("the inserted lines should mark the track green; saw {rows:?}"));
+    let deleted = first_marker_row(&rows, Color::Rgb(255, 85, 85))
+        .unwrap_or_else(|| panic!("the deletion should mark the track red; saw {rows:?}"));
+    let modified = first_marker_row(&rows, Color::Rgb(255, 184, 108))
+        .unwrap_or_else(|| panic!("the rewritten line should mark the track orange; saw {rows:?}"));
+
+    // Marks land proportionally to where their hunk sits in the file, so they
+    // appear in the same order down the track as the hunks do down the file.
+    assert!(
+        added < deleted && deleted < modified,
+        "marks should follow the hunks' order in the file, got \
+         added={added}, deleted={deleted}, modified={modified} ({rows:?})"
+    );
+}
+
+/// A file that matches HEAD leaves the scrollbar clean, and saving a change
+/// puts a mark on it — the marks track the diff rather than lingering.
+// TODO: Fix git gutter tests on Windows - they fail due to git command output differences
+#[test]
+#[cfg_attr(target_os = "windows", ignore)]
+fn test_git_gutter_scrollbar_marks_appear_after_save() {
+    let repo = GitTestRepo::new();
+    repo.setup_git_gutter_plugin();
+
+    repo.create_file("long.txt", &format!("{}\n", numbered_lines(200).join("\n")));
+    repo.git_add_all();
+    repo.git_commit("Commit the long file");
+
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    open_file(&mut harness, &repo.path, "long.txt");
+    trigger_git_gutter_refresh(&mut harness);
+
+    // The status line reports the hunk count, so it tells us the plugin has
+    // finished a pass over the unchanged file without waiting on a timer.
+    harness.wait_for_screen_contains("0 change(s)").unwrap();
+    assert!(
+        scrollbar_marker_rows(&harness).is_empty(),
+        "a file matching HEAD should leave the scrollbar unmarked"
+    );
+
+    harness.type_text("brand new first line\n").unwrap();
+    save_file(&mut harness);
+    trigger_git_gutter_refresh(&mut harness);
+
+    harness
+        .wait_until(|h| !scrollbar_marker_rows(h).is_empty())
+        .unwrap();
+
+    let rows = scrollbar_marker_rows(&harness);
+    assert_eq!(
+        rows.first().map(|(_, fg)| *fg),
+        Some(Some(Color::Rgb(80, 250, 123))),
+        "the inserted line is an addition, so its mark is green; saw {rows:?}"
+    );
+}
+
+/// Resetting an open file to a different state with an external tool
+/// (`git checkout <ref> -- <file>` in another terminal) auto-reverts the
+/// buffer — and the gutter and scrollbar must re-diff against HEAD, not
+/// keep showing the pre-reset (empty) state.
+// TODO: Fix git gutter tests on Windows - they fail due to git command output differences
+#[test]
+#[cfg_attr(target_os = "windows", ignore)]
+fn test_git_gutter_refreshes_after_external_git_checkout() {
+    let repo = GitTestRepo::new();
+    repo.setup_git_gutter_plugin();
+
+    // v1: 200 plain numbered lines.
+    let v1 = numbered_lines(200);
+    repo.create_file("long.txt", &format!("{}\n", v1.join("\n")));
+    repo.git_add_all();
+    repo.git_commit("v1");
+
+    // v2 (HEAD): two lines rewritten near the top, where they are on screen.
+    let mut v2 = v1.clone();
+    v2[4] = "line 0004 CHANGED IN HEAD".to_string();
+    v2[5] = "line 0005 CHANGED IN HEAD".to_string();
+    repo.modify_file("long.txt", &format!("{}\n", v2.join("\n")));
+    repo.git_add_all();
+    repo.git_commit("v2");
+
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        Config::default(),
+        repo.path.clone(),
+    )
+    .unwrap();
+
+    open_file(&mut harness, &repo.path, "long.txt");
+    trigger_git_gutter_refresh(&mut harness);
+
+    // The working tree matches HEAD, so the plugin's first pass reports no
+    // hunks — the status line proves the pass completed.
+    harness.wait_for_screen_contains("0 change(s)").unwrap();
+    assert!(
+        !has_gutter_indicator(&harness.screen_to_string(), "│"),
+        "a file matching HEAD should have no gutter indicators"
+    );
+
+    // Filesystems with 1s mtime granularity need the reset's mtime to land
+    // after the open's recorded mtime, or auto-revert won't see a change.
+    harness.sleep(std::time::Duration::from_millis(2100));
+
+    // Externally reset the file to its v1 state while it is open.
+    repo.git_checkout_file("HEAD~1", "long.txt");
+
+    // Auto-revert reloads the buffer from disk.
+    harness
+        .wait_until(|h| !h.get_buffer_content().unwrap().contains("CHANGED IN HEAD"))
+        .expect("auto-revert should reload the externally reset file");
+
+    // The reverted content differs from HEAD on the two rewritten lines, so
+    // the gutter must show modified indicators without any user action...
+    wait_for_indicator(&mut harness, "│");
+
+    // ...and the same hunk must be marked on the scrollbar.
+    harness
+        .wait_until(|h| !scrollbar_marker_rows(h).is_empty())
+        .expect("the re-diffed hunk should mark the scrollbar too");
+
+    let rows = scrollbar_marker_rows(&harness);
+    assert_eq!(
+        rows.first().map(|(_, fg)| *fg),
+        Some(Some(Color::Rgb(255, 184, 108))),
+        "the reset lines differ from HEAD as modifications, so their mark is \
+         orange; saw {rows:?}"
+    );
 }

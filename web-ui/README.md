@@ -13,9 +13,11 @@ the core; each frontend only renders it.
 - **Chrome is native DOM/CSS**, rendered from the editor's **semantic
   projections** in `crates/fresh-editor/src/view/scene.rs` (`Editor::menu_view()`,
   `tab_bar_view()`, `status_view()`, `palette_view()`, `popups_view()`,
-  `file_explorer_view()`, `trust_dialog_view()`, `widgets_view()`,
-  `context_menu_view()`, `keybinding_editor_view()`, `settings_view()`): menu bar
-  + dropdowns, tabs, status bar, command palette, popups, file explorer, trust
+  `file_explorer_view()`, `file_browser_view()`, `trust_dialog_view()`,
+  `widgets_view()`, `context_menu_view()`, `keybinding_editor_view()`,
+  `settings_view()`): menu bar
+  + dropdowns, tabs, status bar, command palette, popups, file explorer, the
+  Open File / Save As / Switch Project browser, trust
   dialog, context menus, plugin widgets/dock, the keybinding editor and the full
   Settings modal.
 - **Buffer interior is SVG** — the pipeline's real, syntax-highlighted cells. The
@@ -108,7 +110,7 @@ Pick a numeric prefix that places a new file where its concern belongs; gaps
 | `20-cells.js` | icon set, cell-grid SVG renderer, TUI theme → CSS variables |
 | `30-render.js` | per-region DOM patching, motion (FX), `render()` |
 | `40-menu.js` / `45-tabs.js` / `55-status.js` | native chrome builders |
-| `50-palette.js` | palette / picker / prompts + file-browser band |
+| `50-palette.js` | palette / picker / prompts + the native file browser |
 | `60-popups.js` | native popups |
 | `65-widgets.js` | plugin widget tree + Settings / keybinding editor / aux modals |
 | `70-panels.js` | trust dialog, file explorer, border drag handles |
@@ -225,6 +227,22 @@ cargo run --release --features web -p fresh-editor -- \
   --web 127.0.0.1:8137 crates/fresh-editor/src/view/scene.rs   # or any file(s)
 # then open http://127.0.0.1:8137  and type — edits go through the real editor.
 ```
+
+`--web` runs the ordinary **session daemon** with the bridge inside it, so the
+browser is not the only way in — in the same directory:
+
+```sh
+fresh -a          # attach a terminal to the session the browser is looking at
+```
+
+is one editor with two transports: type in the terminal and the browser shows
+it, type in the browser and the terminal shows it. Closing the tab or detaching
+the terminal (`Ctrl-b d`-style detach) leaves the session running for the other.
+The rendered grid fits the smallest connected viewport, so a large window
+letterboxes rather than showing a grid the small one can't display. Sessions are
+keyed by working directory unless you name one with `--session-name NAME`; if a
+session is already live where you run `--web`, it says so instead of shadowing
+it.
 
 For interactive use serve a **release** build — the debug scene render dominates
 the key→frame round-trip (see docs/internal/web-ui.md §3.1 for the measured

@@ -420,29 +420,24 @@ impl Write for CaptureBuffer {
 /// ```
 pub fn strip_osc8(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        // ESC ] 8 ; — standard OSC 8 start
-        if i + 3 < bytes.len()
-            && bytes[i] == 0x1b
-            && bytes[i + 1] == b']'
-            && bytes[i + 2] == b'8'
-            && bytes[i + 3] == b';'
-        {
-            i += 4;
-            // Skip until BEL (\x07)
-            while i < bytes.len() && bytes[i] != 0x07 {
-                i += 1;
-            }
-            if i < bytes.len() {
-                i += 1; // skip BEL
-            }
-        } else {
-            result.push(bytes[i] as char);
-            i += 1;
+    // Walk by string slices rather than bytes: a cell symbol is UTF-8 and
+    // pushing `bytes[i] as char` mojibakes every multi-byte glyph (`×`
+    // became `Ã` + U+0097, which also inflated the caller's byte-length
+    // "is this a multi-cell chunk?" test and made it eat the next column).
+    // The OSC 8 markers are all ASCII, so the byte indices `find` returns
+    // are always char boundaries.
+    let mut rest = s;
+    while let Some(start) = rest.find("\x1b]8;") {
+        result.push_str(&rest[..start]);
+        let after = &rest[start + "\x1b]8;".len()..];
+        match after.find('\x07') {
+            Some(bel) => rest = &after[bel + 1..],
+            // Unterminated sequence: everything after the marker is
+            // escape payload, so drop it.
+            None => return result,
         }
     }
+    result.push_str(rest);
     result
 }
 
@@ -1398,6 +1393,22 @@ impl EditorTestHarness {
     /// per-key `type_text` path and from `Ctrl+V`). Routes through the
     /// editor's real `handle_input_event` so floating-panel / dock
     /// paste routing is exercised.
+    /// Deliver a raw key event through the editor's real
+    /// `handle_input_event`, preserving its [`KeyEventKind`].
+    ///
+    /// Unlike [`Self::send_key`], which calls `handle_key` directly, this goes
+    /// through the same dispatch the event loops use — so it exercises the
+    /// press/repeat/release gate that decides whether a key event is a
+    /// keystroke at all. Tests that feed terminal bytes through `InputParser`
+    /// must use this; `send_key` cannot express a release.
+    pub fn send_key_event(&mut self, key_event: crossterm::event::KeyEvent) -> anyhow::Result<()> {
+        self.editor
+            .handle_input_event(crossterm::event::Event::Key(key_event))?;
+        self.drain_async_work();
+        self.render()?;
+        Ok(())
+    }
+
     pub fn send_paste(&mut self, text: &str) -> anyhow::Result<()> {
         self.editor
             .handle_input_event(crossterm::event::Event::Paste(text.to_string()))?;
@@ -1720,7 +1731,7 @@ impl EditorTestHarness {
             if let Some(cell) = buffer.content.get(pos) {
                 let sym = cell.symbol();
                 let stripped = strip_osc8(sym);
-                if stripped.len() > 1 {
+                if stripped.chars().count() > 1 {
                     // This is a multi-char OSC 8 chunk — it contains chars
                     // from this cell and the next cell(s). Push the stripped
                     // content and skip the extra cells.
@@ -2436,7 +2447,7 @@ impl EditorTestHarness {
 
     /// Get the top line number currently visible in the viewport
     pub fn top_line_number(&mut self) -> usize {
-        let top_byte = self.editor.active_viewport().top_byte;
+        let top_byte = self.editor.active_viewport().top_byte();
         self.editor
             .active_state_mut()
             .buffer
@@ -2445,12 +2456,12 @@ impl EditorTestHarness {
 
     /// Get the top byte position of the viewport
     pub fn top_byte(&self) -> usize {
-        self.editor.active_viewport().top_byte
+        self.editor.active_viewport().top_byte()
     }
 
     /// Get the top view line offset (number of view lines to skip)
     pub fn top_view_line_offset(&self) -> usize {
-        self.editor.active_viewport().top_view_line_offset
+        self.editor.active_viewport().top_view_line_offset()
     }
 
     /// Get the viewport height (number of content lines that can be displayed)

@@ -261,7 +261,7 @@ impl Editor {
             .map(|(_, vs)| vs)
             .expect("active window must have a populated split layout")
             .get(&active_split)
-            .map(|vs| (vs.viewport.top_byte, vs.viewport.height.saturating_sub(2)))
+            .map(|vs| (vs.viewport.top_byte(), vs.viewport.height.saturating_sub(2)))
             .unwrap_or((0, 20));
 
         // Remember the viewport we computed overlays for so we can detect
@@ -352,7 +352,7 @@ impl Editor {
             .map(|(_, vs)| vs)
             .expect("active window must have a populated split layout")
             .get(&active_split)
-            .map(|vs| vs.viewport.top_byte);
+            .map(|vs| vs.viewport.top_byte());
         if current_top != self.active_window_mut().search_overlay_top_byte {
             self.refresh_search_overlays();
             true
@@ -836,25 +836,18 @@ impl Editor {
                 .map(|m| (m.offset, m.len, m.replacement))
                 .collect()
         } else {
-            // Plain text mode - replacement is used literally
+            // Plain text mode - replacement is used literally.
+            // One streaming pass over the buffer: asking for the next match
+            // from scratch per occurrence re-reads a chunk each time, which
+            // dominated the whole replace on files with many matches.
             let state = self.active_state();
             let buffer_len = state.buffer.len();
-            let mut matches = Vec::new();
-            let mut current_pos = 0;
-
-            while current_pos < buffer_len {
-                if let Some(offset) = state.buffer.find_next_in_range(
-                    search,
-                    current_pos,
-                    Some(current_pos..buffer_len),
-                ) {
-                    matches.push((offset, search.len(), replacement.to_string()));
-                    current_pos = offset + search.len();
-                } else {
-                    break;
-                }
-            }
-            matches
+            state
+                .buffer
+                .find_all_in_range(search, 0..buffer_len, usize::MAX)
+                .into_iter()
+                .map(|offset| (offset, search.len(), replacement.to_string()))
+                .collect()
         };
 
         let count = matches.len();

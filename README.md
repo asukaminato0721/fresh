@@ -20,6 +20,12 @@ One shortcut to find files, run commands, switch buffers, and jump to any line.
 
 ![Command Palette](docs/blog/productivity/command-palette/showcase.gif)
 
+### Multitask with the Orchestrator
+
+Start each task in its own worktree, hop between them with an arrow key, and leave the rest running.
+
+![Orchestrator](docs/blog/orchestrator-worktrees/showcase.gif)
+
 ### Multi-Cursor Editing
 
 Select and edit multiple occurrences simultaneously — the same workflow you know from graphical editors.
@@ -47,6 +53,7 @@ See more feature demos: [Editing](https://getfresh.dev/docs/blog/editing) (searc
 | **Views & Layout** | split panes, line numbers, line wrap, backgrounds, markdown preview |
 | **Language Server (LSP)** | go to definition, references, hover, code actions, rename, diagnostics, autocompletion |
 | **Productivity** | command palette, menu bar, keyboard macros, git log, diagnostics panel |
+| **Multitasking (Orchestrator)** | one workspace per git worktree, terminals and long-running commands per workspace, coding agents (claude, codex, opencode, aider) with resumable sessions, dock switcher, remote/SSH workspaces |
 | **Extensibility** | TypeScript plugins (sandboxed QuickJS), color highlighter, TODO highlighter, merge conflicts, path complete, keymaps |
 | **Internationalization** | Multiple language support (see [`locales/`](locales/)), plugin translation system |
 

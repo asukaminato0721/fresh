@@ -55,16 +55,29 @@ impl Editor {
         ));
     }
 
+    /// Ask for another frame because plugin work was deferred out of this one.
+    /// The draw never waits on the plugin lock, so anything it skipped has to
+    /// be guaranteed a retry.
+    fn request_plugin_render(&mut self) {
+        #[cfg(feature = "plugins")]
+        {
+            self.plugin_render_requested = true;
+        }
+    }
+
     /// Render the editor to the terminal
     pub fn render(&mut self, frame: &mut Frame) {
         let _span = tracing::info_span!("render").entered();
         let size = frame.area();
 
-        self.drain_pre_layout_plugin_commands();
+        {
+            let _s = tracing::info_span!("pre_layout_drain").entered();
+            self.drain_pre_layout_plugin_commands();
+        }
 
         for window in self.windows.values_mut() {
             window.sync_terminal_titles();
-            window.enforce_terminal_no_wrap();
+            window.enforce_terminal_grid_wrap();
         }
 
         // Carve a full-height left column for a docked floating panel
@@ -75,11 +88,15 @@ impl Editor {
         // painted last alongside the centered-overlay path.
         let (dock_area, chrome_area) = self.compute_dock_split(size);
 
-        // Let active animations snapshot the previous frame's buffer
-        // from the runner's own cache. We can't read the live
-        // `frame.buffer_mut()` — ratatui resets it before each draw —
-        // so the runner keeps a post-apply clone from the last frame.
-        self.active_window_mut().animations.capture_before_all();
+        // Let active animations snapshot the previous frame's buffer.
+        // We can't read the live `frame.buffer_mut()` — ratatui resets it
+        // before each draw — so the editor keeps a post-apply clone of
+        // the last frame and hands it in.
+        let previous_frame = self.last_rendered_frame.take();
+        self.active_window_mut()
+            .animations
+            .capture_before_all(previous_frame.as_ref());
+        self.last_rendered_frame = previous_frame;
 
         // Save frame dimensions for recompute_layout (used by macro replay)
         self.active_chrome_mut().last_frame.width = size.width;
@@ -93,9 +110,15 @@ impl Editor {
         // NOTE: Viewport sync with cursor is handled by split_rendering.rs which knows the
         // correct content area dimensions. Don't sync here with incorrect EditorState viewport size.
 
-        self.request_semantic_ranges_for_visible_splits();
+        {
+            let _s = tracing::info_span!("request_semantic_ranges").entered();
+            self.request_semantic_ranges_for_visible_splits();
+        }
 
-        self.prepare_visible_buffers_for_render();
+        {
+            let _s = tracing::info_span!("prepare_visible_buffers").entered();
+            self.prepare_visible_buffers_for_render();
+        }
 
         // Refresh search highlights only during incremental search (when prompt is active)
         // After search is confirmed, overlays exist for ALL matches and shouldn't be overwritten
@@ -113,15 +136,10 @@ impl Editor {
         }
 
         // Determine if we need to show search options bar.
-        // (Held in mutable bindings because the in-render
-        // `process_commands` block below can dispatch commands —
-        // e.g. `StartPromptAsync`, `SetPromptSuggestions` — that
-        // mutate `self.active_window_mut().prompt`. When that happens we recompute these
-        // flags and re-split `main_chunks` so the bottom-row
-        // rendering uses an up-to-date layout. See the
-        // "Recompute layout if mid-render commands changed state"
-        // block below.)
-        let mut show_search_options = self.active_prompt_has_search_options();
+        // These are stable for the whole frame: every plugin command was
+        // dispatched before this point (pre-layout drain), and nothing after
+        // it mutates prompt state mid-paint.
+        let show_search_options = self.active_prompt_has_search_options();
 
         // Hide status bar when suggestions popup or file browser
         // popup is shown — those popups float just above the prompt
@@ -129,18 +147,18 @@ impl Editor {
         // wrong. Floating-overlay prompts (Live Grep, issue #1796)
         // are exempt because their suggestions live inside the
         // centred frame, not above the bottom row.
-        let mut prompt_is_overlay = self
+        let prompt_is_overlay = self
             .active_window()
             .prompt
             .as_ref()
             .is_some_and(|p| p.overlay);
-        let mut has_suggestions = self
+        let has_suggestions = self
             .active_window()
             .prompt
             .as_ref()
             .is_some_and(|p| !p.suggestions.is_empty())
             && !prompt_is_overlay;
-        let mut has_file_browser = self.active_window().prompt.as_ref().is_some_and(|p| {
+        let has_file_browser = self.active_window().prompt.as_ref().is_some_and(|p| {
             matches!(
                 p.prompt_type,
                 PromptType::OpenFile | PromptType::SwitchProject | PromptType::SaveFileAs
@@ -150,7 +168,7 @@ impl Editor {
         // Build main vertical layout: [menu_bar, main_content, status_bar, search_options, prompt_line]
         // Status bar is hidden when suggestions popup is shown
         // Search options bar is shown when in search prompt
-        let mut main_chunks = Layout::default()
+        let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(vec![
                 Constraint::Length(if self.active_window_mut().menu_bar_visible {
@@ -208,8 +226,18 @@ impl Editor {
         // Trigger lines_changed hooks for newly visible lines in all visible buffers
         // This allows plugins to add overlays before rendering
         // Only lines that haven't been seen before are sent (batched for efficiency)
-        // Use non-blocking hooks to avoid deadlock when actions are awaiting
-        if self.plugin_manager.read().unwrap().is_active() {
+        // Use non-blocking hooks to avoid deadlock when actions are awaiting.
+        //
+        // `try_read` rather than `read`: a busy plugin thread must never be
+        // able to stall the draw on a lock. Losing the race skips this frame's
+        // hooks and requests another, so decorations arrive one frame later
+        // instead of the whole frame arriving late.
+        let plugins_active = self.plugin_manager.try_read().map(|pm| pm.is_active()).ok();
+        if plugins_active.is_none() {
+            self.request_plugin_render();
+        }
+        if plugins_active.unwrap_or(false) {
+            let _s = tracing::info_span!("render_plugin_hooks").entered();
             let hooks_start = std::time::Instant::now();
             // Get visible buffers and their areas
             let visible_buffers = self
@@ -230,7 +258,7 @@ impl Editor {
                     .map(|(_, vs)| vs)
                     .expect("active window must have a populated split layout")
                     .get(&split_id)
-                    .map(|vs| vs.viewport.top_byte)
+                    .map(|vs| vs.viewport.top_byte())
                     .unwrap_or(0);
 
                 let __active_id = self.active_window;
@@ -245,13 +273,22 @@ impl Editor {
                 let seen_ranges_for_win = &mut __win.seen_byte_ranges;
                 let plugin_manager = &self.plugin_manager;
                 let estimated_line_length = self.config.editor.estimated_line_length;
+                let mut hooks_deferred = false;
                 let added = __win
                     .buffers
-                    .with_buffer_and_view_states(buffer_id, |state, vs_map| {
+                    .with_buffer_and_view_states(buffer_id, |state, _vs_map| {
+                        // Both hooks go through `try_read`: the draw computes
+                        // the payload and hands it off, but never waits on the
+                        // plugin lock. On contention nothing is marked seen, so
+                        // the same lines are offered again next frame — the
+                        // payload is deferred, not lost.
+                        let Ok(pm_guard) = plugin_manager.try_read() else {
+                            hooks_deferred = true;
+                            return 0;
+                        };
                         // `render_start` has a tiny payload (just the
                         // buffer id) — fire unconditionally so third-party
                         // plugins listening for it still work.
-                        let pm_guard = plugin_manager.read().unwrap();
                         pm_guard.run_hook(
                             "render_start",
                             crate::services::plugins::hooks::HookArgs::RenderStart { buffer_id },
@@ -259,63 +296,14 @@ impl Editor {
 
                         let visible_count = split_area.height as usize;
 
-                        // `view_transform_request` carries the full
-                        // tokenized viewport in its args. Building those
-                        // tokens (`build_base_tokens_for_hook`) is the
-                        // expensive part — see #2009. Skip the whole
-                        // pipeline when no plugin subscribes.
-                        if pm_guard.has_subscribers("view_transform_request") {
-                            let is_binary = state.buffer.is_binary();
-                            let line_ending = state.buffer.line_ending();
-                            let base_tokens =
-                                crate::view::ui::split_rendering::SplitRenderer::build_base_tokens_for_hook(
-                                    &mut state.buffer,
-                                    viewport_top_byte,
-                                    estimated_line_length,
-                                    visible_count,
-                                    is_binary,
-                                    line_ending,
-                                );
-                            let viewport_start = viewport_top_byte;
-                            let viewport_end = base_tokens
-                                .last()
-                                .and_then(|t| t.source_offset)
-                                .unwrap_or(viewport_start);
-                            let cursor_positions: Vec<usize> = vs_map
-                                .get(&split_id)
-                                .map(|vs| vs.cursors.iter().map(|(_, c)| c.position).collect())
-                                .unwrap_or_default();
-                            pm_guard.run_hook(
-                                "view_transform_request",
-                                crate::services::plugins::hooks::HookArgs::ViewTransformRequest {
-                                    buffer_id,
-                                    split_id: split_id.into(),
-                                    viewport_start,
-                                    viewport_end,
-                                    tokens: base_tokens,
-                                    cursor_positions,
-                                },
-                            );
-
-                            // Plugin saw fresh base tokens; future
-                            // SubmitViewTransform from this request is valid.
-                            if let Some(vs) = vs_map.get_mut(&split_id) {
-                                vs.view_transform_stale = false;
-                            }
-                        }
-                        drop(pm_guard);
-
                         let top_byte = viewport_top_byte;
-                        let seen_byte_ranges =
-                            seen_ranges_for_win.entry(buffer_id).or_default();
+                        let seen_byte_ranges = seen_ranges_for_win.entry(buffer_id).or_default();
 
-                        let mut new_lines: Vec<
-                            crate::services::plugins::hooks::LineInfo,
-                        > = Vec::new();
+                        let mut new_lines: Vec<crate::services::plugins::hooks::LineInfo> =
+                            Vec::new();
+                        let mut fresh_ranges: Vec<(usize, usize)> = Vec::new();
                         let mut line_number = state.buffer.get_line_number(top_byte);
-                        let mut iter = state
-                            .buffer
-                            .line_iterator(top_byte, estimated_line_length);
+                        let mut iter = state.buffer.line_iterator(top_byte, estimated_line_length);
 
                         for _ in 0..visible_count {
                             if let Some((line_start, line_content)) = iter.next_line() {
@@ -323,15 +311,13 @@ impl Editor {
                                 let byte_range = (line_start, byte_end);
 
                                 if !seen_byte_ranges.contains(&byte_range) {
-                                    new_lines.push(
-                                        crate::services::plugins::hooks::LineInfo {
-                                            line_number,
-                                            byte_start: line_start,
-                                            byte_end,
-                                            content: line_content,
-                                        },
-                                    );
-                                    seen_byte_ranges.insert(byte_range);
+                                    new_lines.push(crate::services::plugins::hooks::LineInfo {
+                                        line_number,
+                                        byte_start: line_start,
+                                        byte_end,
+                                        content: line_content,
+                                    });
+                                    fresh_ranges.push(byte_range);
                                 }
                                 line_number += 1;
                             } else {
@@ -341,7 +327,7 @@ impl Editor {
 
                         let count = new_lines.len();
                         if !new_lines.is_empty() {
-                            plugin_manager.read().unwrap().run_hook(
+                            pm_guard.run_hook(
                                 "lines_changed",
                                 crate::services::plugins::hooks::HookArgs::LinesChanged {
                                     buffer_id,
@@ -349,10 +335,16 @@ impl Editor {
                                     epoch: state.buffer.version(),
                                 },
                             );
+                            for range in fresh_ranges {
+                                seen_byte_ranges.insert(range);
+                            }
                         }
                         count
                     })
                     .unwrap_or(0);
+                if hooks_deferred {
+                    self.request_plugin_render();
+                }
                 total_new_lines += added;
             }
             let hooks_elapsed = hooks_start.elapsed();
@@ -363,113 +355,14 @@ impl Editor {
                 "lines_changed hooks total"
             );
 
-            // Process any plugin commands (like AddOverlay) that resulted from the hooks.
-            //
-            // This is non-blocking: we collect whatever the plugin has sent so far.
-            // The plugin thread runs in parallel; by the time we reach this point
-            // it has typically already processed the hooks and sent back
-            // conceal/overlay commands. On rare occasions (high CPU load), the
-            // response arrives one frame late, which is imperceptible at 60fps —
-            // each arriving decoration command sets `plugin_render_requested`, so
-            // a follow-up render cycle picks up anything missed here. (Cursor
-            // movement no longer participates: cursor-dependent decorations carry
-            // activation scopes evaluated at render time, see view/activation.rs.)
-            #[cfg(not(feature = "plugins"))]
-            let dispatched_any = false;
-            #[cfg(feature = "plugins")]
-            let dispatched_any = {
-                let commands = self.plugin_manager.write().unwrap().process_commands();
-                let dispatched_any = !commands.is_empty();
-                for command in commands {
-                    if let Err(e) = self.handle_plugin_command(command) {
-                        tracing::error!("Error handling plugin command: {}", e);
-                    }
-                }
-                dispatched_any
-            };
-
-            // Flush any deferred grammar rebuilds as a single batch
-            self.flush_pending_grammars();
-
-            // Recompute the bottom-row layout if the in-render command
-            // dispatch above mutated state that affects it. Without
-            // this, a `StartPromptAsync` (or similar) processed
-            // mid-render leaves `main_chunks` reflecting the prior
-            // `self.active_window_mut().prompt = None` shape — the prompt slot ends up at
-            // (y = size.height, h = 0) and the status bar paints the
-            // bottom row in place of the prompt input. Conservative:
-            // we recompute on *any* dispatched commands rather than
-            // enumerating layout-affecting variants — Layout::split is
-            // cheap, and this avoids a maintenance-burden whitelist
-            // that would silently regress as new `PluginCommand`
-            // variants are added.
-            //
-            // Bounded — single drain + single recompute. We do not
-            // call `process_commands` again, so commands queued by
-            // hooks fired inside the dispatch above wait for the next
-            // render or `editor_tick` (the existing one-frame-late
-            // behaviour the comment above already accepts).
-            //
-            // `main_content_area` (and the file-explorer / split
-            // rendering derived from it earlier in this render) is
-            // intentionally NOT re-derived: those areas were already
-            // painted, and the bottom-row recompute may overwrite a
-            // single row of main content where the new status bar /
-            // prompt now sits. That brief overlap self-corrects on
-            // the next frame, where the layout is built consistently
-            // from the start.
-            if dispatched_any {
-                show_search_options = self.active_prompt_has_search_options();
-                prompt_is_overlay = self
-                    .active_window()
-                    .prompt
-                    .as_ref()
-                    .is_some_and(|p| p.overlay);
-                has_suggestions = self
-                    .active_window()
-                    .prompt
-                    .as_ref()
-                    .is_some_and(|p| !p.suggestions.is_empty())
-                    && !prompt_is_overlay;
-                has_file_browser = self.active_window().prompt.as_ref().is_some_and(|p| {
-                    matches!(
-                        p.prompt_type,
-                        PromptType::OpenFile | PromptType::SwitchProject | PromptType::SaveFileAs
-                    )
-                }) && self.active_window_mut().file_open_state.is_some();
-                main_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints(vec![
-                        Constraint::Length(if self.active_window_mut().menu_bar_visible {
-                            1
-                        } else {
-                            0
-                        }),
-                        Constraint::Min(0),
-                        Constraint::Length(
-                            if !self.active_window_mut().status_bar_visible
-                                || has_suggestions
-                                || has_file_browser
-                            {
-                                0
-                            } else {
-                                1
-                            },
-                        ),
-                        Constraint::Length(if show_search_options { 1 } else { 0 }),
-                        Constraint::Length(
-                            if (self.active_window_mut().prompt_line_visible
-                                || self.active_window().prompt.is_some())
-                                && !prompt_is_overlay
-                            {
-                                1
-                            } else {
-                                0
-                            },
-                        ),
-                    ])
-                    .split(chrome_area);
-            }
+            // Hook replies (AddOverlay, conceals) are NOT collected here.
+            // The draw dispatches no plugin commands after this point: the
+            // plugin thread answers the hooks above on its own time, the
+            // arriving commands set `plugin_render_requested` via the tick
+            // drain, and the decorations land on the next frame. One frame
+            // of decoration latency is the fixed, universal price for a
+            // frame that cannot tear and whose cost does not depend on how
+            // much a plugin decided to emit mid-paint.
         }
 
         // Render editor content (same for both layouts)
@@ -638,6 +531,7 @@ impl Editor {
             .expect("active window must have a populated split layout");
 
         drop(_content_span);
+        let _post_content_span = tracing::info_span!("render_post_content").entered();
 
         // Cursor-jump animation: compare the cursor's screen position to
         // the prior frame and animate either when the cursor crossed split
@@ -666,7 +560,20 @@ impl Editor {
         // Detect viewport changes and fire hooks
         // Compare against previous frame's viewport state (stored in self.active_window().previous_viewports)
         // This correctly detects changes from scroll events that happen before render()
-        if self.plugin_manager.read().unwrap().is_active() {
+        //
+        // `try_read` again: never wait on the plugin lock inside the draw.
+        // When the lock is busy the `previous_viewports` update below is
+        // skipped too, so the same change is re-detected next frame rather
+        // than being silently swallowed.
+        let mut viewport_hooks_deferred = false;
+        let viewport_plugins_active = match self.plugin_manager.try_read() {
+            Ok(pm) => pm.is_active(),
+            Err(_) => {
+                viewport_hooks_deferred = true;
+                false
+            }
+        };
+        if viewport_plugins_active {
             for (split_id, view_state) in self
                 .windows
                 .get(&self.active_window)
@@ -675,7 +582,7 @@ impl Editor {
                 .expect("active window must have a populated split layout")
             {
                 let current = (
-                    view_state.viewport.top_byte,
+                    view_state.viewport.top_byte(),
                     view_state.viewport.width,
                     view_state.viewport.height,
                 );
@@ -713,7 +620,11 @@ impl Editor {
                             .get(&buffer_id)
                             .and_then(|state| {
                                 if state.buffer.line_count().is_some() {
-                                    Some(state.buffer.get_line_number(view_state.viewport.top_byte))
+                                    Some(
+                                        state
+                                            .buffer
+                                            .get_line_number(view_state.viewport.top_byte()),
+                                    )
                                 } else {
                                     None
                                 }
@@ -722,15 +633,19 @@ impl Editor {
                             "Firing viewport_changed hook: split={:?} buffer={:?} top_byte={} top_line={:?}",
                             split_id,
                             buffer_id,
-                            view_state.viewport.top_byte,
+                            view_state.viewport.top_byte(),
                             top_line
                         );
-                        self.plugin_manager.read().unwrap().run_hook(
+                        let Ok(pm) = self.plugin_manager.try_read() else {
+                            viewport_hooks_deferred = true;
+                            continue;
+                        };
+                        pm.run_hook(
                             "viewport_changed",
                             crate::services::plugins::hooks::HookArgs::ViewportChanged {
                                 split_id: (*split_id).into(),
                                 buffer_id,
-                                top_byte: view_state.viewport.top_byte,
+                                top_byte: view_state.viewport.top_byte(),
                                 top_line,
                                 width: view_state.viewport.width,
                                 height: view_state.viewport.height,
@@ -741,15 +656,25 @@ impl Editor {
             }
         }
 
+        // A hook we couldn't deliver this frame must stay pending: leaving
+        // `previous_viewports` untouched is what makes the change re-detected
+        // next frame instead of vanishing.
+        if viewport_hooks_deferred {
+            self.request_plugin_render();
+        }
+
         // Update previous_viewports for next frame's comparison.
         // Take both `previous_viewports` and the split view-states from
         // the same `__win` borrow so the iterator and the inserts share
         // a single mutable borrow on `self.windows`.
+        let skip_viewport_snapshot = viewport_hooks_deferred;
         let __vp_win = self
             .windows
             .get_mut(&self.active_window)
             .expect("active window present");
-        __vp_win.previous_viewports.clear();
+        if !skip_viewport_snapshot {
+            __vp_win.previous_viewports.clear();
+        }
         let (_, __vp_vs_map) = __vp_win
             .buffers
             .splits()
@@ -760,15 +685,17 @@ impl Editor {
                 (
                     *split_id,
                     (
-                        view_state.viewport.top_byte,
+                        view_state.viewport.top_byte(),
                         view_state.viewport.width,
                         view_state.viewport.height,
                     ),
                 )
             })
             .collect();
-        for (split_id, vp) in snapshot {
-            __vp_win.previous_viewports.insert(split_id, vp);
+        if !skip_viewport_snapshot {
+            for (split_id, vp) in snapshot {
+                __vp_win.previous_viewports.insert(split_id, vp);
+            }
         }
 
         // Render terminal content on top of split content for terminal buffers.
@@ -782,6 +709,11 @@ impl Editor {
         self.active_layout_mut().close_split_areas = close_split_areas;
         self.active_layout_mut().maximize_split_areas = maximize_split_areas;
         self.active_layout_mut().view_line_mappings = view_line_mappings;
+
+        // Widget panels mounted into splits render through the ordinary
+        // buffer pipeline, which knows nothing about widget geometry —
+        // paint their overflowing lists' scrollbars on top.
+        self.render_split_widget_panel_scrollbars(frame);
 
         // Promote any deferred virtual-buffer animations whose Rect is now
         // known. Done here (after split_areas is recomputed, before
@@ -915,17 +847,13 @@ impl Editor {
         // Update menu context with current editor state
         self.update_menu_context();
 
-        // Settings / calibration-wizard / keybinding-editor / event-debug
-        // modals, dimming the chrome behind each. Rendered before the menu
-        // bar so open menus overlay them.
-        self.render_modal_overlays(frame, chrome_area);
-
-        // The workspace-trust prompt is a blocking, top-most security modal.
-        // It dims the *entire* frame (the dock included) and centres in the
-        // full window, so it is rendered at the very end of this method —
-        // after the dock and floating panels — rather than here, where the
-        // dock's later pass would overpaint its left edge. See the bottom of
-        // `render`.
+        // The full-screen modals (settings, calibration wizard, keybinding
+        // editor, event-debug dialog) and the blocking workspace-trust prompt
+        // each dim the *entire* frame — the dock included — and centre in the
+        // full window, so they are rendered at the very end of this method,
+        // after the dock and floating panels, rather than here, where the
+        // dock's later pass would overpaint their left edge. See the bottom of
+        // `render` and `render_panels_and_modals`.
 
         // Menu bar, drawn last so its dropdowns sit above all other content.
         self.render_menu_bar(frame, menu_bar_area);
@@ -964,19 +892,20 @@ impl Editor {
             }
         }
 
-        // Convert all colors for terminal capability (256/16 color fallback)
-        crate::view::color_support::convert_buffer_colors(
-            frame.buffer_mut(),
-            self.color_capability,
-        );
-
-        // Frame-buffer animations run last so they mutate the final paint.
+        // Frame-buffer animations run after the main draw so they mutate the
+        // final paint.
         self.active_window_mut()
             .animations
             .apply_all(frame.buffer_mut());
 
-        // Dock, floating panel, theme-info popup, and the workspace-trust
-        // modal — the topmost layers, drawn above prompts/popups/animations.
+        // Keep the post-apply paint so the next frame's effects can push
+        // it out of view. Cloned because ratatui resets the current
+        // buffer before the next draw.
+        self.last_rendered_frame = Some(frame.buffer_mut().clone());
+
+        // Dock, full-screen modals, floating panel, theme-info popup, and the
+        // workspace-trust modal — the topmost layers, drawn above
+        // prompts/popups/animations.
         self.render_panels_and_modals(
             frame,
             size,
@@ -984,6 +913,15 @@ impl Editor {
             dock_area,
             top_is_trust_modal,
             &theme_clone,
+        );
+
+        // Convert all colors for terminal capability (256/16 color fallback).
+        // Dead last, so the layers painted above — dock, full-screen modals,
+        // animations — go through the fallback too instead of emitting
+        // truecolor SGR on a terminal that cannot render it.
+        crate::view::color_support::convert_buffer_colors(
+            frame.buffer_mut(),
+            self.color_capability,
         );
     }
 
@@ -1318,8 +1256,9 @@ impl Editor {
     }
 
     /// Render the topmost layers: the dock and floating widget panel (each in
-    /// its own slot), the theme-info popup, and the blocking workspace-trust
-    /// modal. Drawn after every other layer so they sit on top.
+    /// its own slot), the full-screen modals (settings, keybinding editor,
+    /// …), the theme-info popup, and the blocking workspace-trust modal.
+    /// Drawn after every other layer so they sit on top.
     fn render_panels_and_modals(
         &mut self,
         frame: &mut Frame,
@@ -1339,6 +1278,14 @@ impl Editor {
                 self.render_floating_widget_panel(frame, dock, super::PanelSlot::Dock);
             }
         }
+
+        // Settings / calibration-wizard / keybinding-editor / event-debug —
+        // full-screen modals. They get the whole frame (`size`), not the
+        // chrome region right of the dock: each dims everything behind it,
+        // the dock included, and centres in the full window. Drawn here,
+        // after the dock's own pass, so the dock cannot overpaint the
+        // modal's left edge.
+        self.render_modal_overlays(frame, size);
 
         // The theme-info popup (Ctrl+Right-Click) anchors to an absolute
         // screen cell that may sit over the dock column, so draw it after
@@ -1786,6 +1733,7 @@ impl Editor {
 
         // Get update availability info
         let update_available = self.latest_version().map(|v| v.to_string());
+        let self_update_phase = self.self_update_phase();
 
         // Render status bar (hidden when toggled off, or when suggestions/file browser popup is shown)
         if self.active_window().status_bar_visible && !has_suggestions && !has_file_browser {
@@ -1841,8 +1789,10 @@ impl Editor {
                 .contains(&(u64::MAX - self.active_window_id().0))
                 && self.active_window().authority_spec.is_remote();
 
-            // Get session name for display (only in session mode)
-            let session_name = self.session_name().map(|s| s.to_string());
+            // Get session label for display (only in session mode). The display
+            // name, not `session_name`: an unnamed working-directory daemon has
+            // no daemon name but is still labelled with its directory.
+            let session_name = self.session_display_name().map(|s| s.to_string());
 
             let active_split = self.effective_active_split();
             let active_buf = self.active_buffer();
@@ -1865,6 +1815,16 @@ impl Editor {
             // Active session's trust level for the always-present `{trust}`
             // indicator — read here (Copy) before the mutable window borrow.
             let workspace_trust_level = self.authority().workspace_trust.level();
+            // Restart affordance for a terminal buffer whose process quit.
+            // `exited_terminal` is `Some` only in exactly that state, so the
+            // indicator can't offer to restart a live agent.
+            let terminal_restart = self.active_window().exited_terminal(active_buf).map(|e| {
+                crate::view::ui::status_bar::TerminalRestartState {
+                    program: e.program_name().map(str::to_string),
+                    exit_code: e.exit_code,
+                    resumes_agent: e.resumes_agent() && self.config.terminal.resume_agents,
+                }
+            });
             // Single window borrow, split into buffers + cursors so the
             // status-bar context can hold both.
             let __active_id = self.active_window;
@@ -1897,6 +1857,7 @@ impl Editor {
                         keybindings,
                         chord_state: &chord_state_cloned,
                         update_available: update_available.as_deref(),
+                        update_phase: self_update_phase,
                         warning_level,
                         general_warning_count,
                         hovered: status_bar_hovered,
@@ -1914,6 +1875,7 @@ impl Editor {
                         remote_indicator_on_bar: false,
                         dynamic_status_bar_elements: dynamic_status_bar_elements.clone(),
                         workspace_trust_level,
+                        terminal_restart: terminal_restart.clone(),
                     };
                     let mut sb_rec =
                         crate::app::types::CellThemeRecorder::new(&mut status_bar_runs);
@@ -1935,15 +1897,27 @@ impl Editor {
             status_bar.clickable = status_bar_layout.clickable;
             status_bar.plugin_token_areas = status_bar_layout.plugin_token_areas;
             status_bar.segments = status_bar_layout.segments;
+        } else {
+            // No bar this frame — the user hid it, or a suggestions / file-
+            // browser popup took the row. Drop last frame's capture instead of
+            // leaving it to go stale: `status_view` would keep projecting a
+            // status bar the web then draws under its prompt row (the TUI's
+            // ghost-text bug), and the click/hover hit-tests would keep
+            // resolving segments that are no longer on screen.
+            self.active_chrome_mut().status_bar = Default::default();
         }
     }
 
-    /// Render the modal overlays that dim the chrome behind them: settings,
+    /// Render the modal overlays that dim everything behind them: settings,
     /// calibration wizard, keybinding editor, and event-debug dialog. Each is
     /// drawn only for the TUI (`!suppress_chrome_cells`); the web projects
-    /// them natively. Rendered before the menu bar so open menus overlay them.
-    fn render_modal_overlays(&mut self, frame: &mut Frame, chrome_area: ratatui::layout::Rect) {
-        // Render settings modal (before menu bar so menus can overlay)
+    /// them natively.
+    ///
+    /// `area` is the whole frame — these are full-screen modals, so the dim
+    /// pass covers the dock column too and each dialog centres in the full
+    /// window. They are called from `render_panels_and_modals` (after the
+    /// dock paints) so the dock cannot overpaint them.
+    fn render_modal_overlays(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {
         // Check visibility first to avoid borrow conflict with dimming
         // The web renders Settings natively from `settings_view`; paint cells
         // only for the TUI.
@@ -1955,10 +1929,12 @@ impl Editor {
                 .map(|s| s.visible)
                 .unwrap_or(false);
         if settings_visible {
-            // Dim the editor content behind the settings modal. Use the
-            // chrome area (right of a left dock) so the modal sits beside
-            // the persistent dock instead of being overlapped by it.
-            crate::view::dimming::apply_dimming(frame, chrome_area);
+            // Dim everything behind the settings modal — the editor chrome
+            // *and* the dock. The dock is input-inaccessible while the modal
+            // is up (`dispatch_modal_mouse` routes every click to settings),
+            // so leaving it at full brightness read as if it were still live
+            // beside a dialog that had already swallowed its input.
+            crate::view::dimming::apply_dimming(frame, area);
         }
         if let Some(ref mut settings_state) = self.settings_state {
             if !draw_settings {
@@ -1973,7 +1949,7 @@ impl Editor {
                 settings_state.update_focus_states();
                 let settings_layout = crate::view::settings::render_settings(
                     frame,
-                    chrome_area,
+                    area,
                     settings_state,
                     &self.theme.read().unwrap(),
                 );
@@ -1986,10 +1962,10 @@ impl Editor {
         if !self.suppress_chrome_cells {
             if let Some(ref wizard) = self.calibration_wizard {
                 // Dim the editor content behind the wizard modal
-                crate::view::dimming::apply_dimming(frame, chrome_area);
+                crate::view::dimming::apply_dimming(frame, area);
                 crate::view::calibration_wizard::render_calibration_wizard(
                     frame,
-                    chrome_area,
+                    area,
                     wizard,
                     &self.theme.read().unwrap(),
                 );
@@ -2004,10 +1980,10 @@ impl Editor {
         // paint cells only for the TUI.
         if draw_aux {
             if let Some(ref mut kb_editor) = self.keybinding_editor {
-                crate::view::dimming::apply_dimming(frame, chrome_area);
+                crate::view::dimming::apply_dimming(frame, area);
                 crate::view::keybinding_editor::render_keybinding_editor(
                     frame,
-                    chrome_area,
+                    area,
                     kb_editor,
                     &self.theme.read().unwrap(),
                 );
@@ -2018,10 +1994,10 @@ impl Editor {
         if draw_aux {
             if let Some(ref debug) = self.active_window().event_debug {
                 // Dim the editor content behind the dialog modal
-                crate::view::dimming::apply_dimming(frame, chrome_area);
+                crate::view::dimming::apply_dimming(frame, area);
                 crate::view::event_debug::render_event_debug(
                     frame,
-                    chrome_area,
+                    area,
                     debug,
                     &self.theme.read().unwrap(),
                 );
@@ -2097,27 +2073,24 @@ impl Editor {
     /// The mid-render drain (after `compute_dock_split`) runs too late for
     /// those: the dock area would be computed from stale state and the freed
     /// columns would render blank until the next input event.
+
     fn drain_pre_layout_plugin_commands(&mut self) {
         #[cfg(feature = "plugins")]
         {
-            let early_commands = self.plugin_manager.write().unwrap().process_commands();
-            if !early_commands.is_empty() {
-                tracing::trace!(
-                    count = early_commands.len(),
-                    "process_commands at top of render (pre-layout drain)"
-                );
-                for command in early_commands {
-                    if let Err(e) = self.handle_plugin_command(command) {
-                        tracing::error!("Error handling plugin command (pre-layout drain): {}", e);
-                    }
-                }
-            }
+            // The one and only dispatch point on the render path, and it runs
+            // before anything is laid out or painted — semantically between
+            // frames, so no command can tear this frame or invalidate its
+            // layout (the old mid-render drain needed a layout recompute and
+            // a hold-back list for window switches; this needs neither).
+            // Routed through the same budgeted, backlogged, measured drain as
+            // the tick so global FIFO order is preserved.
+            let _ = self.process_plugin_commands();
         }
     }
 
     /// Ensure the active split's cursor is in view, then synchronise scroll-sync groups.
     ///
-    /// Order matters: `sync_scroll_groups` reads the `viewport.top_byte` that
+    /// Order matters: `sync_scroll_groups` reads the `viewport.top_byte()` that
     /// `pre_sync_ensure_visible` just updated.  Doing it after the render would
     /// produce a one-frame lag on cursor moves that trigger a scroll-sync anchor
     /// change (e.g. `G` in a side-by-side diff).
@@ -2169,7 +2142,8 @@ impl Editor {
                         .expect("active window present")
                         .get(&buffer_id)
                     {
-                        let start_line = state.buffer.get_line_number(view_state.viewport.top_byte);
+                        let start_line =
+                            state.buffer.get_line_number(view_state.viewport.top_byte());
                         let visible_lines =
                             view_state.viewport.visible_line_count().saturating_sub(1);
                         let end_line = start_line.saturating_add(visible_lines);
@@ -2214,7 +2188,7 @@ impl Editor {
                 .iter()
                 .filter_map(|(split_id, vs)| {
                     mgr.get_buffer_id((*split_id).into())
-                        .map(|bid| (bid, vs.viewport.top_byte, vs.viewport.height))
+                        .map(|bid| (bid, vs.viewport.top_byte(), vs.viewport.height))
                 })
                 .collect()
         };
@@ -2445,6 +2419,10 @@ impl Editor {
                 width,
                 height: max_height,
             };
+            // Web renders the browser natively from `file_browser_view`; skip
+            // its cell drawing (layout, spans and the list viewport are still
+            // computed, and the projection reads them).
+            let fb_draw = !self.suppress_chrome_cells;
             let __win = self.active_window_mut();
             let Some(file_open_state) = &mut __win.file_open_state else {
                 return;
@@ -2456,6 +2434,7 @@ impl Editor {
                 &theme,
                 &hover_target,
                 Some(&kb_clone),
+                fb_draw,
             );
             return;
         }
@@ -3093,7 +3072,7 @@ impl Editor {
                     .overlays
                     .clear_namespace(&preview_ns, &mut state.marker_list);
                 if let Some(re) = &preview_regex {
-                    let visible_start = pstate.view_state.viewport.top_byte;
+                    let visible_start = pstate.view_state.viewport.top_byte();
                     let visible_rows = pstate.view_state.viewport.height as usize;
                     let mut visible_end = visible_start;
                     {
@@ -3765,7 +3744,6 @@ impl Editor {
                     let view_mode = buf_state.view_mode.clone();
                     let compose_width = buf_state.compose_width;
                     let compose_column_guides = buf_state.compose_column_guides.clone();
-                    let view_transform = buf_state.view_transform.clone();
                     let rulers = buf_state.rulers.clone();
                     let show_line_numbers = buf_state.show_line_numbers;
                     let highlight_current_line = buf_state.highlight_current_line;
@@ -3784,7 +3762,6 @@ impl Editor {
                         view_mode,
                         compose_width,
                         compose_column_guides,
-                        view_transform,
                         buffer_id,
                         session_mode,
                         &rulers,
@@ -4215,6 +4192,9 @@ impl Editor {
                     self.config.editor.show_horizontal_scrollbar,
                     self.config.editor.diagnostics_inline_text,
                     self.config.editor.show_tilde,
+                    crate::view::bracket_highlight_overlay::BracketHighlightSettings::from_config(
+                        &self.config.editor,
+                    ),
                 )
             })
             .expect("active window must have a populated split layout");
@@ -4357,6 +4337,101 @@ impl Editor {
         (Some(dock), chrome)
     }
 
+    /// Paint a scrollbar over each overflowing `List`/`Tree` of every
+    /// widget panel mounted into a visible editor split (Settings,
+    /// Search & Replace, the code-tour dock). Floating panels paint
+    /// theirs inside [`render_floating_widget_panel`]; split-mounted
+    /// panels go through the ordinary buffer pipeline, which knows
+    /// nothing about widget geometry, so without this pass their
+    /// overflowing lists show no scrollbar at all.
+    fn render_split_widget_panel_scrollbars(&mut self, frame: &mut Frame) {
+        use crate::view::ui::scrollbar::{render_scrollbar, ScrollbarColors, ScrollbarState};
+
+        // Collect paint jobs first so the layout/registry borrows end
+        // before the frame is written.
+        let mut jobs: Vec<(ratatui::layout::Rect, ScrollbarState)> = Vec::new();
+        for (split_id, buffer_id, content_rect, _, _, _) in &self.active_layout().split_areas {
+            let panels = self.widget_registry.panels_for_buffer(*buffer_id);
+            if panels.is_empty() {
+                continue;
+            }
+            // The panel body is pinned to the top in practice, but honour
+            // a scrolled viewport all the same (mirrors the wheel-routing
+            // translation in `handle_split_widget_panel_wheel`).
+            let top_byte = self
+                .windows
+                .get(&self.active_window)
+                .and_then(|w| w.buffers.splits())
+                .map(|(_, vs)| vs)
+                .and_then(|vs| vs.get(split_id))
+                .map(|vs| vs.viewport.top_byte())
+                .unwrap_or(0);
+            let (top_line, gutter) = self
+                .windows
+                .get(&self.active_window)
+                .map(|w| &w.buffers)
+                .and_then(|b| b.get(buffer_id))
+                .map(|s| {
+                    (
+                        s.buffer.get_line_number(top_byte),
+                        s.margins.left_total_width() as u16,
+                    )
+                })
+                .unwrap_or((0, 0));
+            for panel_key in panels {
+                let Some(panel) = self.widget_registry.get(&panel_key) else {
+                    continue;
+                };
+                for region in &panel.scroll_regions {
+                    // Geometry regions cover every keyed list; only
+                    // overflowing ones earn a scrollbar.
+                    if region.total <= region.visible {
+                        continue;
+                    }
+                    let Some(rel_row) = (region.buffer_row as usize).checked_sub(top_line) else {
+                        continue;
+                    };
+                    let y = content_rect.y as usize + rel_row;
+                    let bottom = (content_rect.y + content_rect.height) as usize;
+                    if y >= bottom {
+                        continue;
+                    }
+                    let h = (region.height_rows as usize).min(bottom - y);
+                    if h == 0 {
+                        continue;
+                    }
+                    // Scrollbar column = right edge of the list's region,
+                    // clamped inside the split.
+                    let sb_x = content_rect
+                        .x
+                        .saturating_add(gutter)
+                        .saturating_add(region.col_in_row as u16)
+                        .saturating_add(region.width_cols.saturating_sub(1) as u16)
+                        .min(content_rect.x + content_rect.width.saturating_sub(1));
+                    jobs.push((
+                        ratatui::layout::Rect {
+                            x: sb_x,
+                            y: y as u16,
+                            width: 1,
+                            height: h as u16,
+                        },
+                        ScrollbarState::new(region.total, region.visible, region.scroll),
+                    ));
+                }
+            }
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        let colors = {
+            let theme = self.theme.read().unwrap();
+            ScrollbarColors::from_theme(&theme)
+        };
+        for (rect, state) in jobs {
+            render_scrollbar(frame, rect, &state, &colors);
+        }
+    }
+
     pub(super) fn render_floating_widget_panel(
         &mut self,
         frame: &mut Frame,
@@ -4449,7 +4524,18 @@ impl Editor {
             super::PanelPlacement::Centered => {
                 let requested = Self::centered_overlay_rect(area, width_pct, height_pct);
                 let needed_h = (entries.len() as u16).saturating_add(2);
-                let effective_h = needed_h.min(requested.height).max(3);
+                // Fit the content in BOTH directions: the requested height is
+                // a hint, never a guillotine. Shorter content shrinks the box
+                // (the original Bug 7 fix); content taller than the requested
+                // percentage GROWS it, up to the frame. Capping at the request
+                // silently amputated the tail of the spec — on a 24-row
+                // terminal the dock's delete confirmation (mounted at 44%,
+                // i.e. 10 rows) lost its `[ Cancel ] [ Confirm Delete ]` row
+                // entirely, so the modal read as "up but not focused" while
+                // the (invisible) focused button still answered Enter.
+                // Clipping is only acceptable when the frame itself is too
+                // small, which `area.height` already expresses.
+                let effective_h = needed_h.clamp(3, area.height.max(3));
                 ratatui::layout::Rect {
                     x: requested.x,
                     y: area.y + (area.height.saturating_sub(effective_h)) / 2,
@@ -4672,6 +4758,11 @@ impl Editor {
             use crate::view::ui::scrollbar::{render_scrollbar, ScrollbarColors, ScrollbarState};
             let colors = ScrollbarColors::from_theme(&theme);
             for region in &scroll_regions {
+                // Regions are emitted for every keyed list (wheel routing
+                // hit-tests them); only overflowing ones get a scrollbar.
+                if region.total <= region.visible {
+                    continue;
+                }
                 // Scrollbar column = right edge of the list's column,
                 // clamped inside the panel. Height = visible rows,
                 // clamped to the panel bottom.

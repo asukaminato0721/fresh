@@ -409,6 +409,9 @@ impl Editor {
                     .unwrap_or_else(|| d.root.clone());
                 fresh_core::api::WindowInfo {
                     id: fresh_core::WindowId(d.id),
+                    // A dormant shell carries the persisted id when its
+                    // workspace file had one; legacy files leave it empty.
+                    stable_id: d.stable_id.clone().unwrap_or_default(),
                     label: d.label.clone(),
                     root: normalize_plugin_path(d.root.clone()),
                     project_path: normalize_plugin_path(project_path),
@@ -441,6 +444,7 @@ impl Editor {
                     .unwrap_or(false);
                 fresh_core::api::WindowInfo {
                     id: s.id,
+                    stable_id: s.stable_id.clone(),
                     label: s.label.clone(),
                     root: normalize_plugin_path(s.root.clone()),
                     project_path: normalize_plugin_path(project_path),
@@ -486,6 +490,43 @@ impl Editor {
                 .or_default();
             for (key, value) in state_map {
                 entry.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+
+    /// Dispatch one plugin command, timing the handler and reporting any that
+    /// blocks the editor thread.
+    ///
+    /// This is the guard that keeps the "no plugin work on the editor thread
+    /// except bounded state mutation" invariant honest: a handler that does
+    /// unbounded I/O or computation shows up here by name instead of as an
+    /// unattributable stall. `FRESH_STRICT_PLUGIN_BUDGET` promotes the warning
+    /// to a panic so the e2e hostile-plugin test fails on a regression rather
+    /// than merely logging one.
+    pub(crate) fn dispatch_plugin_command_measured(&mut self, command: PluginCommand) {
+        let label = VariantNameSink::of(&command);
+        let label = label.as_str();
+        let started = std::time::Instant::now();
+        if let Err(e) = self.handle_plugin_command(command) {
+            tracing::error!("Error handling plugin command {}: {}", label, e);
+        }
+        let elapsed = started.elapsed();
+        if elapsed > super::PLUGIN_COMMAND_HANDLER_LIMIT {
+            tracing::warn!(
+                target: "plugin_budget",
+                handler = label,
+                elapsed_ms = elapsed.as_millis() as u64,
+                limit_ms = super::PLUGIN_COMMAND_HANDLER_LIMIT.as_millis() as u64,
+                "plugin command handler blocked the editor thread — move this work to plugin_offloop"
+            );
+            #[cfg(debug_assertions)]
+            if std::env::var_os("FRESH_STRICT_PLUGIN_BUDGET").is_some() {
+                panic!(
+                    "plugin command handler {} blocked the editor thread for {}ms (limit {}ms)",
+                    label,
+                    elapsed.as_millis(),
+                    super::PLUGIN_COMMAND_HANDLER_LIMIT.as_millis()
+                );
             }
         }
     }
@@ -768,6 +809,12 @@ impl Editor {
             } => {
                 self.handle_set_split_buffer(split_id, buffer_id);
             }
+            PluginCommand::MoveBufferToSplit {
+                buffer_id,
+                split_id,
+            } => {
+                self.handle_move_buffer_to_split(buffer_id, split_id);
+            }
             PluginCommand::SetSplitScroll { split_id, top_byte } => {
                 self.handle_set_split_scroll(split_id, top_byte);
             }
@@ -831,19 +878,6 @@ impl Editor {
             } => {
                 self.handle_set_line_wrap(buffer_id, split_id, enabled);
             }
-            PluginCommand::SubmitViewTransform {
-                buffer_id,
-                split_id,
-                payload,
-            } => {
-                self.handle_submit_view_transform(buffer_id, split_id, payload);
-            }
-            PluginCommand::ClearViewTransform {
-                buffer_id: _,
-                split_id,
-            } => {
-                self.handle_clear_view_transform(split_id);
-            }
             PluginCommand::SetViewState {
                 buffer_id,
                 key,
@@ -901,6 +935,30 @@ impl Editor {
                 namespace,
             } => {
                 self.handle_clear_line_indicators(buffer_id, namespace);
+            }
+            PluginCommand::SetScrollbarMarkers {
+                buffer_id,
+                namespace,
+                markers,
+            } => {
+                self.handle_set_scrollbar_markers(buffer_id, namespace, markers);
+            }
+            PluginCommand::SetScrollbarMarkersInRange {
+                buffer_id,
+                namespace,
+                start,
+                end,
+                markers,
+            } => {
+                self.handle_set_scrollbar_markers_in_range(
+                    buffer_id, namespace, start, end, markers,
+                );
+            }
+            PluginCommand::ClearScrollbarMarkers {
+                buffer_id,
+                namespace,
+            } => {
+                self.handle_clear_scrollbar_markers(buffer_id, namespace);
             }
             PluginCommand::SetFileExplorerDecorations {
                 namespace,
@@ -994,6 +1052,9 @@ impl Editor {
             } => {
                 self.handle_start_prompt_async(label, initial_value, callback_id);
             }
+            PluginCommand::StartFilePickAsync { label, callback_id } => {
+                self.handle_start_file_pick_async(label, callback_id);
+            }
             PluginCommand::AwaitNextKey { callback_id } => {
                 self.handle_await_next_key(callback_id);
             }
@@ -1041,7 +1102,7 @@ impl Editor {
                 title,
                 resume,
                 env,
-                command_allowlist,
+                allow_script,
                 request_id,
             } => {
                 self.handle_create_window_with_terminal(
@@ -1052,7 +1113,7 @@ impl Editor {
                     title,
                     resume,
                     env,
-                    command_allowlist,
+                    allow_script,
                     request_id,
                 );
             }
@@ -1096,6 +1157,18 @@ impl Editor {
             }
             PluginCommand::CloseWindow { id } => {
                 let _ = self.close_window(id);
+            }
+            PluginCommand::DeleteWorkspace { root } => {
+                // Permanently forget this directory's persisted session so
+                // boot-time discovery can't rediscover it. Best-effort, like
+                // discovery's own GC: a failed unlink just leaves the file to
+                // be retried next launch rather than aborting the delete.
+                if let Err(e) = crate::workspace::Workspace::delete(&root) {
+                    tracing::warn!(
+                        "DeleteWorkspace: could not forget workspace for {:?}: {e}",
+                        root
+                    );
+                }
             }
             PluginCommand::PrewarmWindow { id } => {
                 self.prewarm_window(id);
@@ -1453,6 +1526,18 @@ impl Editor {
             PluginCommand::ExecuteAction { action_name } => {
                 self.handle_execute_action(action_name);
             }
+            PluginCommand::CompleteCommand {
+                request_id,
+                ok,
+                output,
+                error,
+            } => {
+                // A command dispatched over the agent channel has settled.
+                // Park the outcome where the host loop (daemon or in-process
+                // control socket) picks it up and answers the caller waiting on
+                // this request id.
+                crate::server::command_access::complete(request_id, ok, output, error);
+            }
             PluginCommand::ExecuteActions { actions } => {
                 self.handle_execute_actions(actions);
             }
@@ -1614,6 +1699,24 @@ impl Editor {
             PluginCommand::FlushLayout => {
                 self.flush_layout();
             }
+            PluginCommand::SetLineTargets { buffer_id, targets } => {
+                self.set_line_targets(buffer_id, targets);
+            }
+            PluginCommand::SplitWindow {
+                options,
+                request_id,
+            } => {
+                self.handle_split_window(options, request_id);
+            }
+            PluginCommand::SyncSnapshot { request_id } => {
+                // Everything queued ahead of this has been applied by now
+                // (the queue is FIFO), so refreshing the snapshot here is
+                // what makes the caller's next read observe its own writes.
+                self.update_plugin_state_snapshot();
+                self.send_plugin_response(fresh_core::api::PluginResponse::SnapshotSynced {
+                    request_id,
+                });
+            }
             PluginCommand::CompositeNextHunk { buffer_id } => {
                 self.handle_composite_next_hunk(buffer_id);
             }
@@ -1688,8 +1791,9 @@ impl Editor {
                 window_id,
                 command,
                 title,
+                resume,
                 env,
-                command_allowlist,
+                allow_script,
                 request_id,
             } => {
                 self.handle_create_terminal(
@@ -1701,8 +1805,9 @@ impl Editor {
                     window_id,
                     command,
                     title,
+                    resume,
                     env,
-                    command_allowlist,
+                    allow_script,
                     request_id,
                 );
             }
@@ -1717,6 +1822,50 @@ impl Editor {
 
             PluginCommand::SignalWindow { id, signal } => {
                 self.handle_signal_window(id, &signal);
+            }
+
+            PluginCommand::RegisterDiffBaseline {
+                buffer_id,
+                kind,
+                git_ref,
+                callback_id,
+            } => {
+                self.handle_register_diff_baseline(buffer_id, kind, git_ref, callback_id);
+            }
+
+            PluginCommand::DiffAgainstBaseline {
+                buffer_id,
+                baseline_id,
+                callback_id,
+            } => {
+                self.handle_diff_against_baseline(buffer_id, baseline_id, callback_id);
+            }
+
+            PluginCommand::DiffBaselinePair {
+                old_baseline_id,
+                new_baseline_id,
+                callback_id,
+            } => {
+                self.handle_diff_baseline_pair(old_baseline_id, new_baseline_id, callback_id);
+            }
+
+            PluginCommand::GetBaselineLines {
+                baseline_id,
+                ranges,
+                callback_id,
+            } => {
+                self.handle_get_baseline_lines(baseline_id, ranges, callback_id);
+            }
+
+            PluginCommand::RefreshDiffBaseline {
+                baseline_id,
+                callback_id,
+            } => {
+                self.handle_refresh_diff_baseline(baseline_id, callback_id);
+            }
+
+            PluginCommand::ReleaseDiffBaseline { baseline_id } => {
+                self.handle_release_diff_baseline(baseline_id);
             }
 
             PluginCommand::GrepProject {
@@ -1827,6 +1976,7 @@ impl Editor {
                 focus_marker,
                 title,
                 closable,
+                start_blurred,
             } => {
                 let key = crate::widgets::PanelKey::new(plugin, panel_id);
                 self.handle_mount_floating_widget(
@@ -1838,6 +1988,7 @@ impl Editor {
                     focus_marker,
                     title,
                     closable,
+                    start_blurred,
                 );
             }
 
@@ -2195,6 +2346,23 @@ impl Editor {
         self.split_manager_mut().set_active_split(dock_leaf);
         self.active_window_mut()
             .set_pane_buffer(dock_leaf, buffer_id);
+        // `show_line_numbers` is per (split, buffer), and the dock leaf's view
+        // state already exists — it was built for whichever panel opened the
+        // dock — so it defaults this buffer to "on". Fresh-split creation sets
+        // it explicitly; this path did not, which is why the *second* panel
+        // routed into the dock (a second tour, diagnostics beside
+        // search/replace) rendered with a line-number gutter the first one
+        // lacked. The gutter also stole the columns the panel had already laid
+        // its widgets out for, so the content wrapped.
+        if let Some(view_state) = self
+            .windows
+            .get_mut(&self.active_window)
+            .and_then(|w| w.split_view_states_mut())
+            .expect("active window must have a populated split layout")
+            .get_mut(&dock_leaf)
+        {
+            view_state.ensure_buffer_state(buffer_id).show_line_numbers = show_line_numbers;
+        }
         // Drop the phantom tab from the source split.
         if dock_leaf != source_split_before_create {
             if let Some(source_view_state) = self
@@ -2580,7 +2748,7 @@ impl Editor {
     }
 
     /// Normalize a plugin-supplied `BufferId`: treat id 0 as "use the active buffer".
-    fn resolve_buffer_id(&self, buffer_id: BufferId) -> BufferId {
+    pub(super) fn resolve_buffer_id(&self, buffer_id: BufferId) -> BufferId {
         if buffer_id.0 == 0 {
             self.active_buffer()
         } else {
@@ -3922,7 +4090,7 @@ impl Editor {
         title: Option<String>,
         resume: Option<Vec<String>>,
         env: Option<std::collections::HashMap<String, String>>,
-        command_allowlist: Option<Vec<String>>,
+        allow_script: bool,
         request_id: u64,
     ) {
         let callback_id = JsCallbackId::from(request_id);
@@ -3956,11 +4124,19 @@ impl Editor {
             new_authority,
             resume,
             env,
-            command_allowlist,
+            allow_script,
         ) {
             Ok((window_id, terminal_id, buffer_id)) => {
                 let api_result = fresh_core::api::SessionWithTerminalResult {
                     window_id: window_id.0,
+                    // The durable id is minted with the window, so a caller
+                    // gets it in the same breath as the create — no lookup,
+                    // and nothing to miss if the window is closed later.
+                    stable_id: self
+                        .windows
+                        .get(&window_id)
+                        .map(|w| w.stable_id.clone())
+                        .unwrap_or_default(),
                     terminal_id: terminal_id.0 as u64,
                     buffer_id: buffer_id.0 as u64,
                 };
@@ -3991,8 +4167,9 @@ impl Editor {
         target_session_id: Option<fresh_core::WindowId>,
         command: Option<Vec<String>>,
         title: Option<String>,
+        resume: Option<Vec<String>>,
         env: Option<std::collections::HashMap<String, String>>,
-        command_allowlist: Option<Vec<String>>,
+        allow_script: bool,
         request_id: u64,
     ) {
         // Resolve target window. Explicit `windowId` wins when the
@@ -4026,29 +4203,38 @@ impl Editor {
         };
 
         // Assemble the extra env injected into the spawned terminal's child:
-        // `FRESH_BIN` plus, when `command_allowlist` is given, a capability
+        // `FRESH_BIN` plus, when `allow_script` is given, a capability
         // token bound to the TARGET window + that allowlist (with
         // `FRESH_SESSION`). This is what lets an agent spawned into an
         // *existing* window drive the editor exactly like one born via
         // `createWindowWithTerminal` — both paths share the same helper.
-        let terminal_env =
-            crate::app::terminal::agent_command_env(target_id, env, command_allowlist);
+        let terminal_env = crate::app::terminal::agent_command_env(target_id, env, allow_script);
 
         let result = {
             let target = self
                 .windows
                 .get_mut(&target_id)
                 .expect("target window present (existence checked above)");
-            target.create_plugin_terminal(crate::app::terminal::PluginTerminalSpec {
+            let spec = crate::app::terminal::PluginTerminalSpec {
                 cwd: cwd_buf,
                 direction: split_direction,
                 ratio,
                 focus: focus.unwrap_or(true),
                 persistent,
-                command,
+                command: command.clone(),
                 title: title.filter(|t| !t.is_empty()),
                 env: terminal_env,
-            })
+            };
+            let spawned = target.create_plugin_terminal(spec);
+            // Record the launch/resume argv exactly as `create_window_with_terminal`
+            // does. Without this, an agent spawned into an *existing* window (the
+            // Run-Agent "current workspace" path) was not a restorable session
+            // terminal at all: it vanished on workspace save, and a restart
+            // respawned a bare shell instead of the agent.
+            if let Ok((terminal_id, _, _)) = &spawned {
+                target.mark_terminal_restorable(*terminal_id, command, resume);
+            }
+            spawned
         };
         match result {
             Ok((terminal_id, buffer_id, created_split_id)) => {
@@ -4693,7 +4879,7 @@ impl Editor {
         let prev = std::collections::HashMap::new();
         let prev_focus = String::new();
         let panel_width = self.widget_panel_width(buffer_id);
-        let out = crate::widgets::render_spec(&spec, &prev, &prev_focus, panel_width);
+        let out = self.render_panel_spec(&spec, &prev, &prev_focus, panel_width);
         let focus_cursor = out.focus_cursor;
         self.widget_registry.mount(
             panel_key.clone(),
@@ -4703,6 +4889,7 @@ impl Editor {
             out.instance_states,
             out.focus_key,
             out.tabbable,
+            out.scroll_regions,
         );
         // Mark the buffer as hosting an interactive widget panel so the
         // focus/click paths keep routing focus to it even when it opts out
@@ -4759,7 +4946,7 @@ impl Editor {
             .map(|(b, _)| b)
             .unwrap_or(BufferId(0));
         let panel_width = self.widget_panel_width(buffer_id_for_width);
-        let out = crate::widgets::render_spec(&spec, &prev, &prev_focus, panel_width);
+        let out = self.render_panel_spec(&spec, &prev, &prev_focus, panel_width);
         let focus_cursor = out.focus_cursor;
         let entries = out.entries;
         match self.widget_registry.update(
@@ -4769,6 +4956,7 @@ impl Editor {
             out.instance_states,
             out.focus_key,
             out.tabbable,
+            out.scroll_regions,
         ) {
             Ok(buffer_id) => {
                 if let Err(e) = self.set_virtual_buffer_content(buffer_id, entries.clone()) {
@@ -4835,6 +5023,7 @@ impl Editor {
                                 completion_selected_index,
                                 completion_scroll_offset,
                                 completion_navigated,
+                                ..
                             }) => (
                                 *scroll,
                                 editor.multiline,
@@ -4864,6 +5053,7 @@ impl Editor {
                             completion_selected_index: sel_idx,
                             completion_scroll_offset: scroll_off,
                             completion_navigated: navigated,
+                            user_scrolled: false,
                         },
                     );
                 }
@@ -5138,6 +5328,11 @@ impl Editor {
         // dock / anchored). See `FloatingWidgetState::{title,closable}`.
         title: Option<String>,
         closable: bool,
+        // Mount without taking keyboard focus. The alternative — mount
+        // focused, then a follow-up `blur` command — has a window where
+        // the panel owns the keyboard, because command dispatch is
+        // budgeted across frames and the pair may split across ticks.
+        start_blurred: bool,
     ) {
         let width_pct = width_pct.clamp(1, 100);
         let height_pct = height_pct.clamp(1, 100);
@@ -5177,7 +5372,7 @@ impl Editor {
             width_pct,
             height_pct,
             placement,
-            focused: true,
+            focused: !start_blurred,
             entries: Vec::new(),
             focus_cursor: None,
             embeds: Vec::new(),
@@ -5198,6 +5393,7 @@ impl Editor {
             title: if as_dock { None } else { title },
             closable: !as_dock && closable,
             close_button_rect: None,
+            hovered_widget_key: String::new(),
             dropdown_popup: None,
             dropdown_popup_hits: Vec::new(),
             dropdown_popup_rect: None,
@@ -5205,13 +5401,24 @@ impl Editor {
         let prev = std::collections::HashMap::new();
         let prev_focus = String::new();
         let panel_width = self.floating_panel_inner_width(slot);
-        let out = super::widget_runtime::render_floating_spec(
-            focus_marker,
-            &spec,
-            &prev,
-            &prev_focus,
-            panel_width,
-        );
+        // A fresh mount has nothing hovered: the pointer hasn't been
+        // resolved against this panel's hit areas yet, and the next
+        // `Moved` event will do so.
+        let out = {
+            let theme_guard = self.theme.read().unwrap();
+            super::widget_runtime::render_floating_spec(
+                focus_marker,
+                &spec,
+                &prev,
+                &prev_focus,
+                panel_width,
+                "",
+                Some(crate::widgets::MarkdownCtx {
+                    theme: &theme_guard,
+                    grammars: Some(self.grammar_registry.as_ref()),
+                }),
+            )
+        };
         let focus_cursor = out.focus_cursor;
         let entries = out.entries;
         let embeds = out.embeds;
@@ -5226,6 +5433,7 @@ impl Editor {
             out.instance_states,
             out.focus_key,
             out.tabbable,
+            scroll_regions.clone(),
         );
         if let Some(fwp) = self.panel_mut(slot) {
             fwp.entries = entries;
@@ -5275,13 +5483,27 @@ impl Editor {
             .unwrap_or_default();
         let panel_width = self.floating_panel_inner_width(slot);
         let focus_marker = self.panel(slot).map(|f| f.focus_marker).unwrap_or(false);
-        let out = super::widget_runtime::render_floating_spec(
-            focus_marker,
-            &spec,
-            &prev,
-            &prev_focus,
-            panel_width,
-        );
+        // Carry the live hover through a plugin-driven update, so a spec
+        // refresh under a stationary pointer doesn't drop the highlight.
+        let hover_key = self
+            .panel(slot)
+            .map(|f| f.hovered_widget_key.clone())
+            .unwrap_or_default();
+        let out = {
+            let theme_guard = self.theme.read().unwrap();
+            super::widget_runtime::render_floating_spec(
+                focus_marker,
+                &spec,
+                &prev,
+                &prev_focus,
+                panel_width,
+                &hover_key,
+                Some(crate::widgets::MarkdownCtx {
+                    theme: &theme_guard,
+                    grammars: Some(self.grammar_registry.as_ref()),
+                }),
+            )
+        };
         let focus_cursor = out.focus_cursor;
         let entries = out.entries;
         let embeds = out.embeds;
@@ -5297,6 +5519,7 @@ impl Editor {
                 out.instance_states,
                 out.focus_key,
                 out.tabbable,
+                scroll_regions.clone(),
             )
             .is_err()
         {
@@ -6045,6 +6268,9 @@ impl Window {
                     .unwrap_or(false)
             });
             let is_preview = self.is_buffer_preview(*buffer_id);
+            // A terminal pane and a plugin scratch pane are both "virtual";
+            // only the window knows which one has a PTY behind it.
+            let is_terminal = self.is_terminal_buffer(*buffer_id);
             // Which splits currently hold this buffer — lets plugins
             // implement "focus existing if visible, else open new"
             // without tracking split ids across editor restarts
@@ -6060,7 +6286,9 @@ impl Window {
                 path: state.buffer.file_path().map(|p| p.to_path_buf()),
                 modified: state.buffer.is_modified(),
                 length: state.buffer.len(),
+                line_count: state.buffer.line_count(),
                 is_virtual,
+                is_terminal,
                 editing_disabled: state.editing_disabled,
                 view_mode: view_mode.to_string(),
                 is_composing_in_any_split,
@@ -6130,9 +6358,12 @@ impl Window {
         // which is what `editor.getCursorPosition()` then sees.
         let active_buf_id = snapshot.active_buffer_id;
         let active_split_id = self.effective_active_pair().0;
+        // Captured before the closure borrows `self`: the panes' rects are
+        // derived from the same area the renderer lays out into, so the
+        // geometry a plugin reads matches the cells actually drawn.
+        let content_area = self.editor_content_area();
         self.buffers
             .with_all_mut(|buffers_mut, mgr, vs_map| {
-                let _ = mgr; // active_split_id was computed above
                 if let Some(active_vs) = vs_map.get(&active_split_id) {
                     // Primary cursor (from SplitViewState)
                     let active_cursors = &active_vs.cursors;
@@ -6192,13 +6423,13 @@ impl Window {
                     // Viewport — get from SplitViewState (the authoritative source)
                     let top_line = buffers_mut.get(&active_buf_id).and_then(|state| {
                         if state.buffer.line_count().is_some() {
-                            Some(state.buffer.get_line_number(active_vs.viewport.top_byte))
+                            Some(state.buffer.get_line_number(active_vs.viewport.top_byte()))
                         } else {
                             None
                         }
                     });
                     snapshot.viewport = Some(ViewportInfo {
-                        top_byte: active_vs.viewport.top_byte,
+                        top_byte: active_vs.viewport.top_byte(),
                         top_line,
                         left_column: active_vs.viewport.left_column,
                         width: active_vs.viewport.width,
@@ -6212,13 +6443,24 @@ impl Window {
                     snapshot.selected_text = None;
                 }
 
-                // Per-split snapshot
+                // Per-split snapshot.
+                //
+                // Walked through the layout rather than the view-state map so
+                // the list comes out in *visual* order — left to right, top to
+                // bottom — and carries each pane's on-screen rect. A caller
+                // asking "which pane is on the left" can then compare `x`
+                // instead of guessing from an iteration order that used to be
+                // a HashMap's.
                 snapshot.splits.clear();
-                for (leaf_id, vs) in vs_map.iter() {
+                let laid_out = mgr.get_visible_buffers(content_area);
+                for (leaf_id, _buf, rect) in laid_out {
+                    let Some(vs) = vs_map.get(&leaf_id) else {
+                        continue;
+                    };
                     let buf_id = vs.active_buffer;
                     let top_line = buffers_mut.get(&buf_id).and_then(|state| {
                         if state.buffer.line_count().is_some() {
-                            Some(state.buffer.get_line_number(vs.viewport.top_byte))
+                            Some(state.buffer.get_line_number(vs.viewport.top_byte()))
                         } else {
                             None
                         }
@@ -6226,8 +6468,13 @@ impl Window {
                     snapshot.splits.push(fresh_core::api::SplitSnapshot {
                         split_id: leaf_id.0 .0,
                         buffer_id: buf_id,
+                        label: mgr.get_label(leaf_id.0).map(|l| l.to_string()),
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
                         viewport: ViewportInfo {
-                            top_byte: vs.viewport.top_byte,
+                            top_byte: vs.viewport.top_byte(),
                             top_line,
                             left_column: vs.viewport.left_column,
                             width: vs.viewport.width,
@@ -6298,3 +6545,47 @@ impl Window {
 
 // `editor.httpFetch` downloads stream through `services::http::download_to_file`,
 // which keeps all ureq/TLS usage in one place (gated by the `http` feature).
+
+/// Fixed-capacity sink that captures only the leading identifier of a
+/// `Debug` rendering and aborts formatting once the variant name ends.
+/// `write!` bails on the first `Err`, so the command's payload — which can be
+/// a whole buffer's worth of text — is never formatted just to name it.
+struct VariantNameSink {
+    buf: [u8; 48],
+    len: usize,
+}
+
+impl std::fmt::Write for VariantNameSink {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for b in s.bytes() {
+            if !(b.is_ascii_alphanumeric() || b == b'_') || self.len == self.buf.len() {
+                return Err(std::fmt::Error);
+            }
+            self.buf[self.len] = b;
+            self.len += 1;
+        }
+        Ok(())
+    }
+}
+
+impl VariantNameSink {
+    /// Name the `PluginCommand` variant without formatting its payload.
+    fn of(command: &PluginCommand) -> Self {
+        use std::fmt::Write as _;
+        let mut sink = Self {
+            buf: [0; 48],
+            len: 0,
+        };
+        // Errors are the expected exit: the sink aborts formatting as soon as
+        // the variant name ends.
+        if write!(sink, "{:?}", command).is_err() {}
+        sink
+    }
+
+    fn as_str(&self) -> &str {
+        if self.len == 0 {
+            return "PluginCommand";
+        }
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("PluginCommand")
+    }
+}

@@ -285,10 +285,15 @@ impl InputParser {
                 };
             }
             other => {
-                // Alt + key.
+                // Alt + key. The byte keeps whatever modifier it would carry
+                // on its own, with Alt added: a C0 control byte after `ESC` is
+                // Alt+Ctrl+<letter> (`ESC 0x10` = Alt+Ctrl+P), not Alt+<letter>.
+                // Dropping the Control bit made the two indistinguishable, so
+                // Alt+Ctrl+P silently ran the (bound) Alt+P command instead of
+                // resolving to an unbound chord — sinelaw/fresh#2810.
                 out.push(Event::Key(KeyEvent::new(
                     byte_to_keycode(other),
-                    KeyModifiers::ALT,
+                    c0_control_modifier(other) | KeyModifiers::ALT,
                 )));
                 self.state = State::Ground;
             }
@@ -405,7 +410,12 @@ impl InputParser {
         buf[have as usize] = byte;
         have += 1;
         if have == 3 {
-            out.push(x10_mouse_event(buf));
+            // A report we can't represent yields no event, but its bytes are
+            // still consumed here — they must never fall through to ground and
+            // print as literal text (sinelaw/fresh#2745).
+            if let Some(ev) = x10_mouse_event(buf) {
+                out.push(ev);
+            }
             self.state = State::Ground;
         } else {
             self.state = State::X10 { buf, have };
@@ -546,14 +556,14 @@ impl InputParser {
         }
 
         match final_byte {
-            b'A' => out.push(key(KeyCode::Up, modifiers_of(&params))),
-            b'B' => out.push(key(KeyCode::Down, modifiers_of(&params))),
-            b'C' => out.push(key(KeyCode::Right, modifiers_of(&params))),
-            b'D' => out.push(key(KeyCode::Left, modifiers_of(&params))),
-            b'H' => out.push(key(KeyCode::Home, modifiers_of(&params))),
-            b'F' => out.push(key(KeyCode::End, modifiers_of(&params))),
+            b'A' => out.push(csi_key(KeyCode::Up, &params)),
+            b'B' => out.push(csi_key(KeyCode::Down, &params)),
+            b'C' => out.push(csi_key(KeyCode::Right, &params)),
+            b'D' => out.push(csi_key(KeyCode::Left, &params)),
+            b'H' => out.push(csi_key(KeyCode::Home, &params)),
+            b'F' => out.push(csi_key(KeyCode::End, &params)),
             // Keypad Begin (the center "5" key), `CSI E` / `CSI 1;<mod> E`.
-            b'E' => out.push(key(KeyCode::KeypadBegin, modifiers_of(&params))),
+            b'E' => out.push(csi_key(KeyCode::KeypadBegin, &params)),
             // Modified F1–F4: xterm's SS3-derived form `CSI 1 ; <mod> {P,Q,R,S}`
             // (e.g. Shift+F3 = `ESC [ 1 ; 2 R`). *Unmodified* F1–F4 arrive as
             // SS3 (`ESC O P/Q/R/S`) and are decoded in `feed_ss3`; adding a
@@ -575,7 +585,7 @@ impl InputParser {
                     b'R' => KeyCode::F(3),
                     _ => KeyCode::F(4), // b'S'
                 };
-                out.push(key(code, modifiers_of(&params)));
+                out.push(csi_key(code, &params));
             }
             b'~' => self.dispatch_tilde(&params, out),
             b'M' | b'm' => {
@@ -595,7 +605,14 @@ impl InputParser {
                     tracing::trace!("InputParser: unrecognised CSI {:?} M/m, dropping", params);
                 }
             }
-            b'Z' => out.push(key(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            // Shift+Tab. The event type still rides in the modifier field for
+            // emulators that send one here, so decode it the same way; the
+            // modifiers are fixed because the key *is* the shifted Tab.
+            b'Z' => out.push(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::BackTab,
+                KeyModifiers::SHIFT,
+                kind_of(&params),
+            ))),
             b'I' => out.push(Event::FocusGained),
             b'O' => out.push(Event::FocusLost),
             b'u' => self.dispatch_csi_u(&params, out),
@@ -622,11 +639,12 @@ impl InputParser {
         }
 
         let num: u8 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let mods = parts
-            .get(1)
-            .and_then(|s| first_subparam(s).parse().ok())
-            .unwrap_or(1);
+        let mods_field = parts.get(1).copied().unwrap_or("");
+        let mods = first_subparam(mods_field).parse().unwrap_or(1);
         let modifiers = modifiers_from_param(mods);
+        // As in `dispatch_csi_u`, the modifier field carries the kitty event
+        // type as a sub-parameter (`CSI <num> ; <mods>:<event-type> ~`).
+        let kind = event_kind_of(mods_field);
 
         // Bracketed paste start.
         if num == 200 {
@@ -669,26 +687,33 @@ impl InputParser {
                 return;
             }
         };
-        out.push(Event::Key(KeyEvent::new(keycode, modifiers)));
+        out.push(Event::Key(KeyEvent::new_with_kind(
+            keycode, modifiers, kind,
+        )));
     }
 
     /// Dispatch `CSI codepoint ; modifiers u` (fixterms / kitty keyboard).
     fn dispatch_csi_u(&mut self, params: &[u8], out: &mut Vec<Event>) {
         let params_str = std::str::from_utf8(params).unwrap_or("");
         let parts: Vec<&str> = params_str.split(';').collect();
-        let codepoint: u32 = parts
-            .first()
-            .and_then(|s| first_subparam(s).parse().ok())
-            .unwrap_or(0);
+        let key_field = parts.first().copied().unwrap_or("");
+        let codepoint: u32 = first_subparam(key_field).parse().unwrap_or(0);
         let mods_field = parts.get(1).copied().unwrap_or("");
         let mods_param: u16 = first_subparam(mods_field).parse().unwrap_or(1);
-        let modifiers = modifiers_from_param(mods_param);
+        let mut modifiers = modifiers_from_param(mods_param);
         // The modifier field may carry an event-type sub-parameter
         // (`mods:event-type`): 1=press, 2=repeat, 3=release. Preserve it as the
         // key event's kind so a release is not reported as a fresh press (which
         // would fire every keystroke twice once event-type reporting is on).
         let kind = event_kind_of(mods_field);
-        if let Some(code) = functional_or_char(codepoint) {
+        if let Some(mut code) = functional_or_char(codepoint) {
+            // A shifted key must arrive as the character it types, exactly as
+            // it does over the legacy encoding — the case (or symbol) carries
+            // the shift, so the modifier bit goes with it.
+            if let Some(shifted) = shifted_char(key_field, code, modifiers) {
+                code = KeyCode::Char(shifted);
+                modifiers.remove(KeyModifiers::SHIFT);
+            }
             out.push(Event::Key(KeyEvent::new_with_kind(code, modifiers, kind)));
         }
     }
@@ -708,9 +733,21 @@ fn event_kind_of(mods_field: &str) -> KeyEventKind {
     }
 }
 
-/// Build a `Key` event.
-fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
-    Event::Key(KeyEvent::new(code, modifiers))
+/// Build a `Key` event for a key that arrived in the *legacy* CSI form
+/// (`CSI 1 ; <mods>:<event-type> {A,B,C,D,E,F,H,P,Q,R,S}`), decoding both the
+/// modifiers and the event type from the modifier field.
+///
+/// Enabling the kitty protocol's event-type reporting does not move these keys
+/// to the CSI-u form — they keep their legacy final byte and gain a
+/// `:<event-type>` sub-parameter. Decoding only the modifiers here (and so
+/// reporting every release as a press) is what made one arrow keypress move the
+/// cursor twice (sinelaw/fresh#2796).
+fn csi_key(code: KeyCode, params: &[u8]) -> Event {
+    Event::Key(KeyEvent::new_with_kind(
+        code,
+        modifiers_of(params),
+        kind_of(params),
+    ))
 }
 
 /// The primary value of a CSI parameter field, discarding any kitty
@@ -720,6 +757,69 @@ fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
 /// we key off the primary (base) value of each.
 fn first_subparam(field: &str) -> &str {
     field.split(':').next().unwrap_or(field)
+}
+
+/// The character a shifted CSI-u key should be reported as, or `None` to keep
+/// the key as its base codepoint plus the SHIFT modifier.
+///
+/// Over the legacy encoding a shifted key arrives as the character it types —
+/// Shift+A is the byte `0x41`, Shift+2 is `0x40` — and nothing downstream ever
+/// sees a SHIFT bit. Under `REPORT_ALL_KEYS_AS_ESCAPE_CODES` every printable
+/// key moves to the CSI-u form instead, where the field is the *base* key
+/// (`CSI 97:65;2u` for Shift+A: base 97, shifted 65). Reporting only the base
+/// made every shifted key type its unshifted character — `A` inserted `a`, `@`
+/// inserted `2` — which is what made the shift key look dead once the flag was
+/// on (sinelaw/fresh#2880). Resolving the shifted character here keeps the two
+/// encodings interchangeable, so keybindings, text insertion and the embedded
+/// terminal's pty encoding all stay oblivious to which one the terminal speaks.
+///
+/// Two cases are deliberately left alone:
+/// - **CONTROL held.** `Ctrl+Shift+A` must stay `Ctrl+Shift+a` so it resolves
+///   to a `Ctrl+Shift+A` binding rather than collapsing onto `Ctrl+A` (which is
+///   what uppercasing plus a dropped SHIFT would normalize to).
+/// - **A shifted codepoint the terminal did not send** for anything but a
+///   letter. Without `REPORT_ALTERNATE_KEYS` the shifted codepoint is absent,
+///   and only the keyboard layout knows that Shift+2 is `@` — but Shift+letter
+///   is the letter's uppercase on every Latin layout, so that much is safe to
+///   derive. Non-letters keep their base plus SHIFT rather than guess.
+fn shifted_char(key_field: &str, code: KeyCode, modifiers: KeyModifiers) -> Option<char> {
+    if !modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    let KeyCode::Char(base) = code else {
+        return None;
+    };
+    match shifted_subparam(key_field) {
+        // The terminal told us what the key types: take it, unless it is a
+        // functional key's Private Use Area codepoint (never printable text).
+        Some(codepoint) => match functional_or_char(codepoint)? {
+            KeyCode::Char(shifted) => Some(shifted),
+            _ => None,
+        },
+        None if modifiers == KeyModifiers::SHIFT => uppercase_letter(base),
+        None => None,
+    }
+}
+
+/// The shifted codepoint of a kitty `unicode:shifted:base` key field, if the
+/// terminal reported one. An empty sub-parameter (`97::29`, the way a key field
+/// carries a base-layout code with no shifted code) is "not reported".
+fn shifted_subparam(key_field: &str) -> Option<u32> {
+    key_field.split(':').nth(1)?.parse().ok()
+}
+
+/// The single-character uppercase of a letter, or `None` if the key is not a
+/// letter (`4`), is already uppercase, or uppercases to several characters
+/// (`ß` → `SS`, which is not a keystroke).
+fn uppercase_letter(base: char) -> Option<char> {
+    if !base.is_alphabetic() {
+        return None;
+    }
+    let mut upper = base.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(c), None) if c != base => Some(c),
+        _ => None,
+    }
 }
 
 /// Map a Unicode codepoint from CSI-u / modifyOtherKeys to a key code.
@@ -835,6 +935,17 @@ fn is_modified_f1_f4(params: &[u8]) -> bool {
     )
 }
 
+/// Parse the event type out of the modifier field (`…;mods:event-type`) of a
+/// standard CSI parameter list. Absent field or absent sub-parameter — every
+/// sequence from a terminal that is not reporting event types — is a press.
+fn kind_of(params: &[u8]) -> KeyEventKind {
+    let params_str = std::str::from_utf8(params).unwrap_or("");
+    match params_str.find(';') {
+        Some(idx) => event_kind_of(&params_str[idx + 1..]),
+        None => KeyEventKind::Press,
+    }
+}
+
 /// Parse the modifier field (`…;mods`) of a standard CSI parameter list.
 fn modifiers_of(params: &[u8]) -> KeyModifiers {
     let params_str = std::str::from_utf8(params).unwrap_or("");
@@ -859,9 +970,22 @@ fn sgr_mouse_event(params: &[u8], pressed: bool) -> Option<Event> {
     if parts.len() < 3 {
         return None;
     }
-    let cb: u16 = parts[0].parse().unwrap_or(0);
+    // `Cb` is a single byte in every mouse protocol, so anything non-numeric or
+    // out of range is malformed. Defaulting it to 0 (as this used to) turns
+    // garbage into a synthetic left-click at the reported cell.
+    let cb: u8 = parts[0].parse().ok()?;
     let cx: u16 = parts[1].parse().unwrap_or(1);
     let cy: u16 = parts[2].parse().unwrap_or(1);
+
+    // Bit 7 is xterm's high-button extension: the button number is
+    // `(cb & 3) | (cb & 0xC0) >> 4`, so bit 7 marks buttons 8-15. `MouseButton`
+    // has no representation for those, and their low bits alias onto
+    // Left/Middle/Right — and, when bit 6 is set too (buttons 12-15), onto the
+    // wheel. Decoding them would manufacture clicks and scrolls the user never
+    // made, so drop them, as crossterm does.
+    if cb & 0b1000_0000 != 0 {
+        return None;
+    }
 
     let button_bits = cb & 0b11;
     let button = match button_bits {
@@ -871,28 +995,14 @@ fn sgr_mouse_event(params: &[u8], pressed: bool) -> Option<Event> {
         _ => MouseButton::Left, // 3 = no button; never used as a real button
     };
 
-    let modifiers = KeyModifiers::from_bits_truncate(
-        if cb & 4 != 0 {
-            KeyModifiers::SHIFT.bits()
-        } else {
-            0
-        } | if cb & 8 != 0 {
-            KeyModifiers::ALT.bits()
-        } else {
-            0
-        } | if cb & 16 != 0 {
-            KeyModifiers::CONTROL.bits()
-        } else {
-            0
-        },
-    );
+    let modifiers = mouse_modifiers(cb);
 
     let kind = if cb & 64 != 0 {
-        // Wheel: low bit selects up/down.
-        if cb & 1 != 0 {
-            MouseEventKind::ScrollDown
-        } else {
-            MouseEventKind::ScrollUp
+        match button_bits {
+            0 => MouseEventKind::ScrollUp,
+            1 => MouseEventKind::ScrollDown,
+            2 => MouseEventKind::ScrollLeft,
+            _ => MouseEventKind::ScrollRight,
         }
     } else if button_bits == 3 {
         // No button pressed. This is always motion, never a button event —
@@ -917,23 +1027,85 @@ fn sgr_mouse_event(params: &[u8], pressed: bool) -> Option<Event> {
     }))
 }
 
+/// Decode the Shift/Alt/Ctrl bits of a mouse report's `Cb` byte. The bit
+/// layout is shared by the SGR and X10 encodings — only the transport differs.
+fn mouse_modifiers(cb: u8) -> KeyModifiers {
+    let mut modifiers = KeyModifiers::empty();
+    if cb & 4 != 0 {
+        modifiers |= KeyModifiers::SHIFT;
+    }
+    if cb & 8 != 0 {
+        modifiers |= KeyModifiers::ALT;
+    }
+    if cb & 16 != 0 {
+        modifiers |= KeyModifiers::CONTROL;
+    }
+    modifiers
+}
+
 /// Decode a legacy X10 mouse report from its three raw coordinate bytes.
-fn x10_mouse_event(buf: [u8; 3]) -> Event {
+///
+/// The button byte carries the same `Cb` layout as an SGR report (button in
+/// bits 0-1, Shift/Alt/Ctrl in bits 2-4, motion in bit 5, wheel in bit 6, high
+/// buttons in bit 7); only the transport differs. Each field is a single byte
+/// biased by 32, and there is no `m` release terminator — a release is
+/// reported as button 3, so which button came up is simply not encoded.
+///
+/// Returns `None` for reports that have no `MouseEventKind` counterpart.
+fn x10_mouse_event(buf: [u8; 3]) -> Option<Event> {
     let cb = buf[0].wrapping_sub(32);
     let cx = buf[1].wrapping_sub(32);
     let cy = buf[2].wrapping_sub(32);
-    let kind = match cb & 0b11 {
-        0 => MouseEventKind::Down(MouseButton::Left),
-        1 => MouseEventKind::Down(MouseButton::Middle),
-        2 => MouseEventKind::Down(MouseButton::Right),
-        _ => MouseEventKind::Up(MouseButton::Left), // 3 = release
+
+    // Buttons 8-15 are unrepresentable — see `sgr_mouse_event`.
+    if cb & 0b1000_0000 != 0 {
+        return None;
+    }
+
+    let button_bits = cb & 0b11;
+    let button = match button_bits {
+        0 => MouseButton::Left,
+        1 => MouseButton::Middle,
+        2 => MouseButton::Right,
+        _ => MouseButton::Left, // 3 = no button / release
     };
-    Event::Mouse(MouseEvent {
+
+    let kind = if cb & 64 != 0 {
+        // Wheel: buttons 4-7 are up, down, left and right.
+        match button_bits {
+            0 => MouseEventKind::ScrollUp,
+            1 => MouseEventKind::ScrollDown,
+            2 => MouseEventKind::ScrollLeft,
+            _ => MouseEventKind::ScrollRight,
+        }
+    } else if cb & 32 != 0 {
+        // Motion. With a button held this is a drag; button 3 means no button
+        // is down, i.e. bare pointer movement under DECSET 1003. Reading the
+        // whole class as a press produced a click flood on every mouse move —
+        // the X10 half of the same bug `sgr_mouse_event` documents.
+        if button_bits == 3 {
+            MouseEventKind::Moved
+        } else {
+            MouseEventKind::Drag(button)
+        }
+    } else if button_bits == 3 {
+        MouseEventKind::Up(MouseButton::Left)
+    } else {
+        MouseEventKind::Down(button)
+    };
+
+    Some(Event::Mouse(MouseEvent {
         kind,
-        column: cx as u16,
-        row: cy as u16,
-        modifiers: KeyModifiers::empty(),
-    })
+        // X10 coordinates are 1-based, exactly like SGR's: the byte is
+        // `coordinate + 32` with the top-left cell at 1,1. Dropping the `- 1`
+        // (as this used to) placed every legacy-protocol click one cell down
+        // and to the right of the cell the user aimed at. `saturating_sub`
+        // rather than `- 1` for the same reason as in `sgr_mouse_event`: an
+        // out-of-spec 0 coordinate must not underflow (sinelaw/fresh#2732).
+        column: u16::from(cx).saturating_sub(1),
+        row: u16::from(cy).saturating_sub(1),
+        modifiers: mouse_modifiers(cb),
+    }))
 }
 
 /// Convert buffered bracketed-paste bytes to text, dropping stray C0/C1 control
@@ -965,17 +1137,27 @@ fn utf8_char_width(first_byte: u8) -> usize {
     }
 }
 
+/// CONTROL for C0 control characters — except Tab, LF, CR and Esc, which are
+/// their own keys and carry no modifier.
+///
+/// Shared by the ground-state mapping and the `ESC <byte>` (Alt+key) mapping so
+/// both agree that `0x10` is Ctrl+P.
+fn c0_control_modifier(byte: u8) -> KeyModifiers {
+    if byte < 32 && byte != 9 && byte != 10 && byte != 13 && byte != 27 {
+        KeyModifiers::CONTROL
+    } else {
+        KeyModifiers::empty()
+    }
+}
+
 /// Convert a single ground-state byte to a key event, attaching CONTROL for
 /// C0 control characters (except Tab, LF, CR and Esc, which are their own
 /// keys).
 fn byte_to_event(byte: u8) -> Event {
-    let keycode = byte_to_keycode(byte);
-    let modifiers = if byte < 32 && byte != 9 && byte != 10 && byte != 13 && byte != 27 {
-        KeyModifiers::CONTROL
-    } else {
-        KeyModifiers::empty()
-    };
-    Event::Key(KeyEvent::new(keycode, modifiers))
+    Event::Key(KeyEvent::new(
+        byte_to_keycode(byte),
+        c0_control_modifier(byte),
+    ))
 }
 
 /// Convert a byte to a `KeyCode`.

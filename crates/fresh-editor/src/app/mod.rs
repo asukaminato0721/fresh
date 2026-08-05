@@ -16,6 +16,7 @@ mod clipboard;
 mod composite_buffer_actions;
 mod dabbrev_actions;
 mod diagnostic_jumps;
+pub(crate) mod diff_baselines;
 mod editor_accessors;
 mod editor_init;
 mod event_apply;
@@ -57,6 +58,8 @@ mod path_utils;
 mod plugin_commands;
 #[cfg(feature = "plugins")]
 mod plugin_dispatch;
+#[cfg(feature = "plugins")]
+mod plugin_offloop;
 mod popup_actions;
 mod popup_dialogs;
 mod popup_overlay_actions;
@@ -120,7 +123,7 @@ pub fn editor_tick(
 
     let async_messages = {
         let _s = tracing::info_span!("process_async_messages").entered();
-        editor.process_async_messages()
+        editor.process_async_messages_budgeted()
     };
     if async_messages {
         needs_render = true;
@@ -352,6 +355,33 @@ pub(crate) struct GotoLinePreviewSnapshot {
     pub last_jump_position: usize,
 }
 
+/// How long the editor thread may spend dispatching plugin commands in one
+/// tick. This is a pathology guard, not a frame pacer: a normal burst — a
+/// plugin load, a large file firing hooks, a hundred queued commands —
+/// should clear in one or two passes rather than being spread over many
+/// frames, so the limit sits at the same order as the per-handler watchdog
+/// (50ms). Only a genuinely pathological flood gets deferred, in arrival
+/// order, at one budget per frame.
+#[cfg(feature = "plugins")]
+pub(crate) const PLUGIN_COMMAND_FRAME_BUDGET: std::time::Duration =
+    std::time::Duration::from_millis(50);
+
+/// Minimum dispatches per drain pass, regardless of the deadline. Without a
+/// floor, one dispatch costing more than the whole budget collapses the
+/// drain to a single item per frame — a startup batch then trickles for
+/// seconds and sustained load can outgrow the backlog. Eight items bounds
+/// the extra frame cost at eight times the worst handler, which the 50ms
+/// watchdog keeps honest.
+pub(crate) const DRAIN_MIN_PER_PASS: usize = 8;
+
+/// A single plugin command handler taking longer than this on the editor
+/// thread is a defect: the work belongs in `plugin_offloop`. Logged at WARN
+/// naming the offending variant, and a hard failure under `debug_assertions`
+/// when `FRESH_STRICT_PLUGIN_BUDGET` is set (the e2e hostile-plugin test).
+#[cfg(feature = "plugins")]
+pub(crate) const PLUGIN_COMMAND_HANDLER_LIMIT: std::time::Duration =
+    std::time::Duration::from_millis(50);
+
 /// The main editor struct - manages multiple buffers, clipboard, and rendering
 pub struct Editor {
     // Buffers moved onto `Window` (Step 0c). Each window owns its
@@ -503,8 +533,16 @@ pub struct Editor {
     /// Backend does not render a hardware cursor — always use software cursor indicators.
     software_cursor_only: bool,
 
-    /// Session name for display in status bar (session mode only)
+    /// Name of the *named* daemon whose persistence scope this editor uses
+    /// (`fresh --cmd daemon new NAME`). `None` in direct mode and for an
+    /// unnamed working-directory daemon, which shares the directory's
+    /// workspaces and recovery with a direct-mode run. Not a display field —
+    /// see `session_display_name`.
     session_name: Option<String>,
+
+    /// Status-bar label for a daemon-backed editor: the daemon's name, or the
+    /// working directory for an unnamed one. Cosmetic only.
+    session_display_name: Option<String>,
 
     /// Pending escape sequences to send to client (session mode only)
     /// These get prepended to the next render output
@@ -872,6 +910,14 @@ pub struct Editor {
     /// `last_register`, and the `playing` guard flag).
     // `macros` moved onto `Window`.
 
+    /// Clickable lines per buffer, from `editor.setLineTargets`.
+    ///
+    /// Editor-owned rather than plugin-owned so a view outlives the script
+    /// that built it: a one-shot agent can leave behind an index whose lines
+    /// still open their targets long after it has exited.
+    #[cfg(feature = "plugins")]
+    line_targets: std::collections::HashMap<fresh_core::BufferId, Vec<fresh_core::api::LineTarget>>,
+
     /// Pending plugin action receivers (for async action execution)
     #[cfg(feature = "plugins")]
     pending_plugin_actions: Vec<(
@@ -882,6 +928,39 @@ pub struct Editor {
     /// Flag set by plugin commands that need a render (e.g., RefreshLines)
     #[cfg(feature = "plugins")]
     plugin_render_requested: bool,
+
+    /// Clone of the buffer as it stood at the end of the previous render
+    /// pass. Ratatui's `swap_buffers` resets the "current" buffer, so at
+    /// the start of the next draw `frame.buffer_mut()` is blank rather
+    /// than the previous frame; animations need what the user actually
+    /// saw. Editor-wide, not per-window: only the active window paints,
+    /// so a per-window copy would go stale the moment focus moved, and
+    /// cross-window transitions read it from the *incoming* window.
+    last_rendered_frame: Option<ratatui::buffer::Buffer>,
+
+    /// Plugin commands the frame budget deferred, in arrival order. Drained
+    /// ahead of the plugin channel on the next tick so a burst is spread
+    /// across frames without reordering.
+    #[cfg(feature = "plugins")]
+    plugin_command_backlog: std::collections::VecDeque<fresh_core::api::PluginCommand>,
+
+    /// Cancellation flag for the in-flight `grepProject`, if any. A new
+    /// request supersedes the old one rather than queueing behind it.
+    #[cfg(feature = "plugins")]
+    grep_project_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+
+    /// Registered diff baselines (registerDiffBaseline plugin API family).
+    /// Shared with off-loop loader tasks; see `app/diff_baselines.rs`.
+    #[cfg(feature = "plugins")]
+    diff_baselines: crate::app::diff_baselines::BaselineStore,
+
+    /// Next baseline id to allocate (editor thread only).
+    #[cfg(feature = "plugins")]
+    next_diff_baseline_id: u64,
+
+    /// Async messages the frame budget deferred, in arrival order. Drained
+    /// ahead of the bridges on the next tick.
+    async_message_backlog: std::collections::VecDeque<crate::services::async_bridge::AsyncMessage>,
 
     /// Pending chord sequence for multi-key bindings (e.g., C-x C-s in Emacs)
     /// Stores the keys pressed so far in a chord sequence
@@ -972,6 +1051,20 @@ pub struct Editor {
 
     /// Periodic update checker (checks for new releases every hour)
     update_checker: Option<crate::services::release_checker::PeriodicUpdateChecker>,
+
+    /// Lifecycle of an interactive in-editor self-update, reflected by the
+    /// status-bar update indicator (see `SelfUpdatePhase`).
+    self_update_phase: crate::services::release_checker::SelfUpdatePhase,
+
+    /// The local terminal running an interactive self-update, if one is in
+    /// flight — matched against `TerminalExited` to move the indicator to its
+    /// terminal state. `None` once reaped.
+    self_update_terminal: Option<fresh_core::TerminalId>,
+
+    /// The (window, buffer) of the update terminal, so the indicator can switch
+    /// back to it on click. The update always runs locally, so this is a local
+    /// terminal buffer regardless of the window's authority.
+    self_update_output: Option<(fresh_core::WindowId, fresh_core::BufferId)>,
 
     // Terminal subsystem moved onto `Window` (Step 0d). PTYs and
     // their backing files belong to the window that spawned them, so
@@ -1142,6 +1235,19 @@ pub struct Editor {
     pub(crate) dock_width: Option<u16>,
     /// True while the user is dragging the dock's right border to resize.
     pub(crate) dock_resizing: bool,
+    /// In-flight mouse drag-to-select on a widget markdown/text document:
+    /// armed by the press that placed the caret, extended on every Drag,
+    /// cleared on button-up. `anchor_flat` is the press position as a
+    /// flat byte offset into the widget's shadow TextEdit value.
+    pub(crate) widget_text_drag: Option<WidgetTextDrag>,
+}
+
+/// See [`Editor::widget_text_drag`].
+#[derive(Debug, Clone)]
+pub(crate) struct WidgetTextDrag {
+    pub panel: crate::widgets::PanelKey,
+    pub widget: String,
+    pub anchor_flat: usize,
 }
 
 /// Control plane for a long-running plugin child process.
@@ -1321,6 +1427,14 @@ pub(crate) struct FloatingWidgetState {
     /// (web mode) since geometry is computed there without painting cells.
     /// `None` when the panel isn't a closable `Centered` modal.
     pub close_button_rect: Option<ratatui::layout::Rect>,
+    /// Widget key the pointer is currently over, tracked from mouse-move
+    /// events against this panel's hit areas. Empty for "nothing hovered".
+    ///
+    /// Feeds `RenderContext::hover_key` on the next render, where widgets
+    /// carrying a `hover_style` compare it against their own key. Only a
+    /// crossing between widgets changes it, so motion inside one control
+    /// costs nothing.
+    pub hovered_widget_key: String,
     /// The open `Dropdown`'s option list, surfaced by the widget renderer
     /// for a screen-level floating pop-over (drawn by
     /// `render_floating_widget_panel` at the trigger's screen row, clipped
@@ -1890,6 +2004,7 @@ mod tests {
             title: None,
             closable: false,
             close_button_rect: None,
+            hovered_widget_key: String::new(),
             dropdown_popup: None,
             dropdown_popup_hits: Vec::new(),
             dropdown_popup_rect: None,
@@ -3914,6 +4029,60 @@ mod tests {
             })
             .sum();
         assert!(view_state.tab_scroll_offset <= total_width);
+    }
+
+    /// Regression for sinelaw/fresh#2650 (Part 2).
+    ///
+    /// In a vertical split each pane's tab bar is only as wide as the pane,
+    /// but `ensure_active_tab_visible` used to be fed `effective_tabs_width`
+    /// (the whole editor width), so the scroll math ran against ~2x the real
+    /// width. `split_tabs_width` must report the focused split's real pane
+    /// width (minus the split-control button columns, which the tab bar
+    /// reserves) instead — roughly half the editor after a vertical split.
+    #[test]
+    fn split_tabs_width_reports_per_split_pane_width() {
+        let config = Config::default();
+        let (dir_context, _temp) = test_dir_context();
+        let mut editor = Editor::new(
+            config,
+            80,
+            24,
+            dir_context,
+            crate::view::color_support::ColorCapability::TrueColor,
+            test_filesystem(),
+        )
+        .unwrap();
+
+        let full_width = editor.active_window().effective_tabs_width();
+
+        // Split vertically into two side-by-side panes.
+        editor.split_pane_vertical();
+
+        let panes: Vec<(crate::model::event::LeafId, u16)> = editor
+            .split_manager()
+            .get_visible_buffers(editor.active_window().editor_content_area())
+            .into_iter()
+            .map(|(leaf, _buf, area)| (leaf, area.width))
+            .collect();
+        assert_eq!(panes.len(), 2, "vertical split should yield two panes");
+
+        // Two side-by-side splits show the maximize + close buttons, so the tab
+        // bar reserves those columns; split_tabs_width reflects that.
+        let reserve = crate::view::ui::tabs::split_control_reserve(true, true);
+        for (leaf, pane_width) in &panes {
+            let w = editor.active_window().split_tabs_width(*leaf);
+            assert_eq!(
+                w,
+                pane_width.saturating_sub(reserve),
+                "split_tabs_width must equal the pane's real width minus the control-button reserve"
+            );
+            assert!(
+                w < full_width,
+                "each pane width ({}) must be narrower than the whole editor ({})",
+                w,
+                full_width
+            );
+        }
     }
 
     /// Regression for sinelaw/fresh#2229.

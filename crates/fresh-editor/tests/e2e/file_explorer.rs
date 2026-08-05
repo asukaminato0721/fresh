@@ -1136,11 +1136,6 @@ fn test_scroll_allows_cursor_to_top() {
     let initial_screen = harness.screen_to_string();
     println!("Initial screen:\n{}", initial_screen);
 
-    // Get the viewport height (number of visible rows in file explorer)
-    // Terminal height is 10, minus menu bar (1), status bar (1), prompt line (1), tab bar (1) = 6 main area
-    // File explorer has borders (1 top) and may share space, so content area is ~5 rows
-    let viewport_height = 5;
-
     // Navigate down to the bottom of the list
     // This will cause the explorer to scroll down
     for _ in 0..25 {
@@ -1152,10 +1147,18 @@ fn test_scroll_allows_cursor_to_top() {
 
     let screen_at_bottom = harness.screen_to_string();
     println!("Screen at bottom (scrolled down):\n{}", screen_at_bottom);
+    assert!(
+        screen_at_bottom
+            .lines()
+            .any(|line| line.starts_with('│') && line.contains("project_root")),
+        "the project root should remain pinned while its children scroll"
+    );
 
     // Now we're at the bottom and the view has scrolled down.
     // The test: when we press Up, the cursor should move WITHIN the viewport
-    // for (viewport_height - 1) times before the view scrolls.
+    // for (visible ordinary rows - 1) times before the view scrolls. Sticky
+    // ancestor rows (the project root here) intentionally consume part of
+    // the viewport and are not included in `get_visible_files`.
 
     // Track which files are visible to detect scrolling. Only scan rows
     // that start with the explorer's left border so the tab bar and
@@ -1179,9 +1182,9 @@ fn test_scroll_allows_cursor_to_top() {
     let initial_visible = get_visible_files(&screen_at_bottom);
     println!("Initially visible files: {:?}", initial_visible);
 
-    // Press Up multiple times (less than viewport_height times)
+    // Press Up while there are still earlier ordinary rows in the viewport.
     // The visible files should stay the same (no scrolling yet)
-    for i in 0..(viewport_height - 1) {
+    for i in 0..initial_visible.len().saturating_sub(1) {
         harness
             .send_key(KeyCode::Up, KeyModifiers::empty())
             .unwrap();
@@ -4351,5 +4354,62 @@ fn test_file_explorer_git_decorations_nested_subrepo_under_repo_root() {
     assert!(
         inner_line.contains('M'),
         "inner.py tree row should show a modified (M) decoration from its own nested repo. Line: '{inner_line}'"
+    );
+}
+
+/// `file_explorer.respect_gitignore = false` switches the `.gitignore` rules
+/// off wholesale: ignored files show up without anyone touching the
+/// "Show Gitignored Files" toggle. The setting was previously parsed, merged
+/// and offered in the Settings UI but never read (issue #2842).
+#[test]
+fn test_respect_gitignore_false_shows_ignored_files() {
+    let mut config = Config::default();
+    config.file_explorer.respect_gitignore = false;
+
+    let mut harness = EditorTestHarness::with_temp_project_and_config(120, 40, config).unwrap();
+    let project_root = harness.project_dir().unwrap();
+
+    fs::write(project_root.join(".gitignore"), "build_output.txt\n").unwrap();
+    fs::write(project_root.join("build_output.txt"), "generated").unwrap();
+    fs::write(project_root.join("visible_file.txt"), "visible").unwrap();
+
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+    harness
+        .wait_for_file_explorer_item("visible_file.txt")
+        .unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("build_output.txt"),
+        "a gitignored file should still be listed when respect_gitignore is \
+         off, even with 'Show Gitignored Files' left off.\nScreen:\n{}",
+        screen
+    );
+}
+
+/// The default (`respect_gitignore = true`) keeps ignored files out, so the
+/// test above is measuring the setting and not just a broken .gitignore.
+#[test]
+fn test_respect_gitignore_true_hides_ignored_files() {
+    let mut harness = EditorTestHarness::with_temp_project(120, 40).unwrap();
+    let project_root = harness.project_dir().unwrap();
+
+    fs::write(project_root.join(".gitignore"), "build_output.txt\n").unwrap();
+    fs::write(project_root.join("build_output.txt"), "generated").unwrap();
+    fs::write(project_root.join("visible_file.txt"), "visible").unwrap();
+
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+    harness
+        .wait_for_file_explorer_item("visible_file.txt")
+        .unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        !screen.contains("build_output.txt"),
+        "a gitignored file must stay hidden under the default \
+         respect_gitignore = true.\nScreen:\n{}",
+        screen
     );
 }

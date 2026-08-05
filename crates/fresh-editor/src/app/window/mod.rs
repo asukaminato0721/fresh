@@ -79,6 +79,74 @@ pub struct TerminalLinkHover {
     pub cols: std::ops::Range<usize>,
 }
 
+/// A terminal whose process quit while its buffer stayed open as read-only
+/// scrollback, keyed by `BufferId` in [`Window::exited_terminals`].
+///
+/// The exit path drops the buffer↔terminal binding and closes the PTY handle,
+/// so every input a respawn needs — geometry, cwd, backing/log files, launch
+/// and agent-resume argv — is snapshotted here *before* that teardown. That
+/// makes [`Window::restart_terminal_buffer`] a pure function of this record,
+/// exactly like a workspace restore is a pure function of the persisted
+/// terminal entry.
+#[derive(Debug, Clone)]
+pub struct ExitedTerminal {
+    /// The PTY session that died. Kept for the status message and so a
+    /// second exit for the same id can be recognised as stale.
+    pub terminal_id: crate::services::terminal::TerminalId,
+    /// Wait-status exit code, when the platform reported one.
+    pub exit_code: Option<i32>,
+    /// Geometry of the dead PTY, so the reborn one matches its split.
+    pub cols: u16,
+    pub rows: u16,
+    /// Working directory the dead PTY ran in.
+    pub cwd: Option<PathBuf>,
+    /// Scrollback/log files to keep appending to, so a restart continues the
+    /// transcript rather than starting blank.
+    pub backing_path: Option<PathBuf>,
+    pub log_path: Option<PathBuf>,
+    /// Launch argv (`Window::terminal_commands`), absent for a plain shell.
+    pub command: Option<Vec<String>>,
+    /// Agent-resume argv (`Window::terminal_resume_commands`) — the argv that
+    /// rejoins the agent's conversation (`claude --resume <id>`) instead of
+    /// starting a fresh one. Absent for non-agent terminals.
+    pub resume: Option<Vec<String>>,
+    /// Whether the dead terminal was ephemeral (plugin/Orchestrator-created).
+    pub ephemeral: bool,
+    /// The tab title as it read *before* the exit marker was appended, so a
+    /// restart can put it back. `None` for an auto-named tab, which re-derives
+    /// its name from the reborn process.
+    pub title: Option<String>,
+}
+
+impl ExitedTerminal {
+    /// Short name of the process that died — the basename of the resume or
+    /// launch argv's program (`claude`, `codex`, …), or `None` for a terminal
+    /// that was just the user's shell.
+    pub fn program_name(&self) -> Option<&str> {
+        // An *empty* resume vector is the plain-shell restore marker, not a
+        // rejoinable agent — fall through to the launch command rather than
+        // reporting no program at all.
+        self.resume
+            .as_ref()
+            .filter(|argv| !argv.is_empty())
+            .or(self.command.as_ref())
+            .and_then(|argv| argv.first())
+            .map(|program| {
+                program
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(program.as_str())
+            })
+    }
+
+    /// Whether restarting this terminal rejoins an agent conversation (as
+    /// opposed to re-running the launch command or opening a plain shell).
+    pub fn resumes_agent(&self) -> bool {
+        self.resume.as_ref().is_some_and(|argv| !argv.is_empty())
+    }
+}
+
 /// Per-terminal-buffer editor state, keyed by `BufferId` in
 /// [`Window::terminal_buffers`]. PTY I/O lives in the `TerminalManager`; the
 /// byte-stream backing files stay keyed by `TerminalId`.
@@ -260,6 +328,13 @@ pub struct Window {
     /// because undo history is buffer-scoped — closing a window
     /// drops the buffer and its log together.
     pub event_logs: HashMap<BufferId, crate::model::event::EventLog>,
+
+    /// File buffers restored as **empty placeholders** because this window's
+    /// authority is remote: reading their content synchronously during restore
+    /// would freeze the single-threaded editor loop over a slow link. The editor
+    /// drains this each tick, reads each file off-loop, and fills the buffer via
+    /// `AsyncMessage::RemoteBufferContentLoaded`. Always empty for local windows.
+    pub(crate) pending_content_load: Vec<(BufferId, PathBuf)>,
 
     /// Status message (shown in this window's status bar). Per-window
     /// because each window has its own context — a save in window A
@@ -628,6 +703,10 @@ pub struct Window {
     /// `editor.startPrompt` to deliver the prompt result back).
     pub pending_async_prompt_callback: Option<fresh_core::api::JsCallbackId>,
 
+    /// Pending `editor.pickFile` callback id. While set, the Open File
+    /// browser delivers the confirmed path here instead of opening it.
+    pub pending_file_pick_callback: Option<fresh_core::api::JsCallbackId>,
+
     /// Buffer ids the user picked "save before quit" for via the
     /// modified-buffers prompt; consumed in order on quit.
     pub pending_quit_unnamed_save: Vec<BufferId>,
@@ -821,6 +900,15 @@ pub struct Window {
     pub terminal_resume_commands:
         std::collections::HashMap<crate::services::terminal::TerminalId, Vec<String>>,
 
+    /// Terminals whose process has quit while their buffer stayed open,
+    /// keyed by that buffer. Everything needed to respawn the same process
+    /// in place lives in the record, so a restart doesn't depend on the
+    /// terminal-id-keyed maps surviving the teardown. Populated by
+    /// `handle_terminal_exited`, consumed by
+    /// [`Window::restart_terminal_buffer`], and dropped when the buffer
+    /// closes or comes back live.
+    pub exited_terminals: HashMap<BufferId, ExitedTerminal>,
+
     /// Plugin-development workspace per buffer (temp dir + LSP
     /// configuration for plugin buffers). Buffer-keyed and buffers
     /// are per-window, so the workspace map follows.
@@ -884,6 +972,10 @@ pub struct Window {
 
     /// File-explorer context menu state (right-click in the explorer).
     pub file_explorer_context_menu: Option<crate::app::types::FileExplorerContextMenu>,
+
+    /// Close-split confirmation popup state (left-click on a split tab bar's
+    /// `×` button). Offers "Close split" / "Cancel".
+    pub close_split_menu: Option<crate::app::types::CloseSplitMenu>,
 
     /// Theme inspector popup (Ctrl+Right-Click) anchored in this window.
     pub theme_info_popup: Option<crate::app::types::ThemeInfoPopup>,
@@ -1089,6 +1181,9 @@ impl Window {
         if let Some(m) = &self.tab_context_menu {
             return Some((ContextMenuKind::Tab, &m.menu));
         }
+        if let Some(m) = &self.close_split_menu {
+            return Some((ContextMenuKind::CloseSplit, &m.menu));
+        }
         None
     }
 
@@ -1108,6 +1203,9 @@ impl Window {
             return Some(&mut m.menu);
         }
         if let Some(m) = self.tab_context_menu.as_mut() {
+            return Some(&mut m.menu);
+        }
+        if let Some(m) = self.close_split_menu.as_mut() {
             return Some(&mut m.menu);
         }
         None
@@ -1141,6 +1239,13 @@ impl Window {
                 .iter()
                 .map(|i| i.label())
                 .collect(),
+            ContextMenuKind::CloseSplit => self
+                .close_split_menu
+                .as_ref()?
+                .items()
+                .iter()
+                .map(|i| i.label())
+                .collect(),
         })
     }
 
@@ -1150,6 +1255,7 @@ impl Window {
         self.tab_context_menu = None;
         self.new_tab_menu = None;
         self.file_explorer_context_menu = None;
+        self.close_split_menu = None;
     }
 
     /// Apply LSP folding ranges to the named buffer's `folding_ranges`
@@ -1657,8 +1763,8 @@ impl Window {
                 view_state
                     .viewport
                     .scroll_to(&mut state.buffer, target_line);
-                view_state.viewport.top_byte = clamped_byte;
-                view_state.viewport.top_view_line_offset = 0;
+                view_state.viewport.set_top_byte(clamped_byte);
+                view_state.viewport.set_top_view_line_offset(0);
                 view_state.viewport.set_skip_ensure_visible();
             });
     }
@@ -1714,7 +1820,7 @@ impl Window {
                 buf_state.cursors.primary_mut().position = cursor_pos;
                 buf_state.cursors.primary_mut().anchor =
                     file_state.cursor.anchor.map(|a| a.min(max_pos));
-                buf_state.viewport.top_byte = file_state.scroll.top_byte;
+                buf_state.viewport.set_top_byte(file_state.scroll.top_byte);
                 buf_state.viewport.left_column = file_state.scroll.left_column;
                 crate::app::navigation::reconcile_restored_buffer_view(
                     buf_state,
@@ -1724,14 +1830,21 @@ impl Window {
     }
 
     /// Configure `leaf_id`'s viewport for a terminal-buffer
-    /// scrollback view: disable line wrap, clear any pending
-    /// skip-ensure-visible flag, then scroll so the buffer's primary
-    /// cursor (positioned at end-of-buffer when entering scrollback)
-    /// is visible. No-op if the buffer or split is missing.
+    /// scrollback view: enable grid wrap (exact-column rows at the PTY
+    /// width, fresh#2649), clear any pending skip-ensure-visible flag,
+    /// then scroll so the buffer's primary cursor (positioned at
+    /// end-of-buffer when entering scrollback) is visible. No-op if the
+    /// buffer or split is missing.
     pub fn enter_terminal_scrollback_view(&mut self, buffer_id: BufferId, leaf_id: LeafId) {
+        let grid_cols = self.terminal_grid_cols(buffer_id);
         self.buffers
             .with_buffer_and_split(buffer_id, leaf_id, |state, view_state| {
-                view_state.viewport.line_wrap_enabled = false;
+                view_state.viewport.line_wrap_enabled = true;
+                view_state.viewport.grid_wrap = true;
+                view_state.viewport.wrap_indent = false;
+                if let Some(cols) = grid_cols {
+                    view_state.viewport.wrap_column = Some(cols);
+                }
                 view_state.viewport.clear_skip_ensure_visible();
                 view_state.ensure_cursor_visible(&mut state.buffer, &state.marker_list);
             });
@@ -1767,7 +1880,13 @@ impl Window {
                         let buf_state = vs.ensure_buffer_state(buffer_id);
                         buf_state.show_line_numbers = false;
                         buf_state.highlight_current_line = false;
-                        buf_state.viewport.line_wrap_enabled = false;
+                        // Grid wrap (fresh#2649): restored scroll-back lays
+                        // out at the grid width like the live view. The
+                        // width is filled in by `enforce_terminal_grid_wrap`
+                        // once the respawned PTY reports its size.
+                        buf_state.viewport.line_wrap_enabled = true;
+                        buf_state.viewport.grid_wrap = true;
+                        buf_state.viewport.wrap_indent = false;
                     }
                 }
                 state.buffer.set_modified(false);
@@ -1777,55 +1896,56 @@ impl Window {
     }
 
     /// Scroll `leaf_id`'s viewport by `delta` lines (negative = up,
-    /// positive = down). Honours `view_transform_tokens` when present
-    /// (uses view-aware scrolling) and falls back to buffer-based
-    /// `scroll_up` / `scroll_down`. After scrolling, skips
+    /// positive = down). After scrolling, skips
     /// ensure_visible and snaps the viewport top to a fold boundary
     /// if the new top byte landed inside a collapsed fold.
-    /// `tab_size` is needed for view-line tokenization.
-    pub fn scroll_split_by_lines(
-        &mut self,
-        buffer_id: BufferId,
-        leaf_id: LeafId,
-        delta: i32,
-        view_transform_tokens: Option<Vec<fresh_core::api::ViewTokenWire>>,
-        tab_size: usize,
-    ) {
+    pub fn scroll_split_by_lines(&mut self, buffer_id: BufferId, leaf_id: LeafId, delta: i32) {
         self.buffers
             .with_buffer_and_split(buffer_id, leaf_id, |state, view_state| {
                 let soft_breaks = state.collect_soft_break_positions();
                 let virtual_lines = state.collect_virtual_line_positions();
-                let buffer = &mut state.buffer;
-                let top_byte_before = view_state.viewport.top_byte;
-                if let Some(tokens) = view_transform_tokens {
-                    use crate::view::ui::view_pipeline::ViewLineIterator;
-                    let view_lines: Vec<_> =
-                        ViewLineIterator::new(&tokens, false, false, tab_size, false).collect();
+                // Resolved before the mutable buffer borrow below: the
+                // row-space path needs only `&Buffer`.
+                let scroll_geometry = wrap_scroll_geometry(view_state, state);
+                let hidden_ranges = collapsed_hidden_ranges(view_state, state, buffer_id);
+                let top_byte_before = view_state.viewport.top_byte();
+                if let Some(geometry) = scroll_geometry {
+                    // Row arithmetic off the wrap index: no text is read, so a
+                    // wheel event on a file that is one enormous line costs the
+                    // same as on any other. The byte-walking fallback below only
+                    // runs before the index has been built for this geometry.
+                    let index = state
+                        .wrap_indices
+                        .get(&geometry)
+                        .expect("geometry resolved from a built index");
                     view_state
                         .viewport
-                        .scroll_view_lines(&view_lines, delta as isize);
+                        .scroll_visual_rows(index, &state.buffer, delta as isize);
                 } else if delta < 0 {
                     let lines_to_scroll = delta.unsigned_abs() as usize;
                     view_state.viewport.scroll_up(
-                        buffer,
+                        &mut state.buffer,
                         &soft_breaks,
                         &virtual_lines,
+                        &hidden_ranges,
                         lines_to_scroll,
                     );
                 } else {
                     let lines_to_scroll = delta as usize;
                     view_state.viewport.scroll_down(
-                        buffer,
+                        &mut state.buffer,
                         &soft_breaks,
                         &virtual_lines,
+                        &hidden_ranges,
                         lines_to_scroll,
                     );
                 }
                 view_state.viewport.set_skip_ensure_visible();
 
+                let buffer = &mut state.buffer;
                 if let Some(folds) = view_state.keyed_states.get(&buffer_id).map(|bs| &bs.folds) {
                     if !folds.is_empty() {
-                        let top_line = buffer.get_line_number(view_state.viewport.top_byte);
+                        let top_line = buffer.get_line_number(view_state.viewport.top_byte());
                         if let Some(range) = folds
                             .resolved_ranges(buffer, &state.marker_list)
                             .iter()
@@ -1839,8 +1959,8 @@ impl Window {
                             let target_byte = buffer
                                 .line_start_offset(target_line)
                                 .unwrap_or_else(|| buffer.len());
-                            view_state.viewport.top_byte = target_byte;
-                            view_state.viewport.top_view_line_offset = 0;
+                            view_state.viewport.set_top_byte(target_byte);
+                            view_state.viewport.set_top_view_line_offset(0);
                         }
                     }
                 }
@@ -1848,7 +1968,7 @@ impl Window {
                     "scroll_split_by_lines: delta={}, top_byte {} -> {}",
                     delta,
                     top_byte_before,
-                    view_state.viewport.top_byte
+                    view_state.viewport.top_byte()
                 );
             });
     }
@@ -1880,15 +2000,18 @@ impl Window {
             return false;
         };
         let viewport = &mut ps.view_state.active_state_mut().viewport;
+        // The preview loads plain file buffers and exposes no fold controls,
+        // so there are never collapsed regions to skip here.
         if delta < 0 {
             viewport.scroll_up(
                 buffer,
                 &soft_breaks,
                 &virtual_lines,
+                &[],
                 delta.unsigned_abs() as usize,
             );
         } else {
-            viewport.scroll_down(buffer, &soft_breaks, &virtual_lines, delta as usize);
+            viewport.scroll_down(buffer, &soft_breaks, &virtual_lines, &[], delta as usize);
         }
         viewport.set_skip_ensure_visible();
         true
@@ -1989,6 +2112,7 @@ impl Window {
             panel_ids: HashMap::new(),
             buffers: WindowBuffers::new(),
             buffer_metadata: HashMap::new(),
+            pending_content_load: Vec::new(),
             terminal_manager: crate::services::terminal::TerminalManager::new(id),
             terminal_buffers: HashMap::new(),
             terminal_backing_files: HashMap::new(),
@@ -2068,6 +2192,7 @@ impl Window {
             file_rapid_change_counts: HashMap::new(),
             goto_line_preview: None,
             pending_async_prompt_callback: None,
+            pending_file_pick_callback: None,
             pending_quit_unnamed_save: Vec::new(),
             search_case_sensitive: true,
             search_whole_word: false,
@@ -2104,6 +2229,7 @@ impl Window {
             ephemeral_terminals: std::collections::HashSet::new(),
             terminal_commands: std::collections::HashMap::new(),
             terminal_resume_commands: std::collections::HashMap::new(),
+            exited_terminals: HashMap::new(),
             plugin_dev_workspaces: HashMap::new(),
             status_bar_values: HashMap::new(),
             mouse_state: crate::app::types::MouseState::default(),
@@ -2125,6 +2251,7 @@ impl Window {
             tab_context_menu: None,
             new_tab_menu: None,
             file_explorer_context_menu: None,
+            close_split_menu: None,
             theme_info_popup: None,
             event_debug: None,
             file_open_state: None,
@@ -2292,6 +2419,42 @@ impl Window {
         }
     }
 
+    /// Width of the tab bar for a *specific* split.
+    ///
+    /// [`effective_tabs_width`](Self::effective_tabs_width) returns the whole
+    /// editor-content width; but in a vertical split each pane's tab strip is
+    /// only as wide as that pane (`tabs_rect.width == split_area.width`).
+    /// Feeding the full width to the tab-scroll math makes a half-width split
+    /// scroll against ~2x its real width, so it under-scrolls and the ">"
+    /// overflow indicator disagrees with what's visible. This returns the
+    /// focused split's real pane width, falling back to
+    /// [`effective_tabs_width`](Self::effective_tabs_width) when the split
+    /// isn't in the current visible layout (e.g. hidden behind a maximized
+    /// sibling).
+    pub fn split_tabs_width(&self, split_id: LeafId) -> u16 {
+        match self.buffers.splits() {
+            Some((mgr, _)) => {
+                let visible = mgr.get_visible_buffers(self.editor_content_area());
+                let Some((_, _, area)) = visible.iter().find(|(id, _, _)| *id == split_id) else {
+                    return self.effective_tabs_width();
+                };
+                // The split-control (maximize / close) buttons are painted over
+                // the right edge of the tab row; reserve their columns here so
+                // the scroll math measures against the same width the tab bar
+                // actually lays tabs into (fresh#2768). Mirror the show-flags in
+                // `render_split_tab_bar`.
+                let has_multiple_splits = visible.len() > 1;
+                let is_maximized = mgr.is_maximized();
+                let show_maximize = has_multiple_splits || is_maximized;
+                let show_close = has_multiple_splits && !is_maximized;
+                let reserve =
+                    crate::view::ui::tabs::split_control_reserve(show_maximize, show_close);
+                area.width.saturating_sub(reserve)
+            }
+            None => self.effective_tabs_width(),
+        }
+    }
+
     /// The split id whose `SplitViewState` owns the currently-focused
     /// cursors/viewport for this window.
     #[inline]
@@ -2449,24 +2612,46 @@ impl Window {
         self.terminal_buffer(buffer_id).is_some()
     }
 
-    /// Terminal buffers never line-wrap (see `resolve_line_wrap_for_buffer`):
-    /// their content is column-formatted, and wrapping a large scrollback turns
-    /// the scrollbar's visual-row index into an O(all-lines) scan every frame,
-    /// freezing the UI (fresh#2608). Heal any per-buffer viewport a global
-    /// line-wrap toggle (or restored state) left enabled — cheap enough to run
-    /// each frame, and a no-op when the window has no terminals.
-    pub(crate) fn enforce_terminal_no_wrap(&mut self) {
-        let terminals = &self.terminal_buffers;
-        if terminals.is_empty() {
+    /// Terminal buffers always line-wrap in *grid* mode (see
+    /// `resolve_line_wrap_for_buffer`): exact-column rows at the PTY grid
+    /// width so scroll-back lays out identically to the live grid
+    /// (fresh#2649). Heal any per-buffer viewport a global line-wrap
+    /// toggle (or restored state) left in another mode — cheap enough to
+    /// run each frame, and a no-op when the window has no terminals.
+    ///
+    /// `wrap_column` (the grid width) is only *filled in* when missing —
+    /// scroll-back entry (`sync_terminal_to_buffer`) sets the capture-time
+    /// width, which must win over the instantaneous PTY width (a split
+    /// that entered scroll-back reserves a scrollbar column, so the PTY
+    /// may be resized one column narrower afterwards while the captured
+    /// content still lays out at the width it was captured at).
+    /// When the *pane* changes width the authority is
+    /// `resize_visible_terminals`, which re-pins it to the new pane width
+    /// on the same funnel that pushes the PTY size.
+    pub(crate) fn enforce_terminal_grid_wrap(&mut self) {
+        if self.terminal_buffers.is_empty() {
             return;
         }
+        // Snapshot grid widths first — `terminal_grid_cols` borrows self
+        // immutably while the healing loop needs the view states mutably.
+        let cols_by_buffer: std::collections::HashMap<BufferId, Option<usize>> = self
+            .terminal_buffers
+            .keys()
+            .map(|&b| (b, self.terminal_grid_cols(b)))
+            .collect();
         let Some(vs_map) = self.buffers.split_view_states_mut() else {
             return;
         };
         for vs in vs_map.values_mut() {
             for (buffer_id, buffer_state) in vs.keyed_states.iter_mut() {
-                if terminals.contains_key(buffer_id) {
-                    buffer_state.viewport.line_wrap_enabled = false;
+                if let Some(cols) = cols_by_buffer.get(buffer_id) {
+                    let vp = &mut buffer_state.viewport;
+                    vp.line_wrap_enabled = true;
+                    vp.grid_wrap = true;
+                    vp.wrap_indent = false;
+                    if vp.wrap_column.is_none() {
+                        vp.wrap_column = *cols;
+                    }
                 }
             }
         }
@@ -2777,22 +2962,25 @@ impl Window {
         self.restore_buffer_state_in_split(buffer_id, split_id, &file_state);
     }
 
-    /// Save file state when a buffer is closed (for per-file session
-    /// persistence). Walks this window's splits to find one that has
-    /// the buffer; no-op if no split contains it or the buffer isn't
-    /// a real on-disk file.
-    pub fn save_file_state_on_close(&self, buffer_id: BufferId) {
-        use crate::workspace::{
-            PersistedFileWorkspace, SerializedCursor, SerializedFileState, SerializedScroll,
-        };
+    /// Snapshot the per-file session state to persist when a buffer is
+    /// closed. Walks this window's splits to find one that has the buffer;
+    /// `None` if no split contains it or the buffer isn't a real on-disk
+    /// file.
+    ///
+    /// Pure snapshot: the disk write (`PersistedFileWorkspace::save`) is the
+    /// caller's job, off the editor thread — the split is what keeps
+    /// buffer-close from doing filesystem I/O inline.
+    pub fn file_state_on_close_snapshot(
+        &self,
+        buffer_id: BufferId,
+    ) -> Option<(std::path::PathBuf, crate::workspace::SerializedFileState)> {
+        use crate::workspace::{SerializedCursor, SerializedFileState, SerializedScroll};
 
-        let abs_path = match self.buffer_metadata.get(&buffer_id) {
-            Some(metadata) => match metadata.file_path() {
-                Some(path) => path.to_path_buf(),
-                None => return,
-            },
-            None => return,
-        };
+        let abs_path = self
+            .buffer_metadata
+            .get(&buffer_id)?
+            .file_path()?
+            .to_path_buf();
 
         let view_state = self
             .buffers
@@ -2802,15 +2990,8 @@ impl Window {
             .values()
             .find(|vs| vs.has_buffer(buffer_id));
 
-        let view_state = match view_state {
-            Some(vs) => vs,
-            None => return,
-        };
-
-        let buf_state = match view_state.keyed_states.get(&buffer_id) {
-            Some(bs) => bs,
-            None => return,
-        };
+        let view_state = view_state?;
+        let buf_state = view_state.keyed_states.get(&buffer_id)?;
 
         let primary_cursor = buf_state.cursors.primary();
         let file_state = SerializedFileState {
@@ -2830,8 +3011,8 @@ impl Window {
                 })
                 .collect(),
             scroll: SerializedScroll {
-                top_byte: buf_state.viewport.top_byte,
-                top_view_line_offset: buf_state.viewport.top_view_line_offset,
+                top_byte: buf_state.viewport.top_byte(),
+                top_view_line_offset: buf_state.viewport.top_view_line_offset(),
                 left_column: buf_state.viewport.left_column,
             },
             view_mode: Default::default(),
@@ -2845,8 +3026,7 @@ impl Window {
             folds: Vec::new(),
         };
 
-        PersistedFileWorkspace::save(&abs_path, file_state);
-        tracing::debug!("Saved file state on close for {:?}", abs_path);
+        Some((abs_path, file_state))
     }
 
     /// Remove a pending semantic-token request from this window's tracking maps.
@@ -2885,7 +3065,7 @@ impl Window {
         let (top_byte, viewport_height) =
             if let Some(view_state) = self.buffers.splits().and_then(|(_, vs)| vs.get(&split_id)) {
                 (
-                    view_state.viewport.top_byte,
+                    view_state.viewport.top_byte(),
                     view_state.viewport.height as usize,
                 )
             } else {
@@ -3133,7 +3313,7 @@ impl Window {
 
         // Load from canonical path (for I/O and dedup), detect language from
         // display path (for glob pattern matching against user-visible names).
-        let buffer = crate::model::buffer::Buffer::load_from_file(
+        let buffer = crate::model::buffer::Buffer::load_from_file_for_editing(
             &canonical_path,
             self.config().editor.large_file_threshold_bytes as usize,
             std::sync::Arc::clone(&self.resources.local_filesystem),
@@ -3288,7 +3468,7 @@ impl Window {
             .expect("active window must have a populated split layout")
             .1
             .get(&active_split)
-            .map(|vs| (vs.viewport.top_byte, vs.viewport.height.saturating_sub(2)))
+            .map(|vs| (vs.viewport.top_byte(), vs.viewport.height.saturating_sub(2)))
             .unwrap_or((0, 20));
 
         let state = self.active_state_mut();
@@ -3720,8 +3900,6 @@ impl Window {
         for split_id in splits_for_buffer {
             if let Some(view_state) = vs_map.get_mut(&split_id) {
                 view_state.invalidate_layout();
-                view_state.view_transform = None;
-                view_state.view_transform_stale = true;
             }
         }
     }
@@ -3803,8 +3981,6 @@ impl Window {
     /// EditorState so scroll limits are correct when view transforms
     /// inject extra rows.
     pub(crate) fn handle_scroll_event(&mut self, line_offset: isize) {
-        use crate::view::ui::view_pipeline::ViewLineIterator;
-
         let Some((mgr, _)) = self.buffers.splits() else {
             return;
         };
@@ -3834,34 +4010,24 @@ impl Window {
             vec![active_split]
         };
 
-        let tab_size = self.resources.config.editor.tab_size;
         for split_id in splits_to_scroll {
-            let (mgr, vs_map) = self.buffers.splits().expect("splits checked above");
+            let (mgr, _) = self.buffers.splits().expect("splits checked above");
             let Some(buffer_id) = mgr.buffer_for_split(split_id) else {
                 continue;
             };
-
-            let view_transform_tokens = vs_map
-                .get(&split_id)
-                .and_then(|vs| vs.view_transform.as_ref())
-                .map(|vt| vt.tokens.clone());
 
             self.buffers
                 .with_buffer_and_split(buffer_id, split_id, |state, view_state| {
                     let soft_breaks = state.collect_soft_break_positions();
                     let virtual_lines = state.collect_virtual_line_positions();
+                    let hidden_ranges = collapsed_hidden_ranges(view_state, state, buffer_id);
                     let buffer = &mut state.buffer;
-                    if let Some(tokens) = view_transform_tokens {
-                        let view_lines: Vec<_> =
-                            ViewLineIterator::new(&tokens, false, false, tab_size, false).collect();
-                        view_state
-                            .viewport
-                            .scroll_view_lines(&view_lines, line_offset);
-                    } else if line_offset > 0 {
+                    if line_offset > 0 {
                         view_state.viewport.scroll_down(
                             buffer,
                             &soft_breaks,
                             &virtual_lines,
+                            &hidden_ranges,
                             line_offset as usize,
                         );
                     } else {
@@ -3869,6 +4035,7 @@ impl Window {
                             buffer,
                             &soft_breaks,
                             &virtual_lines,
+                            &hidden_ranges,
                             line_offset.unsigned_abs(),
                         );
                     }
@@ -4006,3 +4173,115 @@ impl Window {
 // assertion isn't worth the maintenance, and the same behaviour is
 // already exercised by every `EditorTestHarness::create` path that
 // names a window.
+
+#[cfg(test)]
+mod exited_terminal_tests {
+    use super::ExitedTerminal;
+    use crate::services::terminal::TerminalId;
+
+    fn record(command: Option<&[&str]>, resume: Option<&[&str]>) -> ExitedTerminal {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        ExitedTerminal {
+            terminal_id: TerminalId(0),
+            exit_code: Some(0),
+            cols: 80,
+            rows: 24,
+            cwd: None,
+            backing_path: None,
+            log_path: None,
+            command: command.map(argv),
+            resume: resume.map(argv),
+            ephemeral: true,
+            title: None,
+        }
+    }
+
+    /// The status-bar indicator names the program that died. The resume argv
+    /// wins over the launch command — that's the process a restart will
+    /// actually run, so it's the one the user is being offered.
+    #[test]
+    fn program_name_prefers_the_resume_argv() {
+        let e = record(
+            Some(&["/opt/bin/claude", "--session-id", "x"]),
+            Some(&["/opt/bin/claude", "--resume", "x"]),
+        );
+        assert_eq!(e.program_name(), Some("claude"));
+        assert!(e.resumes_agent());
+    }
+
+    /// With no resume spec the launch command names the indicator, and the
+    /// wording drops to "restart" rather than "resume".
+    #[test]
+    fn program_name_falls_back_to_the_launch_command() {
+        let e = record(Some(&["npm", "run", "dev"]), None);
+        assert_eq!(e.program_name(), Some("npm"));
+        assert!(!e.resumes_agent());
+    }
+
+    /// A plain shell has no program to name — the indicator says "terminal".
+    #[test]
+    fn a_plain_shell_has_no_program_name() {
+        assert_eq!(record(None, None).program_name(), None);
+    }
+
+    /// An empty resume vector is the "plain shell" restore marker, not a
+    /// rejoinable agent — treating it as one would render "Resume" for a
+    /// terminal that has nothing to resume.
+    #[test]
+    fn an_empty_resume_argv_is_not_an_agent() {
+        let e = record(Some(&["bash"]), Some(&[]));
+        assert!(!e.resumes_agent());
+        assert_eq!(e.program_name(), Some("bash"));
+    }
+}
+
+/// Byte ranges the renderer hides for `buffer_id`'s collapsed folds, in the
+/// form the viewport scroll primitives consume. A scroll that counts these
+/// lines spends its budget on rows nobody sees, so the viewport stalls while
+/// the cursor runs ahead into the hidden region.
+fn collapsed_hidden_ranges(
+    view_state: &crate::view::split::SplitViewState,
+    state: &crate::state::EditorState,
+    buffer_id: BufferId,
+) -> Vec<(usize, usize)> {
+    let Some(folds) = view_state.keyed_states.get(&buffer_id).map(|bs| &bs.folds) else {
+        return Vec::new();
+    };
+    state
+        .fold_ranges(folds)
+        .into_iter()
+        .map(|r| (r.start, r.end))
+        .collect()
+}
+
+/// The wrap-index geometry for a split, when one is already built for it.
+///
+/// `None` means the byte-walking scroll path must be used — before the first
+/// render there is nothing to read row positions from, and building an index
+/// here would trade a cheap walk for an O(buffer) pass.
+fn wrap_scroll_geometry(
+    view_state: &crate::view::split::SplitViewState,
+    state: &crate::state::EditorState,
+) -> Option<crate::view::wrap_index::WrapIndexGeometry> {
+    if !view_state.viewport.line_wrap_enabled || state.wrap_indices.is_empty() {
+        return None;
+    }
+    let inputs_version = crate::view::line_wrap_cache::pipeline_inputs_version(
+        state.buffer.version(),
+        state.soft_breaks.version(),
+        state.conceals.version(),
+        state.virtual_texts.version(),
+    );
+    let geometry = crate::view::ui::split_rendering::wrap_index_geometry_for(
+        &view_state.viewport,
+        &state.buffer,
+        view_state.viewport.line_wrap_enabled,
+        &crate::state::ViewMode::Source,
+        crate::view::wrap_index::fold_signature(&state.fold_ranges(&view_state.folds)),
+    );
+    state
+        .wrap_indices
+        .get(&geometry)
+        .is_some_and(|index| index.is_built_for(&geometry, inputs_version))
+        .then_some(geometry)
+}

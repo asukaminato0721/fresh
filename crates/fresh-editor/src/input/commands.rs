@@ -1315,6 +1315,20 @@ static COMMAND_DEFS: &[CommandDef] = &[
         custom_contexts: &[],
     },
     CommandDef {
+        name_key: "cmd.update_fresh",
+        desc_key: "cmd.update_fresh_desc",
+        action: || Action::UpdateFresh,
+        contexts: &[],
+        custom_contexts: &[],
+    },
+    CommandDef {
+        name_key: "cmd.open_update_log",
+        desc_key: "cmd.open_update_log_desc",
+        action: || Action::OpenUpdateLog,
+        contexts: &[],
+        custom_contexts: &[],
+    },
+    CommandDef {
         name_key: "cmd.show_remote_indicator_menu",
         desc_key: "cmd.show_remote_indicator_menu_desc",
         action: || Action::ShowRemoteIndicatorMenu,
@@ -1440,6 +1454,16 @@ static COMMAND_DEFS: &[CommandDef] = &[
         name_key: "cmd.focus_terminal",
         desc_key: "cmd.focus_terminal_desc",
         action: || Action::FocusTerminal,
+        contexts: &[Normal],
+        custom_contexts: &[],
+    },
+    // Offered in Normal context only: a terminal whose process quit has already
+    // dropped out of Terminal context into read-only scrollback, which is
+    // exactly the state this command acts on.
+    CommandDef {
+        name_key: "cmd.restart_terminal",
+        desc_key: "cmd.restart_terminal_desc",
+        action: || Action::RestartTerminal,
         contexts: &[Normal],
         custom_contexts: &[],
     },
