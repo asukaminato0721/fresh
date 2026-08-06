@@ -81,6 +81,7 @@ pub(crate) fn render_content(
     split_manager: &SplitManager,
     buffers: &mut HashMap<BufferId, EditorState>,
     buffer_metadata: &HashMap<BufferId, BufferMetadata>,
+    breadcrumbs: &HashMap<BufferId, Vec<fresh_core::api::BreadcrumbItem>>,
     // Buffer id of the window's single preview tab (`window.preview`), or
     // `None`. Drives the italic "(preview)" tab styling.
     preview_buffer: Option<BufferId>,
@@ -122,6 +123,7 @@ pub(crate) fn render_content(
     Vec<(LeafId, u16, u16, u16)>,                      // close split button areas
     Vec<(LeafId, u16, u16, u16)>,                      // maximize split button areas
     HashMap<LeafId, Vec<ViewLineMapping>>,             // view line mappings for mouse clicks
+    Vec<crate::view::ui::breadcrumbs::BreadcrumbHit>,  // breadcrumb click targets
     Vec<(LeafId, BufferId, Rect, usize, usize, usize)>, // horizontal scrollbar areas (rect + max_content_width + thumb_start + thumb_end)
     Vec<(
         crate::model::event::ContainerId,
@@ -144,6 +146,7 @@ pub(crate) fn render_content(
         use_terminal_bg,
         show_vertical_scrollbar,
         show_horizontal_scrollbar,
+        show_breadcrumbs,
         show_tilde,
         highlight_current_column,
         hide_current_line_on_selection,
@@ -172,6 +175,7 @@ pub(crate) fn render_content(
     let mut close_split_areas = Vec::new();
     let mut maximize_split_areas = Vec::new();
     let mut view_line_mappings: HashMap<LeafId, Vec<ViewLineMapping>> = HashMap::new();
+    let mut breadcrumb_hits = Vec::new();
 
     // Render each split.
     for (main_split_id, split_id, buffer_id, split_area, kind) in visible_buffers {
@@ -241,6 +245,7 @@ pub(crate) fn render_content(
             // Inner leaf: split_area IS the content rect already.
             SplitLayout {
                 tabs_rect: Rect::new(split_area.x, split_area.y, 0, 0),
+                breadcrumbs_rect: Rect::new(split_area.x, split_area.y, 0, 0),
                 content_rect: Rect::new(
                     split_area.x,
                     split_area.y,
@@ -258,9 +263,15 @@ pub(crate) fn render_content(
                 horizontal_scrollbar_rect: Rect::new(0, 0, 0, 0),
             }
         } else {
+            let split_breadcrumbs_visible = show_breadcrumbs
+                && breadcrumbs
+                    .get(&buffer_id)
+                    .is_some_and(|items| !items.is_empty())
+                && !skip_content;
             split_layout(
                 split_area,
                 split_tab_bar_visible,
+                split_breadcrumbs_visible,
                 panel_show_vscroll,
                 show_horizontal_scrollbar && !is_non_scrollable,
             )
@@ -309,6 +320,19 @@ pub(crate) fn render_content(
                 &mut close_split_areas,
                 &mut maximize_split_areas,
             );
+        }
+
+        if layout.breadcrumbs_rect.height > 0 {
+            if let Some(items) = breadcrumbs.get(&buffer_id) {
+                breadcrumb_hits.extend(crate::view::ui::breadcrumbs::render_breadcrumbs(
+                    buf,
+                    layout.breadcrumbs_rect,
+                    split_id,
+                    buffer_id,
+                    items,
+                    theme,
+                ));
+            }
         }
 
         // For GroupTabBarOnly entries we've already rendered the tab bar;
@@ -679,6 +703,7 @@ pub(crate) fn render_content(
         close_split_areas,
         maximize_split_areas,
         view_line_mappings,
+        breadcrumb_hits,
         horizontal_scrollbar_areas,
         grouped_separator_areas,
     )
@@ -726,6 +751,7 @@ fn expand_visible_buffers(
         let main_layout = split_layout(
             *split_area,
             split_tab_bar_visible,
+            false,
             show_vertical_scrollbar,
             show_horizontal_scrollbar,
         );
@@ -1093,6 +1119,7 @@ fn render_grouped_separators(
         let main_layout = split_layout(
             *split_area,
             split_tab_bar_visible,
+            false,
             show_vertical_scrollbar,
             show_horizontal_scrollbar,
         );
@@ -1149,6 +1176,7 @@ pub(crate) fn compute_content_layout(
     split_manager: &SplitManager,
     buffers: &mut HashMap<BufferId, EditorState>,
     split_view_states: &mut HashMap<LeafId, crate::view::split::SplitViewState>,
+    breadcrumbs: &HashMap<BufferId, Vec<fresh_core::api::BreadcrumbItem>>,
     theme: &crate::view::theme::Theme,
     lsp_waiting: bool,
     estimated_line_length: usize,
@@ -1160,6 +1188,7 @@ pub(crate) fn compute_content_layout(
     tab_bar_visible: bool,
     show_vertical_scrollbar: bool,
     show_horizontal_scrollbar: bool,
+    show_breadcrumbs: bool,
     diagnostics_inline_text: bool,
     show_tilde: bool,
     bracket_highlight: BracketHighlightSettings,
@@ -1180,6 +1209,10 @@ pub(crate) fn compute_content_layout(
         let layout = split_layout(
             split_area,
             split_tab_bar_visible,
+            show_breadcrumbs
+                && breadcrumbs
+                    .get(&buffer_id)
+                    .is_some_and(|items| !items.is_empty()),
             show_vertical_scrollbar,
             show_horizontal_scrollbar,
         );

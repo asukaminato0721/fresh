@@ -544,6 +544,7 @@ impl Editor {
             .get_mut(&active_window_id)
             .expect("active window must exist");
         let __metadata_ref = &__win.buffer_metadata;
+        let __breadcrumbs_ref = &__win.breadcrumbs;
         // Copy out the preview buffer id (the single source of truth) so the
         // tab renderer can style the "(preview)" tab without holding a borrow
         // of `__win` across the `with_all_mut` closure below.
@@ -578,6 +579,7 @@ impl Editor {
             close_split_areas,
             maximize_split_areas,
             view_line_mappings,
+            breadcrumb_hits,
             horizontal_scrollbar_areas,
             grouped_separator_areas,
         ) = __win
@@ -597,6 +599,7 @@ impl Editor {
                     &*__mgr,
                     __buffers_mut,
                     __metadata_ref,
+                    __breadcrumbs_ref,
                     __preview_buffer,
                     __event_logs_mut,
                     __composite_buffers_mut,
@@ -828,6 +831,7 @@ impl Editor {
         self.active_layout_mut().close_split_areas = close_split_areas;
         self.active_layout_mut().maximize_split_areas = maximize_split_areas;
         self.active_layout_mut().view_line_mappings = view_line_mappings;
+        self.active_layout_mut().breadcrumb_hits = breadcrumb_hits;
 
         // Widget panels mounted into splits render through the ordinary
         // buffer pipeline, which knows nothing about widget geometry —
@@ -3187,6 +3191,7 @@ impl Editor {
         // git_log's log/detail panels) silently fell through to
         // rendering the split's underlying pre-group buffer.
         let __preview_grouped_subtrees = &__win_for_preview.grouped_subtrees;
+        let __preview_breadcrumbs = &__win_for_preview.breadcrumbs;
         let preview_tab_bar_visible = __win_for_preview.tab_bar_visible;
 
         // Per-call scratch — keeps the preview pass from
@@ -3213,6 +3218,7 @@ impl Editor {
                     &*mgr,
                     preview_buffers,
                     __preview_metadata,
+                    __preview_breadcrumbs,
                     __preview_buffer_id,
                     __preview_event_logs,
                     __preview_composite_buffers,
@@ -4696,6 +4702,7 @@ impl Editor {
             .get_mut(&active_window_id)
             .expect("active window must exist");
         let tab_bar_visible = __win_l.tab_bar_visible;
+        let breadcrumbs = &__win_l.breadcrumbs;
         let theme = self.theme.read().unwrap().clone();
         let view_line_mappings = __win_l
             .buffers
@@ -4705,6 +4712,7 @@ impl Editor {
                     &*mgr,
                     buffers,
                     vs_map,
+                    breadcrumbs,
                     &theme,
                     false, // lsp_waiting — not relevant for layout
                     self.config.editor.estimated_line_length,
@@ -4716,6 +4724,7 @@ impl Editor {
                     tab_bar_visible,
                     self.config.editor.show_vertical_scrollbar,
                     self.config.editor.show_horizontal_scrollbar,
+                    self.config.editor.show_breadcrumbs,
                     self.config.editor.diagnostics_inline_text,
                     self.config.editor.show_tilde,
                     crate::view::bracket_highlight_overlay::BracketHighlightSettings::from_config(

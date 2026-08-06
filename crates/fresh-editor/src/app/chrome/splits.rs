@@ -62,6 +62,9 @@ impl ChromeComponent for Splits {
         for (_, tl) in &ed.active_layout().tab_layouts {
             t.rect("chrome:tabs", 60, tl.bar_area);
         }
+        for hit in &ed.active_layout().breadcrumb_hits {
+            t.rect("chrome:breadcrumbs", 60, hit.area);
+        }
         for (_, _, _, scrollbar_rect, _, _) in &ed.active_layout().split_areas {
             t.rect("chrome:scrollbars", 50, *scrollbar_rect);
         }
@@ -240,6 +243,24 @@ impl ChromeComponent for Splits {
             "chrome:split_separators" => ed.handle_click_split_separator(ev.col, ev.row),
             "chrome:split_buttons" => ed.handle_click_split_controls(ev.col, ev.row),
             "chrome:tabs" => ed.handle_click_tab_bar(ev.col, ev.row),
+            "chrome:breadcrumbs" => {
+                let hit = ed
+                    .active_layout()
+                    .breadcrumb_hits
+                    .iter()
+                    .find(|hit| in_rect(ev.col, ev.row, hit.area))
+                    .cloned();
+                if let Some(hit) = hit {
+                    ed.focus_split(hit.split_id, hit.buffer_id);
+                    ed.active_window_mut().set_buffer_cursor_in_splits(
+                        hit.buffer_id,
+                        hit.position,
+                        &[hit.split_id],
+                    );
+                    return Ok(Disposition::Consumed);
+                }
+                None
+            }
             "chrome:editor" => {
                 let areas: Vec<_> = ed
                     .active_layout()
