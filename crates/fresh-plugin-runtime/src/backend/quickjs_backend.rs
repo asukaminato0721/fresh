@@ -1537,6 +1537,23 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    /// Replace the breadcrumb trail shown above a buffer. Each item carries
+    /// the byte position used when the user clicks it.
+    #[plugin_api(js_name = "setBreadcrumbs", ts_return = "boolean")]
+    pub fn set_breadcrumbs(
+        &self,
+        buffer_id: u32,
+        items: Vec<fresh_core::api::BreadcrumbItem>,
+    ) -> bool {
+        self.command_sender
+            .send(PluginCommand::SetBreadcrumbs {
+                plugin_name: self.plugin_name.clone(),
+                buffer_id: buffer_id as u64,
+                items,
+            })
+            .is_ok()
+    }
+
     // === Translation ===
 
     /// Translate a string - reads plugin name from __pluginName__ global

@@ -240,6 +240,8 @@ pub(crate) struct WindowLayoutCache {
     pub separator_areas: Vec<(ContainerId, SplitDirection, u16, u16, u16)>,
     /// Tab layouts per split for mouse interaction
     pub tab_layouts: HashMap<LeafId, crate::view::ui::tabs::TabLayout>,
+    /// Click targets for the symbol breadcrumb rows rendered in split panes.
+    pub breadcrumb_hits: Vec<crate::view::ui::breadcrumbs::BreadcrumbHit>,
     /// Close split button hit areas
     /// (split_id, row, start_col, end_col)
     pub close_split_areas: Vec<(LeafId, u16, u16, u16)>,

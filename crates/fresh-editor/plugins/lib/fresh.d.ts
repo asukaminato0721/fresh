@@ -401,6 +401,10 @@ type LineTarget = {
 	*/
 	into?: string;
 };
+type BreadcrumbItem = {
+	label: string;
+	position: number;
+};
 type PaneDescription = {
 	/**
 	* Pass to `openFileInSplit`, `focusSplit`, `setSplitRatio`, ...
@@ -2698,6 +2702,11 @@ interface EditorAPI {
 	* The full token key sent to the editor is "plugin_name:token_name".
 	*/
 	setStatusBarValue(bufferId: number, tokenName: string, value: string): boolean;
+	/**
+	* Replace the breadcrumb trail shown above a buffer. Each item carries
+	* the byte position used when the user clicks it.
+	*/
+	setBreadcrumbs(bufferId: number, items: BreadcrumbItem[]): boolean;
 	/**
 	* Translate a string - reads plugin name from __pluginName__ global
 	* Args is optional - can be omitted, undefined, null, or an object

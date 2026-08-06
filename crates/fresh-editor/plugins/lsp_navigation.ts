@@ -127,7 +127,12 @@ function navigateToSymbol(
   }
 }
 
-async function loadSymbols(filePath: string, language: string): Promise<SymbolItem[]> {
+async function loadSymbols(
+  filePath: string,
+  language: string,
+  bufferId: number,
+  reportErrors = true,
+): Promise<SymbolItem[]> {
   try {
     const uri = editor.pathToFileUri(filePath);
     const result = await editor.sendLspRequest(
@@ -140,36 +145,43 @@ async function loadSymbols(filePath: string, language: string): Promise<SymbolIt
 
     const symbols = parseSymbols(result);
 
-    await attachLineText(symbols);
+    await attachLineText(symbols, bufferId);
 
     return symbols;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    editor.setStatus(`LSP symbols failed: ${msg}`);
+    if (reportErrors) editor.setStatus(`LSP symbols failed: ${msg}`);
     return [];
   }
 }
 
 /**
- * Fill in each symbol's source line so the finder can show a snippet with
- * the matching word highlighted. Reads the single line each symbol name
- * lives on (start..end byte range), in parallel.
+ * Fill in each symbol's source line and explicit-buffer byte offset. Reading
+ * one buffer snapshot avoids active-buffer races while an LSP response is in
+ * flight and gives both the finder and clickable breadcrumbs stable targets.
  */
-async function attachLineText(symbols: SymbolItem[]): Promise<void> {
-  if (symbols.length === 0 || cachedBufferId === null) return;
-  const bufferId = cachedBufferId;
+async function attachLineText(symbols: SymbolItem[], bufferId: number): Promise<void> {
+  if (symbols.length === 0) return;
 
-  await Promise.all(
-    symbols.map(async (sym) => {
-      const start = await editor.getLineStartPosition(sym.nameLine);
-      const end = await editor.getLineEndPosition(sym.nameLine);
-      if (start === null || end === null || end < start) {
+  const length = editor.getBufferLength(bufferId);
+  const text = await editor.getBufferText(bufferId, 0, length);
+  const lines = text.split("\n");
+  const lineStarts: number[] = [];
+  let byte = 0;
+  for (const line of lines) {
+    lineStarts.push(byte);
+    byte += editor.utf8ByteLength(line) + 1;
+  }
+
+  for (const sym of symbols) {
+      const start = lineStarts[sym.nameLine];
+      const raw = lines[sym.nameLine];
+      if (start === undefined || raw === undefined) {
         sym.lineText = "";
-        return;
+        continue;
       }
       sym.lineStartByte = start;
-      const text = await editor.getBufferText(bufferId, start, end);
-      sym.lineText = text.replace(/\r$/, "");
+      sym.lineText = raw.replace(/\r$/, "");
 
       // Refine the name column. LSP `SymbolInformation` reports the start
       // of the whole declaration (e.g. the `def`/indentation), not the
@@ -177,9 +189,10 @@ async function attachLineText(symbols: SymbolItem[]): Promise<void> {
       // reported column, to land the cursor and overlay exactly on it.
       let idx = sym.lineText.indexOf(sym.name, sym.nameCharacter);
       if (idx < 0) idx = sym.lineText.indexOf(sym.name);
-      if (idx >= 0) sym.nameCharacter = idx;
-    }),
-  );
+      if (idx >= 0) {
+        sym.nameCharacter = editor.utf8ByteLength(sym.lineText.slice(0, idx));
+      }
+  }
 }
 
 /**
@@ -317,7 +330,7 @@ async function openSymbolsListHandler(): Promise<void> {
   clearOverlay(cachedBufferId);
 
   // Pre-load symbols to determine matching index for preselection
-  const symbols = await loadSymbols(cachedFilePath, cachedLanguage);
+  const symbols = await loadSymbols(cachedFilePath, cachedLanguage, cachedBufferId);
   const matchIdx = findMatchingSymbolIndex(symbols, cachedCursorLine);
   preloadedSymbols = symbols;
 
@@ -341,8 +354,8 @@ function parseSymbols(result: unknown): SymbolItem[] {
 
   if (!result) return symbols;
 
-  if (Array.isArray(result)) {
-    for (const item of result) {
+  function append(items: unknown[]): void {
+    for (const item of items) {
       if (typeof item !== "object" || item === null) continue;
 
       const raw = item as Record<string, unknown>;
@@ -402,13 +415,108 @@ function parseSymbols(result: unknown): SymbolItem[] {
         lineStartByte: -1,
         lineText: "",
       });
+
+      // DocumentSymbol responses are hierarchical. Keep every descendant so
+      // both the finder and the breadcrumb trail can expose nested context.
+      if (Array.isArray(raw.children)) append(raw.children);
     }
   }
+
+  if (Array.isArray(result)) append(result);
 
   symbols.sort((a, b) => a.startLine - b.startLine);
 
   return symbols;
 }
+
+const breadcrumbSymbols = new Map<number, SymbolItem[]>();
+const breadcrumbRefreshGeneration = new Map<number, number>();
+
+function breadcrumbTrail(symbols: SymbolItem[], cursorLine: number): SymbolItem[] {
+  const containing = symbols.filter(
+    (sym) => sym.startLine <= cursorLine && cursorLine <= sym.endLine && sym.lineStartByte >= 0,
+  );
+  containing.sort((a, b) => {
+    const spanA = a.endLine - a.startLine;
+    const spanB = b.endLine - b.startLine;
+    return spanB - spanA || a.startLine - b.startLine || a.nameCharacter - b.nameCharacter;
+  });
+
+  const trail: SymbolItem[] = [];
+  for (const sym of containing) {
+    const parent = trail[trail.length - 1];
+    if (!parent || (parent.startLine <= sym.startLine && sym.endLine <= parent.endLine)) {
+      if (!parent || parent.name !== sym.name || parent.startLine !== sym.startLine || parent.endLine !== sym.endLine) {
+        trail.push(sym);
+      }
+    }
+  }
+  return trail;
+}
+
+function publishBreadcrumbs(bufferId: number, cursorLine: number): void {
+  const symbols = breadcrumbSymbols.get(bufferId) ?? [];
+  const items = breadcrumbTrail(symbols, cursorLine).map((sym) => ({
+    label: sym.name,
+    position: sym.lineStartByte + sym.nameCharacter,
+  }));
+  editor.setBreadcrumbs(bufferId, items);
+}
+
+async function refreshBreadcrumbs(bufferId: number): Promise<void> {
+  const generation = (breadcrumbRefreshGeneration.get(bufferId) ?? 0) + 1;
+  breadcrumbRefreshGeneration.set(bufferId, generation);
+  const info = editor.getBufferInfo(bufferId);
+  const language = info?.language;
+  const filePath = editor.getBufferPath(bufferId);
+  if (!language || !filePath) {
+    breadcrumbSymbols.delete(bufferId);
+    editor.setBreadcrumbs(bufferId, []);
+    return;
+  }
+
+  const symbols = await loadSymbols(filePath, language, bufferId, false);
+  if (breadcrumbRefreshGeneration.get(bufferId) !== generation) return;
+  breadcrumbSymbols.set(bufferId, symbols);
+  if (editor.getActiveBufferId() === bufferId) {
+    publishBreadcrumbs(bufferId, editor.getCursorLine());
+  }
+}
+
+function scheduleBreadcrumbRefresh(bufferId: number): void {
+  const generation = (breadcrumbRefreshGeneration.get(bufferId) ?? 0) + 1;
+  breadcrumbRefreshGeneration.set(bufferId, generation);
+  void (async () => {
+    await editor.delay(250);
+    if (breadcrumbRefreshGeneration.get(bufferId) !== generation) return;
+    // refreshBreadcrumbs owns the next generation number.
+    await refreshBreadcrumbs(bufferId);
+  })();
+}
+
+editor.on("buffer_activated", (data) => {
+  const cached = breadcrumbSymbols.get(data.buffer_id);
+  if (cached) publishBreadcrumbs(data.buffer_id, editor.getCursorLine());
+  else editor.setBreadcrumbs(data.buffer_id, []);
+  scheduleBreadcrumbRefresh(data.buffer_id);
+});
+
+editor.on("cursor_moved", (data) => {
+  if (data.cursor_id === 0) publishBreadcrumbs(data.buffer_id, data.line);
+});
+
+editor.on("after_insert", (data) => scheduleBreadcrumbRefresh(data.buffer_id));
+editor.on("after_delete", (data) => scheduleBreadcrumbRefresh(data.buffer_id));
+editor.on("after_file_revert", (data) => scheduleBreadcrumbRefresh(data.buffer_id));
+editor.on("buffer_closed", (data) => {
+  breadcrumbSymbols.delete(data.buffer_id);
+  breadcrumbRefreshGeneration.delete(data.buffer_id);
+});
+
+editor.on("ready", () => {
+  const bufferId = editor.getActiveBufferId();
+  if (bufferId !== null) scheduleBreadcrumbRefresh(bufferId);
+});
 
 editor.registerCommand(
   "%cmd.goto_lsp_symbol",

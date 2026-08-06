@@ -1094,6 +1094,13 @@ impl Editor {
             } => {
                 self.handle_set_status_bar_value(buffer_id, key, value);
             }
+            PluginCommand::SetBreadcrumbs {
+                plugin_name,
+                buffer_id,
+                items,
+            } => {
+                self.handle_set_breadcrumbs(plugin_name, buffer_id, items);
+            }
             PluginCommand::UnregisterCommand { name } => {
                 self.handle_unregister_command(name);
             }
@@ -2112,6 +2119,32 @@ impl Editor {
             // the target buffer may have closed — an expected, benign race.
             tracing::debug!("Skipped statusbar value for stale buffer: {}", e);
         }
+    }
+
+    fn handle_set_breadcrumbs(
+        &mut self,
+        plugin_name: String,
+        buffer_id: u64,
+        items: Vec<fresh_core::api::BreadcrumbItem>,
+    ) {
+        let id = fresh_core::BufferId(buffer_id as usize);
+        for window in self.windows.values_mut() {
+            if window.buffers.contains_key(&id) {
+                if items.is_empty() {
+                    if window.breadcrumb_owners.get(&id) == Some(&plugin_name) {
+                        window.breadcrumbs.remove(&id);
+                        window.breadcrumb_owners.remove(&id);
+                    }
+                } else {
+                    if window.breadcrumbs.get(&id) != Some(&items) {
+                        window.breadcrumbs.insert(id, items);
+                    }
+                    window.breadcrumb_owners.insert(id, plugin_name);
+                }
+                return;
+            }
+        }
+        tracing::debug!("Skipped breadcrumbs for stale buffer {:?}", id);
     }
 
     fn handle_cancel_animation(&mut self, id: u64) {

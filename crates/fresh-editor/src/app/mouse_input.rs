@@ -1794,6 +1794,21 @@ impl Editor {
         if let Some(r) = self.handle_click_tab_bar(col, row) {
             return r;
         }
+        if let Some(hit) = self
+            .active_layout()
+            .breadcrumb_hits
+            .iter()
+            .find(|hit| in_rect(col, row, hit.area))
+            .cloned()
+        {
+            self.focus_split(hit.split_id, hit.buffer_id);
+            self.active_window_mut().set_buffer_cursor_in_splits(
+                hit.buffer_id,
+                hit.position,
+                &[hit.split_id],
+            );
+            return Ok(());
+        }
 
         // A floating-overlay prompt is mouse-modal: its own targets (result
         // list, scrollbar) were handled above. A click on a toolbar control
