@@ -1960,7 +1960,35 @@ pub fn detect_language(
         return Some("cpp".to_string());
     }
 
+    // `.v` is the standard extension for both V and Coq/Rocq. Keep the
+    // compatibility default (`.v` -> V), but a Coq/Rocq project marker in an
+    // ancestor is decisive project context and promotes the file to Coq/Rocq.
+    if detected.as_deref() == Some("vlang")
+        && path.extension().and_then(|e| e.to_str()) == Some("v")
+        && languages.contains_key("coq")
+        && file_in_coq_project(path)
+    {
+        return Some("coq".to_string());
+    }
+
     detected
+}
+
+/// Whether `path` belongs to a Coq/Rocq project.
+///
+/// Walks upward from the file's directory and accepts both the historical
+/// `_CoqProject` marker and Rocq's `_RocqProject` spelling. I/O errors are a
+/// conservative `false`, preserving the default `.v` -> V mapping.
+fn file_in_coq_project(path: &std::path::Path) -> bool {
+    let Some(start_dir) = path.parent() else {
+        return false;
+    };
+
+    start_dir.ancestors().any(|dir| {
+        ["_CoqProject", "_RocqProject"]
+            .iter()
+            .any(|marker| dir.join(marker).is_file())
+    })
 }
 
 /// Pure config/path-based language detection without filesystem probing.
@@ -2424,6 +2452,38 @@ mod tests {
         let languages = test_languages();
         assert_eq!(detect_language(Path::new("README"), &languages), None);
         assert_eq!(detect_language(Path::new("Makefile"), &languages), None);
+    }
+
+    #[test]
+    fn test_v_file_stays_vlang_without_coq_project_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("main.v");
+        std::fs::write(&source, "module main\n").unwrap();
+
+        let languages = crate::config::Config::default().languages;
+        assert_eq!(
+            detect_language(&source, &languages),
+            Some("vlang".to_string())
+        );
+    }
+
+    #[test]
+    fn test_v_file_promotes_to_coq_with_ancestor_project_marker() {
+        for marker in ["_CoqProject", "_RocqProject"] {
+            let temp = tempfile::tempdir().unwrap();
+            let theories = temp.path().join("theories").join("nested");
+            std::fs::create_dir_all(&theories).unwrap();
+            std::fs::write(temp.path().join(marker), "-Q theories Example\n").unwrap();
+            let source = theories.join("Identity.v");
+            std::fs::write(&source, "Theorem identity : forall x, x = x.\n").unwrap();
+
+            let languages = crate::config::Config::default().languages;
+            assert_eq!(
+                detect_language(&source, &languages),
+                Some("coq".to_string()),
+                "{marker} should identify conventional .v files as Coq/Rocq"
+            );
+        }
     }
 
     #[test]
