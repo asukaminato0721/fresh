@@ -8,6 +8,7 @@ For live updates on Fresh, [follow me on X](https://x.com/TheNoamLewis).
 
 ### Features
 
+* **OCaml ecosystem highlighting** - new built-in grammars highlight Coq/Rocq (`.coq`, `_CoqProject`, `_RocqProject`) and Dune files (`dune`, `dune-project`, `dune-workspace*`, `*.dune`), and `.ocamlinit` is now detected as OCaml. The shared `.v` extension remains mapped to the V language for compatibility; conventional Coq/Rocq `.v` files can use manual language selection.
 * **Prettier Markdown Compose / Preview** - headings, block quotes, and horizontal rules get nice styling and conceal the literal `#`/`>`/`---`, lists get bullets and spacing, fenced code blocks are framed with side rails, and the default preview width is a readable centered measure instead of the full pane (#2967, requested by @mommysgoodpuppy).
 * **Review Diff - improved UX** - no soft wrap, side panels (file list, comments) can be toggled (use F and C keys), and the sidebar nests files by directory like the File Explorer instead of repeating the full path on every row.
     * **Review Diff performance improved** - a review spanning a hundred commits now lays out completely and stays responsive: cursor movement, hunk jumps, and flipping between the unified and side-by-side views no longer lag behind a stale frame. Further performance improvements are in the works and will come in future releases.
