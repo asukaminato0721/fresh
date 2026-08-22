@@ -75,6 +75,14 @@ struct Cli {
     #[arg(value_name = "FILES")]
     files: Vec<String>,
 
+    /// Compare two files or directories (Vim-compatible -d/--diff)
+    #[arg(
+        short = 'd',
+        long,
+        conflicts_with_all = ["stdin", "cmd", "attach", "restore"]
+    )]
+    diff: bool,
+
     /// Attach to a daemon. Use -a for current dir, -a NAME for a named daemon
     #[arg(short = 'a', long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     attach: Option<String>,
@@ -180,6 +188,10 @@ struct Cli {
 #[allow(dead_code)]
 struct Args {
     files: Vec<String>,
+    /// Open the two positional paths as a comparison. Git's difftool helper
+    /// sets `GIT_DIFF_TOOL`, so the ordinary `fresh $LOCAL $REMOTE` command
+    /// gets the same behavior without needing an explicit `-d`.
+    diff: bool,
     stdin: bool,
     no_plugins: bool,
     no_init: bool,
@@ -231,6 +243,10 @@ struct Args {
 
 impl From<Cli> for Args {
     fn from(cli: Cli) -> Self {
+        let diff = cli.diff
+            || (cli.cmd.is_empty()
+                && cli.attach.is_none()
+                && std::env::var_os("GIT_DIFF_TOOL").is_some());
         // Check for grammar list command before the main tuple parsing
         let list_grammars = if !cli.cmd.is_empty() {
             let cmd_args: Vec<&str> = cli.cmd.iter().map(|s| s.as_str()).collect();
@@ -519,6 +535,7 @@ impl From<Cli> for Args {
 
         Args {
             files,
+            diff,
             stdin: cli.stdin,
             no_plugins,
             no_init,
@@ -897,13 +914,17 @@ fn handle_first_run_setup(
     // the launch as a focused "open these files" invocation: skip the full
     // session restore but still recover hot-exit content. `--restore` (force)
     // is a deliberate user override that wins.
-    let cli_has_file_args = file_locations.iter().any(|loc| !loc.path.is_dir());
-    let cli_overrides_restore = cli_has_file_args
-        && editor
-            .config()
-            .editor
-            .skip_session_restore_when_files_passed
-        && !args.force_restore;
+    // A comparison is an explicit, focused launch even when both operands
+    // are directories. Restoring the ordinary workspace here would briefly
+    // show unrelated buffers behind the diff and could steal its focus.
+    let cli_has_file_args = args.diff || file_locations.iter().any(|loc| !loc.path.is_dir());
+    let cli_overrides_restore = args.diff
+        || (cli_has_file_args
+            && editor
+                .config()
+                .editor
+                .skip_session_restore_when_files_passed
+            && !args.force_restore);
 
     let restore_full_session = workspace_enabled
         && !cli_overrides_restore
@@ -980,7 +1001,7 @@ fn handle_first_run_setup(
     // with consistent error handling (e.g., encoding confirmation prompts in the UI)
     let mut has_cli_files = false;
     for loc in file_locations {
-        if loc.path.is_dir() {
+        if args.diff || loc.path.is_dir() {
             continue;
         }
         tracing::info!("[SYNTAX DEBUG] Queueing CLI file for open: {:?}", loc.path);
@@ -1135,6 +1156,70 @@ fn apply_plus_line_args(files: Vec<String>) -> AnyhowResult<Vec<String>> {
              which is equivalent to 'fresh file.txt:{line}')"
         ),
     }
+}
+
+const DIFF_LEFT_ENV: &str = "FRESH_DIFF_LEFT";
+const DIFF_RIGHT_ENV: &str = "FRESH_DIFF_RIGHT";
+const DIFF_KIND_ENV: &str = "FRESH_DIFF_KIND";
+
+#[derive(Debug, PartialEq, Eq)]
+struct DiffLaunch {
+    left: PathBuf,
+    right: PathBuf,
+    kind: &'static str,
+}
+
+fn resolve_diff_launch(files: &[String]) -> AnyhowResult<DiffLaunch> {
+    if files.len() != 2 {
+        anyhow::bail!("--diff requires exactly two files or two directories");
+    }
+
+    let resolve = |raw: &str| -> AnyhowResult<PathBuf> {
+        let parsed = parse_location(raw)?;
+        let ParsedLocation::Local(loc) = parsed else {
+            anyhow::bail!("--diff currently supports local paths only");
+        };
+        if loc.line.is_some() || loc.column.is_some() || loc.message.is_some() {
+            anyhow::bail!("--diff paths cannot include a line, column, range, or message");
+        }
+        loc.path
+            .canonicalize()
+            .with_context(|| format!("Cannot compare missing path: {}", loc.path.display()))
+    };
+
+    let left = resolve(&files[0])?;
+    let right = resolve(&files[1])?;
+    let kind = match (left.is_dir(), right.is_dir()) {
+        (true, true) => "directories",
+        (false, false) => "files",
+        _ => anyhow::bail!("--diff requires two files or two directories, not one of each"),
+    };
+    Ok(DiffLaunch { left, right, kind })
+}
+
+/// Validate and publish a Vim-style two-path diff launch for the built-in
+/// review plugin. Git exports `GIT_DIFF_TOOL` for both its per-file and
+/// `--dir-diff` helpers, so a user's existing
+/// `difftool.fresh.cmd = fresh $LOCAL $REMOTE` needs no Fresh-specific flag.
+///
+/// The paths are canonicalized before entering raw mode. Besides making the
+/// plugin independent of its process cwd, this matters for Git's dir-diff
+/// trees, which are normally temporary directories removed as soon as Fresh
+/// exits.
+fn configure_diff_launch(args: &Args) -> AnyhowResult<()> {
+    if !args.diff {
+        return Ok(());
+    }
+    if args.no_plugins {
+        anyhow::bail!(
+            "--diff requires plugins (it cannot be combined with --no-plugins or --safe)"
+        );
+    }
+    let launch = resolve_diff_launch(&args.files)?;
+    std::env::set_var(DIFF_LEFT_ENV, &launch.left);
+    std::env::set_var(DIFF_RIGHT_ENV, &launch.right);
+    std::env::set_var(DIFF_KIND_ENV, launch.kind);
+    Ok(())
 }
 
 fn parse_file_location(input: &str) -> FileLocation {
@@ -3381,7 +3466,10 @@ fn try_forward_nested(args: &Args) -> Option<AnyhowResult<()>> {
     // Only plain interactive file/dir opens are forwarded. Subcommands,
     // --server and --attach are already handled before we get here;
     // --stdin pipes content into a real editor and can't be forwarded.
-    if args.server || args.attach || args.stdin || args.files.is_empty() {
+    // The local-control protocol opens paths but cannot express a two-sided
+    // comparison. Keep a difftool launch in its own foreground process, just
+    // like Vim/Nvim's `-d`, so Git can also wait for it to close.
+    if args.diff || args.server || args.attach || args.stdin || args.files.is_empty() {
         return None;
     }
 
@@ -5471,6 +5559,7 @@ fn real_main() -> AnyhowResult<()> {
     // consumer (TUI, GUI, web, attach, nested forward) sees it, so
     // `fresh +50 file.txt` == `fresh file.txt:50` everywhere (#1926).
     args.files = apply_plus_line_args(std::mem::take(&mut args.files))?;
+    configure_diff_launch(&args)?;
     let args = args;
 
     // Expose `FRESH_INTERACTIVE=1` on the editor's process env when Fresh
@@ -7017,6 +7106,66 @@ mod tests {
     #[test]
     fn test_plus_line_arg_multiple_is_error() {
         assert!(plus_args(&["+1", "+2", "file.txt"]).is_err());
+    }
+
+    #[test]
+    fn test_vim_diff_flag_parses_two_operands() {
+        let cli = Cli::try_parse_from(["fresh", "-d", "old.rs", "new.rs"]).unwrap();
+        assert!(cli.diff);
+        assert_eq!(cli.files, ["old.rs", "new.rs"]);
+
+        let cli = Cli::try_parse_from(["fresh", "--diff", "old", "new"]).unwrap();
+        assert!(cli.diff);
+        assert_eq!(cli.files, ["old", "new"]);
+    }
+
+    #[test]
+    fn test_resolve_diff_launch_accepts_file_and_directory_pairs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let left_file = tmp.path().join("left.rs");
+        let right_file = tmp.path().join("right.rs");
+        std::fs::write(&left_file, "old\n").unwrap();
+        std::fs::write(&right_file, "new\n").unwrap();
+
+        let files = vec![
+            left_file.to_string_lossy().into_owned(),
+            right_file.to_string_lossy().into_owned(),
+        ];
+        let launch = resolve_diff_launch(&files).unwrap();
+        assert_eq!(launch.kind, "files");
+        assert_eq!(launch.left, left_file.canonicalize().unwrap());
+        assert_eq!(launch.right, right_file.canonicalize().unwrap());
+
+        let left_dir = tmp.path().join("left");
+        let right_dir = tmp.path().join("right");
+        std::fs::create_dir_all(&left_dir).unwrap();
+        std::fs::create_dir_all(&right_dir).unwrap();
+        let dirs = vec![
+            left_dir.to_string_lossy().into_owned(),
+            right_dir.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(resolve_diff_launch(&dirs).unwrap().kind, "directories");
+    }
+
+    #[test]
+    fn test_resolve_diff_launch_rejects_invalid_operands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("file.rs");
+        let dir = tmp.path().join("dir");
+        std::fs::write(&file, "text\n").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(resolve_diff_launch(&[file.to_string_lossy().into_owned()]).is_err());
+        assert!(resolve_diff_launch(&[
+            file.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+        ])
+        .is_err());
+        assert!(resolve_diff_launch(&[
+            file.to_string_lossy().into_owned(),
+            tmp.path().join("missing").to_string_lossy().into_owned(),
+        ])
+        .is_err());
     }
 
     // Tests for the client→daemon plumbing: a remote spec on the

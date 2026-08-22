@@ -10,6 +10,17 @@ Fresh has built-in tooling for reviewing diffs, navigating git history, and jump
 *   **Git Blame** — magit-style blame for the current file.
 *   **Diff Chunk Navigation** — jump between hunks from git *or* saved diff files with the same commands.
 
+## Use Fresh as `git difftool`
+
+Fresh recognizes Git's difftool environment automatically, so the same command works for ordinary per-file comparisons and `git difftool --dir-diff`:
+
+```bash
+git config --global diff.tool fresh
+git config --global difftool.fresh.cmd 'fresh $LOCAL $REMOTE'
+```
+
+Run `git difftool --no-prompt` for per-file LEFT/RIGHT comparisons, or add `--dir-diff` for one directory-level review with a file tree. Outside Git, the Vim-compatible `fresh -d LEFT RIGHT` (also `--diff`) compares either two files or two directories directly.
+
 ## Review Diff
 
 **Review Diff** opens a unified buffer that lists files and their diffs in a single scrollable view. The file list sits at the top; each file's hunks follow and can be collapsed. The buffer is the same kind of buffer the editor uses everywhere else, so scrolling, search, and splits all work as normal.

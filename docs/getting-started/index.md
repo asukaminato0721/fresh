@@ -28,6 +28,9 @@ fresh src/main.rs:42:10
 # Open multiple files (with optional line:col)
 fresh Cargo.toml src/lib.rs:100:5
 
+# Compare two files or directory trees (Vim-compatible -d/--diff)
+fresh -d old/src new/src
+
 # Open a remote file via SSH
 fresh user@host:/path/to/file.txt
 

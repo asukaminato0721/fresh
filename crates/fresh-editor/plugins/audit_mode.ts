@@ -129,6 +129,14 @@ interface ReviewRange {
    *  default `diff <from>..<to>`. Lets stash/other read-only sources reuse
    *  the whole range pipeline. */
   command?: string[];
+  /** Two filesystem operands supplied by `fresh -d` or Git difftool. The
+   *  range machinery is reused because this is also a read-only comparison,
+   *  but file versions come from these trees rather than `git show`. */
+  externalDiff?: {
+    left: string;
+    right: string;
+    kind: 'files' | 'directories';
+  };
 }
 
 interface ReviewState {
@@ -1436,12 +1444,9 @@ interface HintItem {
 function buildToolbar(): HintEntry[][] {
     // In range mode, stage / unstage / discard are meaningless (there is
     // no working tree to mutate), so hide them from the hint bar to keep
-    // the toolbar honest. The key-bindings themselves are harmless if
-    // pressed — `review_stage_scope` no-ops on range-mode hunks because
-    // their gitStatus is 'unstaged' and the git commands it invokes
-    // target the working tree, which isn't what the user intended. The
-    // toolbar is the user-facing surface, so pruning here is the
-    // cheapest honest thing to do.
+    // the toolbar honest. The handlers reject these keys in range mode too:
+    // commit ranges and external LEFT/RIGHT comparisons are read-only and
+    // must never let a stray `s` or `d` mutate the current working tree.
     const inRange = state.mode === 'range';
     const row1: HintItem[][] = [
         // The "how do I move around" group first: focus-cycle, file nav,
@@ -3826,12 +3831,19 @@ function fileHeaderUnderCursor(): FileEntry | null {
     return state.files.find(f => fileKey(f) === key) || null;
 }
 
+function requireWorktreeReview(): boolean {
+    if (state.mode === 'worktree') return true;
+    editor.setStatus("This comparison is read-only");
+    return false;
+}
+
 /**
  * Stage at the appropriate scope based on cursor context:
  *   * file header  → stage the whole file
  *   * hunk         → stage just that hunk
  */
 async function review_stage_scope() {
+    if (!requireWorktreeReview()) return;
     if (state.files.length === 0) return;
     if (state.lineSelection) { await applyLineSelection('stage'); return; }
     if (state.centerComposite) { await stageHunk(await getHunkAtCursor()); return; }
@@ -3845,6 +3857,7 @@ async function review_stage_scope() {
 registerHandler("review_stage_scope", review_stage_scope);
 
 async function review_unstage_scope() {
+    if (!requireWorktreeReview()) return;
     if (state.files.length === 0) return;
     if (state.lineSelection) { await applyLineSelection('unstage'); return; }
     if (state.centerComposite) { await unstageHunk(await getHunkAtCursor()); return; }
@@ -3862,6 +3875,7 @@ registerHandler("review_unstage_scope", review_unstage_scope);
  * currently inside, regardless of whether it's on a header or a hunk.
  */
 async function review_stage_file() {
+    if (!requireWorktreeReview()) return;
     if (state.files.length === 0) return;
     const f = fileHeaderUnderCursor() ?? currentFileFromCursor();
     if (!f) return;
@@ -3870,6 +3884,7 @@ async function review_stage_file() {
 registerHandler("review_stage_file", review_stage_file);
 
 async function review_unstage_file() {
+    if (!requireWorktreeReview()) return;
     if (state.files.length === 0) return;
     const f = fileHeaderUnderCursor() ?? currentFileFromCursor();
     if (!f) return;
@@ -3938,6 +3953,7 @@ let pendingDiscardFile: FileEntry | null = null;
 
 /** Always-file-level discard (D). Acts on the file the cursor is in. */
 function review_discard_file_only() {
+    if (!requireWorktreeReview()) return;
     if (state.files.length === 0) return;
     const f = fileHeaderUnderCursor() ?? currentFileFromCursor();
     if (!f) return;
@@ -3954,6 +3970,7 @@ function review_discard_file_only() {
 registerHandler("review_discard_file_only", review_discard_file_only);
 
 function review_discard_file() {
+    if (!requireWorktreeReview()) return;
     if (state.files.length === 0) return;
     if (state.lineSelection) { void applyLineSelection('discard'); return; }
     const headerFile = fileHeaderUnderCursor();
@@ -4636,6 +4653,20 @@ function discardParkedComposite(): void {
  *  wait out two full `git show` round trips back to back, and that pair
  *  is the largest single cost of the switch. */
 async function fetchFileVersions(file: FileEntry): Promise<{ oldContent: string; newContent: string; absPath: string }> {
+    const external = state.range?.externalDiff;
+    if (external) {
+        const leftPath = externalDiffPath(external, 'left', file.path);
+        const rightPath = externalDiffPath(external, 'right', file.path);
+        const [oldContent, newContent] = await Promise.all([
+            editor.readFile(editor.authorityPath(leftPath)),
+            editor.readFile(editor.authorityPath(rightPath)),
+        ]);
+        return {
+            oldContent: oldContent ?? "",
+            newContent: newContent ?? "",
+            absPath: rightPath,
+        };
+    }
     const root = state.repo ? state.repo.root : (editor.getCwd() || "");
     const absPath = root ? editor.pathJoin(root, file.path) : file.path;
     const cwd = root || editor.getCwd();
@@ -4748,15 +4779,18 @@ async function buildCenterComposite(focusHunkIdx: number = 0): Promise<void> {
         ? { type: "side-by-side", ratios: [0.5, 0.5], showSeparator: true }
         : { type: "unified", showSeparator: false };
 
+    const external = state.range?.externalDiff;
+    const leftLabel = external ? `LEFT (${editor.pathBasename(external.left)})` : "OLD (HEAD)";
+    const rightLabel = external ? `RIGHT (${editor.pathBasename(external.right)})` : "NEW (Working)";
     const compositeBufId = await editor.createCompositeBuffer({
         name: `*Review: ${file.path}*`,
         mode: REVIEW_DIFF_MODE,
         layout: layoutCfg as never,
         sources: [
-            { bufferId: oldRes.bufferId, label: "OLD (HEAD)", editable: false, style: { gutterStyle: "diff-markers" } },
+            { bufferId: oldRes.bufferId, label: leftLabel, editable: false, style: { gutterStyle: "diff-markers" } },
             {
                 bufferId: newRes.bufferId,
-                label: paneLabelWithComments("NEW (Working)", commentCountForFile(file)),
+                label: paneLabelWithComments(rightLabel, commentCountForFile(file)),
                 editable: false,
                 style: { gutterStyle: "diff-markers" },
             },
@@ -4789,7 +4823,7 @@ async function buildCenterComposite(focusHunkIdx: number = 0): Promise<void> {
         oldBufId: oldRes.bufferId,
         newBufId: newRes.bufferId,
         absPath,
-        isUntracked: file.category === 'untracked',
+        isUntracked: file.category === 'untracked' || (external !== undefined && file.status === 'A'),
         hunkLineMap: fileHunks
             .map(fh => ({ oldStart: fh.oldRange.start, newStart: fh.range.start }))
             .sort((a, b) => a.oldStart - b.oldStart),
@@ -5937,15 +5971,30 @@ async function openWorkingFileAtCursor(info: CompositeCursor, st: CompositeDiffS
 /** Open the HEAD version of the file read-only, at the given 1-indexed line. */
 async function openHeadVersionReadOnly(st: CompositeDiffState, oldLine: number): Promise<void> {
     if (st.isUntracked) {
-        editor.setStatus(editor.t("status.no_head_version") || "No HEAD version (file is untracked)");
+        const message = state.range?.externalDiff
+            ? "No LEFT version (file exists only on the right)"
+            : (editor.t("status.no_head_version") || "No HEAD version (file is untracked)");
+        editor.setStatus(message);
         return;
     }
-    const gitShow = await editor.spawnProcess("git", ["-C", st.gitRoot, "show", `HEAD:${st.filePath}`]);
-    if (gitShow.exit_code !== 0) {
-        editor.setStatus(editor.t("status.no_head_version") || "No HEAD version of this file");
-        return;
+    const external = state.range?.externalDiff;
+    let content: string;
+    if (external) {
+        const leftPath = externalDiffPath(external, 'left', st.filePath);
+        const read = editor.readFile(editor.authorityPath(leftPath));
+        if (read === null) {
+            editor.setStatus("No LEFT version of this file");
+            return;
+        }
+        content = read;
+    } else {
+        const gitShow = await editor.spawnProcess("git", ["-C", st.gitRoot, "show", `HEAD:${st.filePath}`]);
+        if (gitShow.exit_code !== 0) {
+            editor.setStatus(editor.t("status.no_head_version") || "No HEAD version of this file");
+            return;
+        }
+        content = gitShow.stdout;
     }
-    const content = gitShow.stdout;
     const lines = content.split('\n');
     const entries: TextPropertyEntry[] = lines.map((line, idx) => ({
         text: line + '\n',
@@ -5955,7 +6004,7 @@ async function openHeadVersionReadOnly(st: CompositeDiffState, oldLine: number):
     // trailing extension (same convention git_log uses for its revision
     // views).
     const view = await editor.createVirtualBuffer({
-        name: `*HEAD:${st.filePath}*`,
+        name: `*${external ? 'LEFT' : 'HEAD'}:${st.filePath}*`,
         mode: "normal",
         readOnly: true,
         entries,
@@ -6439,6 +6488,10 @@ editor.on("prompt_confirmed", (args) => {
 });
 editor.on("prompt_confirmed", async (args) => {
     if (args.prompt_type !== "review-discard-confirm") return true;
+    if (!requireWorktreeReview()) {
+        pendingDiscardFile = null;
+        return false;
+    }
 
     const response = args.input.trim().toLowerCase();
     if (response === "discard" || args.selected_index === 0) {
@@ -6461,6 +6514,7 @@ editor.on("prompt_confirmed", async (args) => {
 });
 editor.on("prompt_confirmed", async (args) => {
     if (args.prompt_type !== "review-discard-hunk-confirm") return true;
+    if (!requireWorktreeReview()) return false;
     const response = args.input.trim().toLowerCase();
     if (response === "discard" || args.selected_index === 0) {
         const hunk = getHunkAtDiffCursor();
@@ -6790,6 +6844,58 @@ async function start_review_diff() {
 }
 registerHandler("start_review_diff", start_review_diff);
 
+/** Start the comparison requested by Vim-compatible `fresh -d LEFT RIGHT`.
+ *  `main.rs` also enables this mode automatically when Git invokes Fresh as
+ *  a difftool, which keeps the common `fresh $LOCAL $REMOTE` configuration
+ *  working for both per-file and `--dir-diff` calls. */
+async function start_external_diff() {
+    const left = editor.getEnv("FRESH_DIFF_LEFT");
+    const right = editor.getEnv("FRESH_DIFF_RIGHT");
+    const rawKind = editor.getEnv("FRESH_DIFF_KIND");
+    if (!left || !right || (rawKind !== 'files' && rawKind !== 'directories')) return;
+
+    const externalDiff = { left, right, kind: rawKind } as const;
+    const leftName = editor.pathBasename(left) || left;
+    const rightName = editor.pathBasename(right) || right;
+    const range: ReviewRange = {
+        from: left,
+        to: right,
+        label: `${leftName} ↔ ${rightName}`,
+        command: [
+            "diff", "--no-index", "--no-ext-diff", "--no-textconv",
+            "--no-renames", "--unified=3", "--", left, right,
+        ],
+        externalDiff,
+    };
+
+    editor.setStatus(editor.t("status.generating") || "Generating diff…");
+    state.repo = null;
+    state.mode = 'range';
+    state.range = range;
+    state.reviewKey = `external-${Date.now()}`;
+    state.comments = [];
+    state.note = '';
+    const data = await fetchRangeDiff(range);
+    state.hunks = data.hunks;
+    state.files = data.files;
+    state.emptyState = data.files.length === 0 ? 'clean' : null;
+    state.reviewLayout = 'side-by-side';
+    state.panelsVisible = { files: rawKind === 'directories', comments: false };
+    resetPerSessionState();
+    await openReviewPanels(`*Diff: ${range.label}*`);
+}
+registerHandler("start_external_diff", start_external_diff);
+
+// The hook fires only after all built-in plugins have loaded, so the buffer
+// group and composite APIs are ready before an automatic difftool launch is
+// mounted. Ordinary editor launches have no FRESH_DIFF_* variables and pay
+// only these three cheap environment lookups.
+editor.on("ready", () => {
+    if (editor.getEnv("FRESH_DIFF_LEFT") && editor.getEnv("FRESH_DIFF_RIGHT")) {
+        void start_external_diff();
+    }
+});
+
 function stop_review_diff() {
     teardownCenterComposite();
     discardParkedComposite();
@@ -6877,10 +6983,15 @@ async function fetchRangeDiff(range: ReviewRange): Promise<{ hunks: Hunk[]; file
     const args = range.command || ["diff", "--unified=3", `${range.from}..${range.to}`];
     const cwd = gitCwd();
     const result = await editor.spawnProcess("git", args, cwd);
-    if (result.exit_code !== 0) {
+    // `git diff --no-index` deliberately exits 1 when it found differences.
+    // Ordinary git range failures still remain errors.
+    if (result.exit_code !== 0 && !(range.externalDiff && result.exit_code === 1)) {
         return { hunks: [], files: [] };
     }
     const hunks = parseDiffOutput(result.stdout, 'unstaged');
+    if (range.externalDiff) {
+        for (const h of hunks) h.file = externalDiffRelativePath(h.file, range.externalDiff);
+    }
     // Rewrite hunk ids so they include the range — avoids id collisions
     // when a user opens multiple range reviews in the same session.
     for (const h of hunks) {
@@ -6892,10 +7003,58 @@ async function fetchRangeDiff(range: ReviewRange): Promise<{ hunks: Hunk[]; file
     for (const h of hunks) {
         if (!seen.has(h.file)) {
             seen.add(h.file);
-            files.push({ path: h.file, status: 'M', category: 'unstaged' });
+            let status = 'M';
+            if (range.externalDiff) {
+                const left = externalDiffPath(range.externalDiff, 'left', h.file);
+                const right = externalDiffPath(range.externalDiff, 'right', h.file);
+                const [leftText, rightText] = await Promise.all([
+                    editor.readFile(editor.authorityPath(left)),
+                    editor.readFile(editor.authorityPath(right)),
+                ]);
+                if (leftText === null) status = 'A';
+                else if (rightText === null) status = 'D';
+            }
+            files.push({ path: h.file, status, category: 'unstaged' });
         }
     }
     return { hunks, files };
+}
+
+function slashPath(path: string): string {
+    return path.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+/** Git's no-index headers retain the operand path (`a/tmp/left/src/x`),
+ *  including for one-sided additions/deletions. Strip either operand root so
+ *  both sides share the logical directory-relative filename shown in Fresh. */
+function externalDiffRelativePath(
+    headerPath: string,
+    diff: NonNullable<ReviewRange['externalDiff']>,
+): string {
+    const path = slashPath(headerPath);
+    for (const root of [diff.left, diff.right]) {
+        const normalizedRoot = slashPath(root);
+        if (path === normalizedRoot) return editor.pathBasename(root);
+        if (path.startsWith(normalizedRoot + '/')) return path.slice(normalizedRoot.length + 1);
+    }
+    // Relative operands may leave only their basename in the header. Match
+    // that form too, while preserving a useful name if Git emitted something
+    // unexpected rather than dropping the file from the comparison.
+    for (const root of [diff.left, diff.right]) {
+        const base = slashPath(editor.pathBasename(root));
+        if (path === base) return base;
+        if (path.startsWith(base + '/')) return path.slice(base.length + 1);
+    }
+    return path;
+}
+
+function externalDiffPath(
+    diff: NonNullable<ReviewRange['externalDiff']>,
+    side: 'left' | 'right',
+    relativePath: string,
+): string {
+    const root = diff[side];
+    return diff.kind === 'directories' ? editor.pathJoin(root, relativePath) : root;
 }
 
 /**
